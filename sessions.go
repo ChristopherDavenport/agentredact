@@ -16,7 +16,12 @@ import (
 // LeaveOut returns, for each entry of order (the original's file order,
 // prefix included), whether to leave it out. It leaves out whole
 // branches: an entry under one it leaves out is left out too, and
-// Redact refuses one that is kept with [ErrSessionRedactor]. It must be
+// Redact refuses one that is kept with [ErrSessionRedactor]. What it
+// leaves out is held to the group rules before anything is written: a
+// call's output, dispatch, decision or link, an item drained from a
+// queued input, a run's end, or a response left out while what it
+// belongs with is kept is refused ([ErrSplitsCall] and the others), as
+// it is of a structural redactor. It must be
 // deterministic. A choice that rests on each entry's path alone, as
 // [DropBranches] given a predicate over the path makes, is the same
 // however the original grows, so a resumed redaction stays equal to a
@@ -35,6 +40,14 @@ type SessionRedactor interface {
 // leaf moves along its branch; once the leaf moves to another branch,
 // entries already redacted are off the new path, and resuming is
 // refused with [ErrResumeDiverged].
+//
+// What the path holds about the branches it leaves out stays, and is
+// reported as a [Finding]: a branch summary of an abandoned branch, a
+// compaction folding what came before, an entry converging a worker
+// branch's result. A label or an outcome naming an entry off the path
+// is left out with it. A session whose path relies on another branch,
+// such as a call answered on the path whose dispatch is on a branch off
+// it, is refused rather than redacted.
 func KeepLeafPath() SessionRedactor { return keepLeafPath{} }
 
 type keepLeafPath struct{}
@@ -62,7 +75,9 @@ func (keepLeafPath) LeaveOut(original *agentsession.Session, order []agentsessio
 // It must be deterministic. A drop that reads the entry and its path
 // alone keeps resuming equal to a fresh redaction, and a fork's prefix
 // equal to its origin's; one that reads what came after, such as the
-// entry's siblings, may not (see [SessionRedactor]).
+// entry's siblings, may not (see [SessionRedactor]). As with
+// [KeepLeafPath], summaries and converged results on the kept branches
+// that restate a dropped one stay, and are reported.
 func DropBranches(drop func(c *EntryContext) bool) SessionRedactor {
 	return dropBranches{drop: drop}
 }

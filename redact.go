@@ -76,24 +76,35 @@ type Result struct {
 // adds nothing to any request. A run no kept entry follows yet, at the
 // end of a path, is withheld: nothing is written for it until the
 // original grows a kept entry under it, so a block is written once, as
-// one placeholder, however the run grew.
+// one placeholder, however the run grew. A folded entry two paths share
+// goes into the first placeholder written, as the first kept entry
+// under it closes its run; the other path's later run hangs from that
+// placeholder, which then names a position off that path. A run that
+// would be all a resumed run's segment holds, closed by its end, gets
+// no placeholder, since one would turn an empty resume into an input:
+// its entries are left out with nothing in their place.
 //
-// A member of a kept entry that named an entry left out names what was
-// kept in its place, the block placeholder or the nearest entry kept
-// above it (a label's, outcome's or judged_by link's target, a branch
-// summary's from), or is removed where naming another entry would
-// change what it says: a parents element left out with no placeholder,
-// a queued_from, an omit item. A required member with nothing in its
-// place is refused with [ErrNoPlace].
+// A member of a kept entry that named an entry left out names its block
+// placeholder when one stands in its place. Otherwise: a label or an
+// outcome naming it is left out too, as RFC 0001's "names that or is
+// removed" has it, a leaf label included; a judged_by link loses its
+// target; a parents element, a queued_from and an omit item are removed;
+// a branch summary's from and the parent of an entry name the nearest
+// entry kept above it; and a member that must name an entry with
+// nothing there is refused with [ErrNoPlace]. An omit naming an item
+// split into several entries names the last.
 //
-// Some entries belong to a group, and leaving out its head leaves out
-// the group, in the same way (folded or with nothing in its place):
+// Some entries belong to a group, headed by its earliest entry, and
+// leaving out the head leaves out the group, in the same way (folded or
+// with nothing in its place):
 //
 //   - a call: its function_call item, and after it every
 //     function_call_output, dispatch and decision bound to it, every
 //     subsession or peer link with its call_id, cancel notices among
 //     them, and every custom entry with its call_id;
 //   - a run: its start and the end that closes it on the path;
+//   - a queued input: the queued entry and the items drained from it
+//     (queued_from), since the queued entry holds the input verbatim;
 //   - a response and the items it envelopes ([agentsession.OutputEntries]),
 //     where the items come first: leaving out every one of them leaves
 //     out the response, and leaving out some keeps it, enveloping the
@@ -101,30 +112,45 @@ type Result struct {
 //
 // Leaving out a group's member while its head is kept is refused, since
 // the head was already written when the member is met: an output,
-// dispatch, decision or link of a kept call ([ErrSplitsCall]), a
-// response whose items are kept ([ErrSplitsResponse]), a run end whose
-// start is kept ([ErrSplitsRun]). So is a config entry
-// ([ErrLeavesOutConfig]). Where leaving out changes a kept entry's
-// meaning, Redact carries it through: a run end, when the original's run
-// verified, gets the pending list and, unless it was error or
-// interrupted, the reason its redacted segment reads; a compaction's
-// pinned item whose item entries were all left out leaves with them; an
-// omit list loses the IDs left out, and an omit that only added them is
-// dropped; a compaction's first_kept left out names the first entry
-// standing for one from it to the compaction, or, when every one was
-// left out with nothing in its place, the entry in its place when that
-// adds nothing to the context, and is otherwise refused
-// ([ErrFirstKept]). Last, when anything was left out, each leaf's path
-// whose original verified its records is held to
-// [agentsession.Session.VerifyRecords]; a failure, such as a run that
-// resumes a call left out, is refused with [ErrBreaksRecords]. The rules
-// agentsession holds a commit to, such as an answer for a call whose
-// only dispatch was on a branch left out, refuse there, wrapped as
-// below. Redact writes no base, so the base rule holds of any root it
-// leaves: an entry whose ancestors were all left out is a root. One
-// consequence is left as it falls: a queued entry kept whose draining
-// item was left out reads, as the format has it, as an input still owed
-// unless a run end follows it on the path.
+// dispatch, decision or link of a kept call ([ErrSplitsCall]), an item
+// drained from a kept queued input ([ErrSplitsQueued]), a response whose
+// items are kept ([ErrSplitsResponse]), a run end whose start is kept
+// ([ErrSplitsRun]). The same rules hold what the session redactors leave
+// out, checked before anything is written: a dispatch on a branch off
+// the leaf's path, for a call on it, is refused, not dropped. A group
+// head written as an entry of another type is refused ([ErrGroupHead]).
+// So is leaving out a config entry or a compaction ([ErrLeavesOutConfig],
+// [ErrLeavesOutCompaction]): later entries resolve against what they put
+// in force, and a compaction left out would put what it folded back
+// into later requests.
+//
+// Where leaving out changes a kept entry's meaning, Redact carries it
+// through: a run end loses the calls left out from its pending list,
+// and, when the original's run verified, gets the pending list and,
+// unless it was error or interrupted, the reason its redacted segment
+// reads; a compaction's pinned item whose item entries were all left out
+// leaves with them; an omit list loses the IDs left out, and an omit
+// that only added them is dropped; a compaction's first_kept left out
+// names the first entry standing for one from it to the compaction, or,
+// when every one was left out with nothing in its place, the entry in
+// its place when that adds nothing to the context, and is otherwise
+// refused ([ErrFirstKept]). Each leaf's path whose original verified its
+// records is held to [agentsession.Session.VerifyRecords]; a failure,
+// such as a run that resumes a call left out, is refused with
+// [ErrBreaksRecords]. Redact writes no base, so the base rule holds of
+// any root it leaves: an entry whose ancestors were all left out is a
+// root.
+//
+// What restates entries left out without naming them cannot be removed
+// without changing requests, and is reported as a [Finding], with no
+// value: a kept branch summary whose branch was left out, a kept
+// compaction whose summary, or server-side compaction item, covers
+// entries left out before first_kept, a kept entry converging one left
+// out (its parents), a pinned item matching no entry while entries
+// before first_kept were left out, and an item's source or a run
+// start's trigger copying the trigger of a queued input left out.
+// Leaving out an env entry can make a later one read as a substitution,
+// or stop one reading so.
 //
 // The header is new: it carries redacted, redacted_from naming the
 // original and p, and the ID [agentsession.RedactedSessionID] derives
@@ -159,26 +185,30 @@ type Result struct {
 // existing, when not nil, is the redaction of original under p that an
 // earlier call made, as a store holds it: Redact appends to it, and
 // returns it, so a redacted session grows with its original and equals,
-// entry for entry, a fresh redaction of the grown original. What Redact
+// byte for byte, a fresh redaction of the grown original. What Redact
 // writes at a position depends on the original's entries up to it
 // alone, provided the redactors' decisions do, so the work done is
 // every position up to the highest any marked entry of existing names,
-// ranges included. Redact replays those positions, matching each entry
-// a fresh redaction would write there against existing rather than
-// writing it, which restores the runs still withheld, and writes the
-// rest; a position past it that was left out is decided again, the same
-// way, and still writes nothing. Its header is kept. Redact refuses,
-// with [ErrNotThisRedaction], an existing session whose redacted_from
-// names another original or another profile, whose ID is not the
-// derived one, that has a base, or one of whose entries made from one
-// position is not of the type a fresh redaction writes there; wrapping
-// [agentsession.ErrStaleOriginal], one naming a position past the
-// original's end; and, with [ErrResumeDiverged], one that holds what a
-// fresh redaction would not write, or lacks what it would, as after a
-// [KeepLeafPath] leaf moved to another branch. Entries appended to it
-// natively stay where they are. Those refusals come before anything is
-// written to existing; on any later error existing may hold some of the
-// new entries, so discard it and read it again.
+// ranges included. Redact replays those positions, building each entry
+// a fresh redaction would write there and requiring existing to hold an
+// entry of the same ID, so the same bytes, which restores the runs still
+// withheld, and then writes the rest; a position past it that was left
+// out is decided again, the same way, and still writes nothing. Its
+// header is kept. Redact refuses, with [ErrNotThisRedaction], an
+// existing session whose redacted_from names another original or
+// another profile, whose ID is not the derived one, that has a base, or
+// none of whose entries made from a position is of the type a fresh
+// redaction writes there; wrapping [agentsession.ErrStaleOriginal], one
+// naming a position past the original's end; and, with
+// [ErrResumeDiverged], one that differs from a fresh redaction in any
+// entry up to that position, holds an entry it would not write or lacks
+// one it would: a profile reused for changed rules, a redactor whose
+// output reads what came after its entry, or a [KeepLeafPath] leaf moved
+// to another branch. Entries appended to it natively stay where they
+// are. These refusals, and those of what the session redactors leave
+// out, come before anything is written to existing; on any later error
+// existing may hold some of the new entries, so discard it and read it
+// again.
 //
 // An instruction part named by the hash of a text the Rewriter never
 // met, in no entry of the original before it, keeps the original's
@@ -225,6 +255,10 @@ func Redact(p Profile, original, existing *agentsession.Session) (*Result, error
 	if err != nil {
 		return nil, err
 	}
+	if err := r.checkSessions(out); err != nil {
+		return nil, err
+	}
+	r.lastTS = original.Header().CreatedAt
 	for i, e := range r.order {
 		pos := i + 1
 		if pos == r.done+1 {

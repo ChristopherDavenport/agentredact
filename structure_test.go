@@ -218,7 +218,9 @@ func checkStructural(t *testing.T, p Profile, orig *agentsession.Session, res *R
 				Redacted string `json:"redacted"`
 				Entries  int    `json:"entries"`
 			}
-			if err := json.Unmarshal(e.(*agentsession.CustomEntry).Data, &data); err != nil || data.Redacted != "block" || data.Entries != n {
+			dec := json.NewDecoder(bytes.NewReader(e.(*agentsession.CustomEntry).Data))
+			dec.DisallowUnknownFields() // a placeholder carries nothing else
+			if err := dec.Decode(&data); err != nil || data.Redacted != "block" || data.Entries != n {
 				t.Errorf("placeholder %s data %s, want a block of %d", markKey(spans), e.(*agentsession.CustomEntry).Data, n)
 			}
 			continue
@@ -300,23 +302,24 @@ func TestStructural(t *testing.T) {
 		build   func(*testing.T, *clock) *agentsession.Session
 		entries []EntryRedactor
 		want    []string
+		gone    []string // left-out text the file must not hold
 	}{
 		{"single entry left out", callOriginal, []EntryRedactor{LeaveOut(userWith("drop me"))},
-			[]string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "13", "14"}},
+			[]string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "13", "14"}, []string{"drop me"}},
 		{"single entry folded", callOriginal, []EntryRedactor{BlockOut(userWith("drop me"))},
-			[]string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14"}},
+			[]string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14"}, []string{"drop me"}},
 		// The call's dispatch and output leave with it; its response
 		// keeps the message beside it.
 		{"call group left out", callOriginal, []EntryRedactor{LeaveOut(ofType(openresponses.ItemTypeFunctionCall))},
-			[]string{"1", "2", "3", "4", "6", "9", "10", "11", "12", "13", "14"}},
+			[]string{"1", "2", "3", "4", "6", "9", "10", "11", "12", "13", "14"}, []string{"call-c1", "contents with"}},
 		{"call group folded", callOriginal, []EntryRedactor{BlockOut(ofType(openresponses.ItemTypeFunctionCall))},
-			[]string{"1", "2", "3", "4", "5", "6", "7-8", "9", "10", "11", "12", "13", "14"}},
+			[]string{"1", "2", "3", "4", "5", "6", "7-8", "9", "10", "11", "12", "13", "14"}, []string{"call-c1", "contents with"}},
 		// The call takes its response, all of whose output it was, and
 		// its hold; the run end loses it from pending and reads aborted.
 		{"held call left out", heldOriginal, []EntryRedactor{LeaveOut(ofType(openresponses.ItemTypeFunctionCall))},
-			[]string{"1", "2", "6", "7", "8", "9"}},
+			[]string{"1", "2", "6", "7", "8", "9"}, []string{"call-c2"}},
 		{"runs across branches", treeOriginal, nil,
-			[]string{"1", "2", "4", "3,5", "6", "7", "8"}},
+			[]string{"1", "2", "4", "3,5", "6", "7", "8"}, []string{"secret-block"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			orig := tt.build(t, &clock{})
@@ -326,7 +329,42 @@ func TestStructural(t *testing.T) {
 			}
 			res := redact(t, p, orig, nil)
 			checkStructural(t, p, orig, res, tt.want)
+			absent(t, res, tt.gone...)
 		})
+	}
+}
+
+// absent checks that the redacted file holds none of the texts, which
+// were only in entries left out.
+func absent(t *testing.T, res *Result, texts ...string) {
+	t.Helper()
+	file := fileOf(t, res.Session)
+	for _, x := range texts {
+		if bytes.Contains(file, []byte(x)) {
+			t.Errorf("the redaction kept %q, left out", x)
+		}
+	}
+}
+
+// TestUnverifiedRunEndPending: a run end whose original did not verify
+// keeps its reason as written, but a call left out still leaves its
+// pending list.
+func TestUnverifiedRunEndPending(t *testing.T) {
+	c := &clock{}
+	s := recordsOriginal("orig-bad-end")
+	appendAt(t, s, c, agentsession.NewRunStart("run-1", agentsession.SourceInput, ""))
+	appendAt(t, s, c, user("do it"))
+	respond(t, s, c, "resp-1", call("call-bad"))
+	appendAt(t, s, c, agentsession.NewRunEnd("run-1", agentsession.ReasonDone, "", []string{"call-bad"})) // reads aborted
+	appendAt(t, s, c, user("later"))
+	respond(t, s, c, "resp-2", agentsession.NewItemEntry(openresponses.AssistantText("fine")))
+	p := structProfile("test.struct@1", []EntryRedactor{LeaveOut(ofType(openresponses.ItemTypeFunctionCall))})
+	res := redact(t, p, s, nil)
+	absent(t, res, "call-bad")
+	for _, e := range res.Session.Entries() {
+		if r, ok := e.(*agentsession.RunEntry); ok && r.IsEnd() && (r.Reason != agentsession.ReasonDone || len(r.Pending) != 0) {
+			t.Errorf("run end %s %v, want done as written and nothing pending", r.Reason, r.Pending)
+		}
 	}
 }
 
@@ -362,6 +400,7 @@ func TestBlockRun(t *testing.T) {
 	p := blockProfile("test.block@1")
 	res := redact(t, p, s, nil)
 	checkStructural(t, p, s, res, []string{"1", "2", "3", "4-6", "7", "8", "9"})
+	absent(t, res, "secret-block")
 	order := agentsession.FileOrder(res.Session)
 	if ph := order[3]; !isPlaceholder(ph) || ph.Base().Parent != order[2].Base().ID || order[4].Base().Parent != ph.Base().ID {
 		t.Errorf("the placeholder does not stand between the entries kept around it")
@@ -501,13 +540,9 @@ func TestKeepLeafPath(t *testing.T) {
 	s := branchesOriginal(t, c)
 	p := structProfile("test.leaf@1", nil, KeepLeafPath())
 	res := redact(t, p, s, nil)
-	checkStructural(t, p, s, res, []string{"1", "2", "3", "7", "8", "9", "10"})
-	// The label named an entry on the branch left out; it names the
-	// entry kept in its place, resp-1.
-	order := agentsession.FileOrder(res.Session)
-	if l := order[6].(*agentsession.LabelEntry); l.Target != order[2].Base().ID {
-		t.Errorf("the label names %s, want resp-1's redaction %s", l.Target, order[2].Base().ID)
-	}
+	// The label named an entry on the branch left out, with nothing in
+	// its place: it is left out too, never moved to an ancestor.
+	checkStructural(t, p, s, res, []string{"1", "2", "3", "7", "8", "9"})
 
 	// The leaf moves along its branch: resuming equals a fresh redaction.
 	appendAt(t, s, c, user("more on B")) // 11
@@ -535,7 +570,7 @@ func TestDropBranches(t *testing.T) {
 		return userWith("branch A")(c, nil)
 	}))
 	res := redact(t, p, s, nil)
-	checkStructural(t, p, s, res, []string{"1", "2", "3", "7", "8", "9", "10"})
+	checkStructural(t, p, s, res, []string{"1", "2", "3", "7", "8", "9"})
 
 	// Growth under the dropped branch is dropped too; a new branch is
 	// kept; each resume equals a fresh redaction.
@@ -547,7 +582,7 @@ func TestDropBranches(t *testing.T) {
 	branch.Parent = agentsession.FileOrder(s)[2].Base().ID
 	appendAt(t, s, c, branch) // 12
 	red = resumeEqualsFresh(t, p, s, red)
-	if got := marks(t, red); strings.Join(got, " ") != "1 2 3 7 8 9 10 12" {
+	if got := marks(t, red); strings.Join(got, " ") != "1 2 3 7 8 9 12" {
 		t.Errorf("marks %q", got)
 	}
 }
@@ -654,12 +689,17 @@ func TestPinnedLeaves(t *testing.T) {
 // TestRefusals: each drop that would break a format rule is refused,
 // naming the position.
 func TestRefusals(t *testing.T) {
-	labelOriginal := func(t *testing.T, c *clock) *agentsession.Session {
-		s := newOriginal("orig-label")
+	// summaryOriginal: a branch summary whose from is the root.
+	summaryOriginal := func(t *testing.T, c *clock) *agentsession.Session {
+		s := newOriginal("orig-summary")
 		root := appendAt(t, s, c, user("root"))
 		appendAt(t, s, c, user("child"))
 		turn(t, s, c, "resp-1", "one")
-		appendAt(t, s, c, agentsession.NewLabelEntry(root, "the root"))
+		bs, err := s.SummarizeBranch(root, openresponses.UserText("we left the root"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		appendAt(t, s, c, bs)
 		return s
 	}
 	// resumedOriginal: a run leaves a call pending, the next resumes it.
@@ -702,7 +742,14 @@ func TestRefusals(t *testing.T) {
 		{"a run end alone", callOriginal, []EntryRedactor{LeaveOut(atPositions(11))}, nil, ErrSplitsRun, "entry 11 "},
 		{"a config", callOriginal, []EntryRedactor{LeaveOut(atPositions(1))}, nil, ErrLeavesOutConfig, "entry 1 "},
 		{"first_kept with its window and the turn above", compactionOriginal, []EntryRedactor{LeaveOut(atPositions(2, 3, 4, 5))}, nil, ErrFirstKept, "entry 7 "},
-		{"a label's target with nothing above", labelOriginal, []EntryRedactor{LeaveOut(atPositions(1))}, nil, ErrNoPlace, "entry 5 "},
+		{"a branch summary's from with nothing above", summaryOriginal, []EntryRedactor{LeaveOut(atPositions(1))}, nil, ErrNoPlace, "entry 5 "},
+		{"a compaction", compactionOriginal, []EntryRedactor{LeaveOut(ofType(agentsession.TypeCompaction))}, nil, ErrLeavesOutCompaction, "entry 7 "},
+		{"a function call made a custom entry", callOriginal, []EntryRedactor{StructureRedactorFunc(func(c *EntryContext, e agentsession.Entry) ([]Made, error) {
+			if isFunctionCall(c.Entry()) {
+				return []Made{{Entry: &agentsession.CustomEntry{NS: "x.fake", Data: json.RawMessage(`{}`)}}}, nil
+			}
+			return []Made{{Entry: e}}, nil
+		})}, nil, ErrGroupHead, "entry 5 "},
 		{"a session redactor keeping a child", callOriginal, nil, []SessionRedactor{middleOnly}, ErrSessionRedactor, "position 2"},
 		{"a resumed run's call", resumedOriginal, []EntryRedactor{LeaveOut(ofType(openresponses.ItemTypeFunctionCall))}, nil, ErrBreaksRecords, "entry 11 "},
 	} {

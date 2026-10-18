@@ -33,13 +33,15 @@ import (
 // a config entry, or a run's end alone is refused. See [Redact].
 //
 // Like an entry redactor it must be deterministic and keep no state
-// between calls, and its decision should depend on the entry and its
+// between calls, and what it returns should depend on the entry and its
 // path ([EntryContext.Path]) alone: what came after the entry in the
-// original is not known when a redaction that later resumes is made,
-// so a decision that reads it may differ on resume, which [Redact]
-// refuses with [ErrResumeDiverged], and a fork and its origin give
-// their shared prefix the same bytes only when the decision rests on
-// the path.
+// original is not known when a redaction that later resumes is made, so
+// output that reads it may differ on resume, which [Redact] refuses
+// with [ErrResumeDiverged], comparing every entry up to the resume
+// point, and a fork and its origin give their shared prefix the same
+// bytes only when the output rests on the path. A group head (a
+// function call, a run start, a subsession or peer link, a queued
+// input) must keep its type in its last entry ([ErrGroupHead]).
 type StructureRedactor interface {
 	EntryRedactor
 	RedactStructure(c *EntryContext, e agentsession.Entry) ([]Made, error)
@@ -163,6 +165,21 @@ var (
 	// hash, keeps, omitted lists), which a redaction cannot know when it
 	// leaves the entry out.
 	ErrLeavesOutConfig = errors.New("agentredact: a config entry cannot be left out")
+	// ErrSplitsQueued: an item drained from a queued input left out
+	// while the queued entry is kept. The queued entry holds the input
+	// verbatim, so leaving out the item alone would keep its text.
+	// Leaving out the queued entry leaves out the items drained from it.
+	ErrSplitsQueued = errors.New("agentredact: leaving the item out keeps the queued input it was drained from")
+	// ErrLeavesOutCompaction: a compaction left out. Every entry before
+	// its first_kept would come back into later requests, a request
+	// never sent, and later config deltas resolve against its
+	// checkpoint.
+	ErrLeavesOutCompaction = errors.New("agentredact: a compaction cannot be left out")
+	// ErrGroupHead: a group head (a function call, a run start, a
+	// subsession or peer link, a queued input) whose last entry written
+	// in its place is not of its type, which its members name as the
+	// entry it is.
+	ErrGroupHead = errors.New("agentredact: a group head must keep its type")
 	// ErrFirstKept: a compaction kept whose first_kept was left out with
 	// no entry that can stand in for it: none kept between it and the
 	// compaction, and the nearest kept above it in context.
@@ -177,11 +194,13 @@ var (
 	// ErrSessionRedactor: a session redactor kept an entry under one it
 	// left out. A session redactor leaves out whole branches.
 	ErrSessionRedactor = errors.New("agentredact: a session redactor kept an entry under one it left out")
-	// ErrResumeDiverged: the existing redaction holds what a fresh
-	// redaction of the original under the profile would not write, so
-	// resuming it cannot give what a fresh one gives. A session
-	// redactor that reads the whole session, such as [KeepLeafPath]
-	// after the leaf moved to another branch, or a decision that reads
-	// what came after its entry, gives it; redact afresh.
+	// ErrResumeDiverged: the existing redaction differs from what a
+	// fresh redaction of the original under the profile writes up to the
+	// point it resumes from, in any byte of any entry, so resuming it
+	// cannot give what a fresh one gives. A profile name reused for
+	// changed rules, a redactor whose output reads what came after its
+	// entry, or a session redactor that reads the whole session, such as
+	// [KeepLeafPath] after the leaf moved to another branch, gives it;
+	// redact afresh.
 	ErrResumeDiverged = errors.New("agentredact: the existing redaction is not what a fresh one would write")
 )

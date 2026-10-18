@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ChristopherDavenport/agentsession"
 	"github.com/ChristopherDavenport/openresponses"
@@ -50,8 +51,9 @@ type placed struct {
 // depends on the positions up to it alone, and a redaction resumed
 // after the original grew writes what a fresh one writes. A resume
 // replays the positions up to the highest one the existing redaction
-// names, matching what a fresh one would write there against what it
-// holds, rather than writing it, and then writes the rest.
+// names, building what a fresh one would write there and requiring the
+// existing redaction to hold an entry of the same ID, rather than
+// writing it, and then writes the rest.
 type redaction struct {
 	p        Profile
 	f        StringRedactor
@@ -65,6 +67,9 @@ type redaction struct {
 	placed   map[string]*placed
 	// leftOut is set once an entry has been left out, by any redactor.
 	leftOut bool
+	// lastTS is the timestamp of the entry last written, which one whose
+	// timestamp is zero takes.
+	lastTS time.Time
 
 	// done is the highest position the existing redaction's entries
 	// name; the positions up to it are replayed, not written.
@@ -144,7 +149,8 @@ func (r *redaction) sessions() ([]bool, error) {
 
 // entry redacts the original's entry e at pos, body being its rewritten
 // copy: it decides what becomes of it and, when anything is kept, writes
-// or, replaying, matches the entries made from it.
+// the entries made from it, or, replaying, builds them as it would write
+// them and finds each in the existing redaction.
 func (r *redaction) entry(pos int, e, body agentsession.Entry) error {
 	replay := pos <= r.done
 	id := e.Base().ID
@@ -184,18 +190,25 @@ func (r *redaction) entry(pos int, e, body agentsession.Entry) error {
 		r.leftOut = true
 		return nil
 	}
-	parent, err := r.standIn(e.Base().Parent, replay)
+	if err := headKeepsType(e, made); err != nil {
+		return err
+	}
+	parent, err := r.standIn(e, replay)
 	if err != nil {
 		return err
 	}
 	pl := &placed{fate: kept, pos: pos}
 	for i, m := range made {
-		var nid string
-		if replay {
-			nid, err = r.match(markOf(pos, m.Added), m.Entry.EntryType(), parent, pos)
-		} else {
-			nid, err = r.write(pos, e, m, parent)
+		if replay && !m.Added {
+			if err := r.sameType(pos, m.Entry.EntryType()); err != nil {
+				return err
+			}
 		}
+		n, err := r.build(pos, e, m, parent, !replay)
+		if err != nil {
+			return err
+		}
+		nid, err := r.put(n, e, pos, replay)
 		if err != nil {
 			return err
 		}
@@ -207,6 +220,41 @@ func (r *redaction) entry(pos int, e, body agentsession.Entry) error {
 	pl.last = parent
 	r.placed[id] = pl
 	return nil
+}
+
+// headKeepsType refuses a group head whose last entry written in its
+// place is not of its type: its members name it, by target or call_id,
+// as the entry it is.
+func headKeepsType(e agentsession.Entry, made []Made) error {
+	if !isHead(e) {
+		return nil
+	}
+	last := made[len(made)-1].Entry
+	if last.EntryType() != e.EntryType() {
+		return fmt.Errorf("%w: a %s became a %s", ErrGroupHead, e.EntryType(), last.EntryType())
+	}
+	if it, ok := e.(*agentsession.ItemEntry); ok {
+		if lt := last.(*agentsession.ItemEntry); lt.Item == nil || lt.Item.ItemType() != it.Item.ItemType() {
+			return fmt.Errorf("%w: a %s item became another", ErrGroupHead, it.Item.ItemType())
+		}
+	}
+	return nil
+}
+
+// isHead reports whether e leads a group: a function call, a run start,
+// a subsession or peer link a cancel notice may name, a queued input.
+func isHead(e agentsession.Entry) bool {
+	switch v := e.(type) {
+	case *agentsession.ItemEntry:
+		return isFunctionCall(e)
+	case *agentsession.RunEntry:
+		return v.IsStart()
+	case *agentsession.LinkEntry:
+		return (v.Rel == agentsession.RelSubsession || v.Rel == agentsession.RelPeer) && v.Cancel == ""
+	case *agentsession.QueuedEntry:
+		return true
+	}
+	return false
 }
 
 // leftFate is the fate of the entry id when it was left out by an entry
@@ -226,15 +274,27 @@ func (r *redaction) isKept(id string) bool {
 
 // forced returns the fate an entry takes from the group it belongs to,
 // when the group's head was left out: a call's records with the call, a
-// run's end with its start, a cancel notice with the link it names, and
-// a response with the items it envelopes, when every one of them was
-// left out. It returns 0 for an entry whose fate is its own to decide.
+// run's end with its start, a cancel notice with the link it names, the
+// items drained from a queued input with it, and a response with the
+// items it envelopes, when every one of them was left out. A label or
+// an outcome whose target was left out with no placeholder in its place
+// is left out too. It returns 0 for an entry whose fate is its own to
+// decide.
 func (r *redaction) forced(e agentsession.Entry) fate {
 	switch v := e.(type) {
 	case *agentsession.ItemEntry:
 		if out, ok := v.Item.(*openresponses.FunctionCallOutput); ok {
-			return r.leftFate(r.callOf(e, out.CallID, ""))
+			if f := r.leftFate(r.callOf(e, out.CallID, "")); f != 0 {
+				return f
+			}
 		}
+		if r.queuedFrom(v) != "" {
+			return r.leftFate(v.QueuedFrom)
+		}
+	case *agentsession.LabelEntry:
+		return r.targetGone(v.Target)
+	case *agentsession.OutcomeEntry:
+		return r.targetGone(v.Target)
 	case *agentsession.DispatchEntry:
 		return r.leftFate(r.callOf(e, v.CallID, v.Target))
 	case *agentsession.DecisionEntry:
@@ -275,38 +335,107 @@ func (r *redaction) forced(e agentsession.Entry) fate {
 	return 0
 }
 
-// mayLeaveOut refuses to leave out, on its own, an entry the format
-// does not let a redaction leave out while it keeps what it belongs
-// with.
+// targetGone returns omitted for a target left out with no placeholder
+// standing in its place, and 0 otherwise.
+func (r *redaction) targetGone(id string) fate {
+	pl := r.placed[id]
+	if pl == nil || pl.fate == kept || pl.last != "" {
+		return 0
+	}
+	return omitted
+}
+
+// queuedFrom returns the queued entry the item it drains names, when it
+// is a queued entry of the original, and "" otherwise.
+func (r *redaction) queuedFrom(it *agentsession.ItemEntry) string {
+	if it.QueuedFrom == "" {
+		return ""
+	}
+	if q, ok := r.original.Entry(it.QueuedFrom); ok {
+		if _, ok := q.(*agentsession.QueuedEntry); ok {
+			return it.QueuedFrom
+		}
+	}
+	return ""
+}
+
+// mayLeaveOut refuses to leave out, on its own, an entry a structural
+// redactor may not leave out: a config entry, a compaction, or a member
+// of a group whose head is kept.
 func (r *redaction) mayLeaveOut(e agentsession.Entry) error {
-	switch v := e.(type) {
+	switch e.(type) {
 	case *agentsession.ConfigEntry:
 		return ErrLeavesOutConfig
+	case *agentsession.CompactionEntry:
+		return ErrLeavesOutCompaction
+	}
+	return r.splits(e, r.isKept)
+}
+
+// splits refuses to leave out a member of a group while kept says its
+// head is kept: an output, dispatch, decision or link of a call, an item
+// drained from a queued input, a run end, or a response with an item it
+// envelopes.
+func (r *redaction) splits(e agentsession.Entry, kept func(id string) bool) error {
+	switch v := e.(type) {
 	case *agentsession.ItemEntry:
-		if out, ok := v.Item.(*openresponses.FunctionCallOutput); ok && r.isKept(r.callOf(e, out.CallID, "")) {
+		if out, ok := v.Item.(*openresponses.FunctionCallOutput); ok && kept(r.callOf(e, out.CallID, "")) {
 			return fmt.Errorf("%w: an output of a call that is kept", ErrSplitsCall)
 		}
+		if q := r.queuedFrom(v); q != "" && kept(q) {
+			return ErrSplitsQueued
+		}
 	case *agentsession.DispatchEntry:
-		if r.isKept(r.callOf(e, v.CallID, v.Target)) {
+		if kept(r.callOf(e, v.CallID, v.Target)) {
 			return fmt.Errorf("%w: a dispatch of a call that is kept", ErrSplitsCall)
 		}
 	case *agentsession.DecisionEntry:
-		if r.isKept(r.callOf(e, v.CallID, v.Target)) {
+		if kept(r.callOf(e, v.CallID, v.Target)) {
 			return fmt.Errorf("%w: a decision on a call that is kept", ErrSplitsCall)
 		}
 	case *agentsession.LinkEntry:
-		if (v.Rel == agentsession.RelSubsession || v.Rel == agentsession.RelPeer) && r.isKept(r.callOf(e, v.CallID, "")) {
+		if v.Rel != agentsession.RelSubsession && v.Rel != agentsession.RelPeer {
+			break
+		}
+		if kept(r.callOf(e, v.CallID, "")) {
 			return fmt.Errorf("%w: a link of a call that is kept", ErrSplitsCall)
+		}
+		if v.Cancel != "" && kept(v.Target) {
+			return fmt.Errorf("%w: a cancel notice of a link that is kept", ErrSplitsCall)
 		}
 	case *agentsession.ResponseEntry:
 		for _, o := range agentsession.OutputEntries(r.original.Path(v.ID), v) {
-			if r.isKept(o.ID) {
+			if kept(o.ID) {
 				return ErrSplitsResponse
 			}
 		}
 	case *agentsession.RunEntry:
-		if v.IsEnd() && r.isKept(r.runStart(e)) {
+		if v.IsEnd() && kept(r.runStart(e)) {
 			return ErrSplitsRun
+		}
+	}
+	return nil
+}
+
+// checkSessions holds what the session redactors left out to the group
+// rules, before anything is written: a member of a group left out while
+// its head is kept is refused, as it is of a structural redactor. A
+// head left out takes its members with it, since they are under it.
+func (r *redaction) checkSessions(out []bool) error {
+	at := make(map[string]int, len(r.order))
+	for i, e := range r.order {
+		at[e.Base().ID] = i
+	}
+	kept := func(id string) bool {
+		i, ok := at[id]
+		return ok && !out[i]
+	}
+	for i, e := range r.order {
+		if !out[i] {
+			continue
+		}
+		if err := r.splits(e, kept); err != nil {
+			return entryErr(r.origID, i+1, e, err)
 		}
 	}
 	return nil
@@ -425,16 +554,23 @@ func (r *redaction) chain(pos int, body agentsession.Entry, replay bool, kept ma
 	return cur, false, nil
 }
 
-// standIn returns the ID of the redacted entry an entry under the
-// original's entry parent hangs from: the last entry written in parent's
-// place, or, when parent was left out, in its nearest ancestor's. A run
-// of folded entries between them is closed here: its block placeholder
-// is written, or, replaying, matched, under that entry, and the entry
-// hangs from the placeholder. "" is a root.
-func (r *redaction) standIn(parent string, replay bool) (string, error) {
+// standIn returns the ID of the redacted entry the kept entry e hangs
+// from: the last entry written in its parent's place, or, when the parent
+// was left out, in its nearest ancestor's. A run of folded entries
+// between them is closed here: its block placeholder is written, or,
+// replaying, found, under that entry, and e hangs from the placeholder.
+// "" is a root.
+//
+// One run is not given a placeholder: one that would be all a resumed
+// run's segment holds, closed by the run's end. A segment of a run
+// written resume that holds nothing is one agentsession accepts as a
+// resume that ended before it took anything up; a placeholder there
+// would make it read as an input. Its entries are left out with nothing
+// in their place, as LeaveOut leaves them.
+func (r *redaction) standIn(e agentsession.Entry, replay bool) (string, error) {
 	var run []string // folded entries whose run this closes, nearest first
 	stand := ""
-	for x := parent; x != ""; {
+	for x := e.Base().Parent; x != ""; {
 		pl := r.placed[x]
 		if pl == nil {
 			return "", fmt.Errorf("its parent %s is not an entry of the original before it", x)
@@ -451,6 +587,12 @@ func (r *redaction) standIn(parent string, replay bool) (string, error) {
 	if len(run) == 0 {
 		return stand, nil
 	}
+	if r.emptiesResume(e, stand) {
+		for _, x := range run {
+			r.placed[x].fate = omitted
+		}
+		return stand, nil
+	}
 	slices.Reverse(run)
 	positions := make([]int, len(run))
 	for i, x := range run {
@@ -462,17 +604,12 @@ func (r *redaction) standIn(parent string, replay bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	ph.Timestamp = top.Base().Timestamp // what it replaces, never a clock
+	ph.Timestamp = r.stamp(top.Base().Timestamp) // what it replaces, never a clock
 	ph.Parent = stand
 	if err := agentsession.SetRedacted(ph, spans); err != nil {
 		return "", err
 	}
-	var id string
-	if replay {
-		id, err = r.match(spans, agentsession.TypeCustom, stand, 0)
-	} else {
-		id, err = r.commit(ph, nil, 0)
-	}
+	id, err := r.put(ph, nil, 0, replay)
 	if err != nil {
 		return "", err
 	}
@@ -480,6 +617,34 @@ func (r *redaction) standIn(parent string, replay bool) (string, error) {
 		r.placed[x].first, r.placed[x].last = id, id
 	}
 	return id, nil
+}
+
+// emptiesResume reports whether the kept entry e is the end of a run
+// written resume whose kept start is stand: a placeholder between them
+// would be all its segment holds.
+func (r *redaction) emptiesResume(e agentsession.Entry, stand string) bool {
+	end, ok := e.(*agentsession.RunEntry)
+	if !ok || !end.IsEnd() {
+		return false
+	}
+	sid := r.runStart(e)
+	pl := r.placed[sid]
+	if pl == nil || pl.fate != kept || pl.last != stand {
+		return false
+	}
+	start, _ := r.original.Entry(sid)
+	st, _ := start.(*agentsession.RunEntry)
+	return st != nil && st.Source == agentsession.SourceResume
+}
+
+// stamp returns ts, or, when it is zero, the timestamp of the entry
+// written before: a timestamp the output depends on, never Commit's
+// clock.
+func (r *redaction) stamp(ts time.Time) time.Time {
+	if ts.IsZero() {
+		return r.lastTS
+	}
+	return ts
 }
 
 // blockPlaceholder is the entry standing for n entries left out.
@@ -520,81 +685,83 @@ func (r *redaction) place(id string) (string, bool) {
 	return "", false
 }
 
-// match finds, replaying, the entry of the existing redaction a fresh
-// one would write here: marked spans, of type typ, under parent. pos is
-// the position an entry made from one is made from, 0 for a block
-// placeholder.
-func (r *redaction) match(spans []agentsession.Span, typ, parent string, pos int) (string, error) {
-	k := markKey(spans)
-	var other agentsession.Entry // an unmatched entry so marked, of another type or under another entry
-	for _, h := range r.byMark[k] {
-		if r.matched[h.Base().ID] {
-			continue
-		}
-		if h.Base().Parent == parent && h.EntryType() == typ {
-			r.matched[h.Base().ID] = true
-			return h.Base().ID, nil
-		}
-		if other == nil || other.EntryType() == typ {
-			other = h
+// sameType refuses, replaying, an existing redaction whose entries made
+// from pos are none of them of type typ: one made from another original.
+func (r *redaction) sameType(pos int, typ string) error {
+	held := r.byMark[markKey(markOf(pos, false))]
+	if len(held) == 0 {
+		return nil
+	}
+	for _, h := range held {
+		if h.EntryType() == typ {
+			return nil
 		}
 	}
-	if other != nil && other.EntryType() != typ && pos > 0 {
-		return "", fmt.Errorf("%w: %s: the entry redacted from position %d is a %s, and the original's there a %s", ErrNotThisRedaction, r.redID, pos, other.EntryType(), typ)
-	}
-	return "", fmt.Errorf("%w: a fresh redaction writes a %s marked [%s] here, which it does not hold", ErrResumeDiverged, typ, k)
+	return fmt.Errorf("%w: %s: the entry redacted from position %d is a %s, and the original's there a %s", ErrNotThisRedaction, r.redID, pos, held[0].EntryType(), typ)
 }
 
-// write builds the redacted entry m made from the original's entry e at
-// pos, under parent, and commits it.
-func (r *redaction) write(pos int, e agentsession.Entry, m Made, parent string) (string, error) {
+// build makes the redacted entry m, made from the original's entry e at
+// pos, to be put under parent, short of its request hash: its
+// timestamp, references, mark. report says whether what it finds is
+// reported; replaying, it is not, since it was when the entry was
+// written.
+func (r *redaction) build(pos int, e agentsession.Entry, m Made, parent string, report bool) (agentsession.Entry, error) {
 	n := m.Entry
 	if n.Base().Timestamp.IsZero() {
-		n.Base().Timestamp = e.Base().Timestamp // never a clock
+		n.Base().Timestamp = r.stamp(e.Base().Timestamp) // never a clock
 	}
-	if err := inspect(n, r.f, pos, &r.res.Findings); err != nil {
-		return "", err
+	findings := &r.res.Findings
+	if !report {
+		findings = &[]Finding{}
 	}
-	override, err := r.fixRefs(e, n, parent)
+	if err := inspect(n, r.f, pos, findings); err != nil {
+		return nil, err
+	}
+	add := func(at, message string) {
+		*findings = append(*findings, Finding{Position: pos, At: at, Redactor: "redact", Message: message})
+	}
+	override, err := r.fixRefs(e, n, parent, add)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	n.Base().Parent = "" // set below; the parent is the stand-in already found
 	rr, err := agentsession.RemapRefs(n, r.remap(override))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	for _, u := range rr.Unmapped {
 		if u.Entry != "" && (u.Session == "" || u.Session == r.origID) {
-			return "", fmt.Errorf("%w: %s", ErrNoPlace, u.At)
+			return nil, fmt.Errorf("%w: %s", ErrNoPlace, u.At)
 		}
-		r.res.Findings = append(r.res.Findings, Finding{
-			Position: pos,
-			At:       u.At,
-			Redactor: "redact",
-			Message:  "a reference into another session kept as written: it names that session's original entry or ID, which can confirm a guess, until the store pass re-points it",
-		})
+		add(u.At, "a reference into another session kept as written: it names that session's original entry or ID, which can confirm a guess, until the store pass re-points it")
 	}
 	if rr.Opaque {
-		r.res.Findings = append(r.res.Findings, Finding{
-			Position: pos,
-			Redactor: "redact",
-			Message:  "extension entry: its parent and parents were re-pointed, but a member of its own may still name an entry of the original",
-		})
+		add("", "extension entry: its parent and parents were re-pointed, but a member of its own may still name an entry of the original")
 	}
 	n = rr.Entry
 	n.Base().ID = ""
 	n.Base().Parent = parent
 	if err := agentsession.SetRedacted(n, markOf(pos, m.Added)); err != nil {
-		return "", err
+		return nil, err
 	}
-	return r.commit(n, e, pos)
+	return n, nil
 }
 
-// commit commits n, made from the original's entry e at pos, or a block
-// placeholder when e is nil, to the redacted session.
-func (r *redaction) commit(n, e agentsession.Entry, pos int) (string, error) {
-	if n.Base().Parent == "" && r.red.Len() > 0 {
+// put gives n, made from the original's entry e at pos (a block
+// placeholder when e is nil), its request hash and run end carry, and
+// commits it to the redacted session, or, replaying, finds it there: the
+// ID agentsession computes for it must be one the existing redaction
+// holds, so a redaction that differs in any byte is refused with
+// ErrResumeDiverged.
+func (r *redaction) put(n, e agentsession.Entry, pos int, replay bool) (string, error) {
+	root := n.Base().Parent == "" && r.red.Len() > 0
+	if root && replay {
+		// The leaf is the existing redaction's; put it back after.
+		if leaf := r.red.Leaf(); leaf != "" {
+			defer func() { _ = r.red.Branch(leaf) }()
+		}
+	}
+	if root {
 		// A root: Commit puts an entry with no parent under the leaf,
 		// and SetRequestHash rebuilds a response's request there.
 		r.red.ResetLeaf()
@@ -612,6 +779,15 @@ func (r *redaction) commit(n, e agentsession.Entry, pos int) (string, error) {
 			r.carryRun(v, e)
 		}
 	}
+	r.lastTS = n.Base().Timestamp
+	if replay {
+		res, err := r.red.Prepare(n)
+		if err != nil || res.Outcome != agentsession.Held {
+			return "", fmt.Errorf("%w: a fresh redaction writes a %s marked [%s] here, which it does not hold", ErrResumeDiverged, n.EntryType(), markKey(redactedOf(n)))
+		}
+		r.matched[res.ID] = true
+		return res.ID, nil
+	}
 	res, err := r.red.Commit(n)
 	if err != nil {
 		return "", err
@@ -624,6 +800,11 @@ func (r *redaction) commit(n, e agentsession.Entry, pos int) (string, error) {
 		r.res.Findings = append(r.res.Findings, unmetParts(r.red, res.ID, n, pos)...)
 	}
 	return res.ID, nil
+}
+
+func redactedOf(e agentsession.Entry) []agentsession.Span {
+	spans, _ := agentsession.RedactedOf(e)
+	return spans
 }
 
 // remap re-points the references of an entry being written: a reference
@@ -652,9 +833,10 @@ func (r *redaction) remap(override map[string]string) agentsession.Remap {
 // the original's entry e and to be written under parent, that name an
 // entry or a call in a way [Redact]'s re-pointing does not cover: it
 // removes what names an entry left out where naming the entry in its
-// place would change the meaning, and returns the references whose
-// stand-in is not the one in their place, by original ID.
-func (r *redaction) fixRefs(e, n agentsession.Entry, parent string) (map[string]string, error) {
+// place would change the meaning, reports through add what restates
+// what was left out, and returns the references whose stand-in is not
+// the one in their place, by original ID.
+func (r *redaction) fixRefs(e, n agentsession.Entry, parent string, add func(at, message string)) (map[string]string, error) {
 	b := n.Base()
 	if len(b.Parents) > 0 {
 		var keep []agentsession.EntryRef
@@ -664,6 +846,9 @@ func (r *redaction) fixRefs(e, n agentsession.Entry, parent string) (map[string]
 			if ref.Session != "" && ref.Session != r.origID || pl == nil {
 				keep = append(keep, ref) // another session's, or none of this file: re-pointing reports it
 				continue
+			}
+			if pl.fate != kept {
+				add("/parents", "an entry converging one left out: what it merged from there is in its own payload, kept")
 			}
 			// A converged entry left out is named by its block
 			// placeholder, or removed: naming an ancestor would claim
@@ -680,7 +865,22 @@ func (r *redaction) fixRefs(e, n agentsession.Entry, parent string) (map[string]
 	switch v := n.(type) {
 	case *agentsession.ItemEntry:
 		if v.QueuedFrom != "" && r.placed[v.QueuedFrom] != nil && !r.isKept(v.QueuedFrom) {
-			v.QueuedFrom = "" // optional; the queued entry it names was left out
+			v.QueuedFrom = "" // optional; the entry it names was left out
+		}
+		if r.copiesLeftTrigger(e, v.Source) {
+			add("/source", "an item's source copies the trigger of a queued input left out")
+		}
+	case *agentsession.RunEntry:
+		if v.IsStart() && r.copiesLeftTrigger(e, v.Trigger) {
+			add("/trigger", "a run start's trigger copies the trigger of a queued input left out")
+		}
+	case *agentsession.LinkEntry:
+		if v.Rel == agentsession.RelJudgedBy && v.Target != "" && r.targetGone(v.Target) != 0 {
+			v.Target = "" // optional; the entry it judged was left out
+		}
+	case *agentsession.BranchSummaryEntry:
+		if pl := r.placed[v.From]; pl != nil && pl.fate != kept {
+			add("/summary", "a branch summary whose branch was left out: the summary restates it, kept")
 		}
 	case *agentsession.ConfigEntry:
 		if v.Omit != nil && r.keepItems(&v.Omit.Items) && v.Omit.Reasoning == "" && len(v.Omit.Items) == 0 {
@@ -706,9 +906,44 @@ func (r *redaction) fixRefs(e, n agentsession.Entry, parent string) (map[string]
 		if r.keepItems(&v.Config.Omit.Items) && v.Config.Omit.Reasoning == "" && len(v.Config.Omit.Items) == 0 {
 			v.Config.Omit = agentsession.Omit{}
 		}
-		v.Pinned = r.pinned(oc, v.Pinned)
+		if r.leftBefore(oc) {
+			add("/summary", "a compaction whose summary covers entries left out before first_kept: it restates them, kept")
+		}
+		v.Pinned = r.pinned(oc, v.Pinned, add)
 	}
 	return override, nil
+}
+
+// copiesLeftTrigger reports whether t, a trigger the kept entry e
+// carries, is the trigger of a queued input left out on its path.
+func (r *redaction) copiesLeftTrigger(e agentsession.Entry, t *agentsession.Trigger) bool {
+	if t == nil || !r.leftOut {
+		return false
+	}
+	for _, p := range r.original.Path(e.Base().ID) {
+		q, ok := p.(*agentsession.QueuedEntry)
+		if ok && !r.isKept(q.ID) && q.Trigger.Equal(t) {
+			return true
+		}
+	}
+	return false
+}
+
+// leftBefore reports whether an entry before the compaction oc's
+// first_kept on its path was left out.
+func (r *redaction) leftBefore(oc *agentsession.CompactionEntry) bool {
+	if !r.leftOut {
+		return false
+	}
+	for _, p := range r.original.Path(oc.ID) {
+		if p.Base().ID == oc.FirstKept {
+			return false
+		}
+		if !r.isKept(p.Base().ID) {
+			return true
+		}
+	}
+	return false
 }
 
 // keepItems removes from an omit list every ID that names no kept
@@ -770,17 +1005,21 @@ func (r *redaction) firstKept(oc *agentsession.CompactionEntry) (string, error) 
 // pinned returns pins, the rewritten pinned items of the compaction oc,
 // less each whose item entries before first_kept on the path were all
 // left out: a pinned item is a copy of one such entry's item, so it
-// leaves with them, or the redaction would keep what it left out.
-func (r *redaction) pinned(oc *agentsession.CompactionEntry, pins openresponses.Items) openresponses.Items {
-	if !r.leftOut || len(oc.Pinned) == 0 || len(pins) != len(oc.Pinned) {
+// leaves with them, or the redaction would keep what it left out. Pins
+// are matched to the original's by index, and a pin to its entries by
+// its item's JSON. When anything before first_kept was left out, a pin
+// matching no entry there is kept and reported; and when an entry
+// redactor changed the number of pins, so they cannot be matched, every
+// pin is removed if any was to go, and reported.
+func (r *redaction) pinned(oc *agentsession.CompactionEntry, pins openresponses.Items, add func(at, message string)) openresponses.Items {
+	if len(oc.Pinned) == 0 || !r.leftBefore(oc) {
 		return pins
 	}
 	path := r.original.Path(oc.ID)
 	i := slices.IndexFunc(path, func(e agentsession.Entry) bool { return e.Base().ID == oc.FirstKept })
-	if i < 0 {
-		return pins
-	}
-	var out openresponses.Items
+	gone := make([]bool, len(oc.Pinned))
+	unmatched := make([]bool, len(oc.Pinned))
+	anyGone := false
 	for k, pin := range oc.Pinned {
 		want, err := json.Marshal(pin)
 		found, keptOne := false, false
@@ -794,9 +1033,27 @@ func (r *redaction) pinned(oc *agentsession.CompactionEntry, pins openresponses.
 				keptOne = keptOne || r.isKept(it.ID)
 			}
 		}
-		if !found || keptOne {
-			out = append(out, pins[k])
+		gone[k] = found && !keptOne
+		unmatched[k] = !found
+		anyGone = anyGone || gone[k]
+	}
+	if len(pins) != len(oc.Pinned) {
+		if anyGone {
+			add("/pinned", "every pinned item removed: an entry redactor changed their number, so those copying entries left out could not be told apart")
+			return nil
 		}
+		add("/pinned", "pinned items kept unmatched: an entry redactor changed their number, while entries before first_kept were left out")
+		return pins
+	}
+	var out openresponses.Items
+	for k := range pins {
+		if gone[k] {
+			continue
+		}
+		if unmatched[k] {
+			add("/pinned/"+strconv.Itoa(len(out)), "a pinned item matching no entry before first_kept kept as it is, while entries there were left out")
+		}
+		out = append(out, pins[k])
 	}
 	return out
 }
@@ -810,6 +1067,14 @@ func (r *redaction) carryRun(n *agentsession.RunEntry, e agentsession.Entry) {
 	if !n.IsEnd() || !r.leftOut {
 		return
 	}
+	// A call left out leaves the pending list whatever else holds.
+	pending := []string{}
+	for _, id := range n.Pending {
+		if call := r.callOf(e, id, ""); call == "" || r.isKept(call) {
+			pending = append(pending, id)
+		}
+	}
+	n.Pending = pending
 	var orig *agentsession.Run
 	for _, run := range agentsession.Runs(r.original.Path(e.Base().ID)) {
 		if run.End != nil && run.End.ID == e.Base().ID {
@@ -833,7 +1098,7 @@ func (r *redaction) carryRun(n *agentsession.RunEntry, e agentsession.Entry) {
 	for _, id := range run.Pending() {
 		want[id] = true
 	}
-	pending := []string{}
+	pending = []string{}
 	for _, id := range n.Pending {
 		if want[id] {
 			pending = append(pending, id)
@@ -857,14 +1122,11 @@ func (r *redaction) unmatched() error {
 	return nil
 }
 
-// checkRecords holds a redaction that left something out to the rules
-// on records wherever the original kept them: for each leaf of the
+// checkRecords holds a redaction to the rules on records wherever the
+// original kept them: for each leaf of the
 // redacted session made from an entry of the original, the records on
 // its path verify when the original's path to that entry does.
 func (r *redaction) checkRecords() error {
-	if !r.leftOut {
-		return nil
-	}
 	for _, leaf := range r.red.Leaves() {
 		le, _ := r.red.Entry(leaf)
 		spans, ok := agentsession.RedactedOf(le)
