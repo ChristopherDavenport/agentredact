@@ -526,27 +526,71 @@ func TestRedactUnverifiedHash(t *testing.T) {
 	}
 }
 
-// TestRedactSidecarImage: a sidecar image is left as it is and
-// reported, never passed silently.
+// TestRedactSidecarImage: a sidecar image is replaced by a sidecar
+// reference to the placeholder's bytes, returned as a blob under its
+// hash; an inline image in the same session stays inline; sidecar media
+// that is not an image is kept and reported.
 func TestRedactSidecarImage(t *testing.T) {
 	c := &clock{}
 	s := agentsession.New(agentsession.Header{ID: "orig-sidecar", CreatedAt: t0, Media: agentsession.MediaSidecar})
-	url := "sidecar:" + agentsession.HashText("fake blob")
-	msg := openresponses.UserMessage(&openresponses.InputImage{ImageURL: url})
+	imageURL := "sidecar:" + agentsession.HashText("FAKE-IMAGE-BLOB-0001")
+	fileURL := "sidecar:" + agentsession.HashText("FAKE-PDF-BLOB-0001")
+	msg := openresponses.UserMessage(
+		&openresponses.InputImage{ImageURL: imageURL, Detail: openresponses.ImageDetailLow},
+		&openresponses.InputFile{Filename: "fake.pdf", FileData: fileURL},
+	)
 	appendAt(t, s, c, agentsession.NewItemEntry(msg))
+	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.UserMessage(&openresponses.InputImage{ImageURL: fakeImage})))
+	turn(t, s, c, "resp-1", "I see two images")
 	res := redact(t, testProfile(), s, nil)
+
+	blob, err := placeholderBytes(DefaultImagePlaceholder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := agentsession.HashBytes(blob)
+	if len(res.Blobs) != 1 || !bytes.Equal(res.Blobs[hash], blob) {
+		t.Fatalf("blobs %v, want the placeholder's bytes under %s", res.Blobs, hash)
+	}
+	file := fileOf(t, res.Session)
+	for _, want := range []string{`"image_url":"sidecar:` + hash + `"`, `"file_data":"` + fileURL + `"`, `"image_url":"` + DefaultImagePlaceholder + `"`, `"detail":"low"`} {
+		if !bytes.Contains(file, []byte(want)) {
+			t.Errorf("the redaction lacks %s:\n%s", want, file)
+		}
+	}
+	for _, gone := range []string{imageURL, fakeImage} {
+		if bytes.Contains(file, []byte(gone)) {
+			t.Errorf("the redaction kept %s", gone)
+		}
+	}
 	if len(res.Findings) != 1 {
-		t.Fatalf("findings %+v, want one", res.Findings)
+		t.Fatalf("findings %+v, want one, for the file", res.Findings)
 	}
 	f := res.Findings[0]
-	if f.Position != 1 || f.Redactor != "images" || !strings.Contains(f.At, "image_url") || strings.Contains(f.Message, url) {
+	if f.Position != 1 || f.Redactor != "images" || !strings.Contains(f.At, "file_data") || strings.Contains(f.Message, fileURL) {
 		t.Errorf("finding %+v", f)
-	}
-	if !bytes.Contains(fileOf(t, res.Session), []byte(url)) {
-		t.Error("the sidecar reference was not kept as it was")
 	}
 	if res.Session.Header().Media != agentsession.MediaSidecar {
 		t.Error("the redaction changed the media form")
+	}
+	back, err := agentsession.Read(bytes.NewReader(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range back.Entries() {
+		if r, ok := e.(*agentsession.ResponseEntry); ok {
+			if err := back.Verify(r.ID); err != nil {
+				t.Errorf("the response does not verify: %v", err)
+			}
+		}
+	}
+	// A rerun writes the same, and a resume returns no blob for entries
+	// it did not write.
+	if again := redact(t, testProfile(), s, nil); !bytes.Equal(fileOf(t, again.Session), file) {
+		t.Error("a rerun wrote other bytes")
+	}
+	if up := redact(t, testProfile(), s, res.Session); len(up.Blobs) != 0 || len(up.Entries) != 0 {
+		t.Errorf("an up-to-date resume returned blobs %v and %d entries", up.Blobs, len(up.Entries))
 	}
 }
 

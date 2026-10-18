@@ -30,6 +30,13 @@ type Result struct {
 	// Findings are what the redaction wrote without redacting, which
 	// must be looked at before the session leaves: see [Finding].
 	Findings []Finding
+	// Blobs are the blobs the entries this call committed name that the
+	// redaction made, such as the replacement for a sidecar image
+	// ([Images]), keyed by their hash, sha256:<hex>, which their
+	// sidecar: URLs name. Redact writes none: the caller stores them
+	// beside the redacted session. A blob the redaction keeps is the
+	// original's and is not here. Nil when there are none.
+	Blobs map[string][]byte
 }
 
 // Redact applies the profile p to the session original and returns the
@@ -150,10 +157,10 @@ func Redact(p Profile, original, existing *agentsession.Session) (*Result, error
 			return nil, entryErr(origID, i+1, order[i], err)
 		}
 	}
-	res := &Result{Session: red}
+	res := &Result{Session: red, Blobs: map[string][]byte{}}
 	for i := done; i < len(order); i++ {
 		e, pos := order[i], i+1
-		n, err := redactEntry(p, f, rw, remap, original, order, pos, &res.Findings)
+		n, err := redactEntry(p, f, rw, remap, original, order, pos, &res.Findings, res.Blobs)
 		if err != nil {
 			return nil, entryErr(origID, pos, e, err)
 		}
@@ -180,6 +187,9 @@ func Redact(p Profile, original, existing *agentsession.Session) (*Result, error
 		ids[e.Base().ID] = r.ID
 		res.Entries = append(res.Entries, n)
 		res.Findings = append(res.Findings, unmetParts(red, r.ID, n, pos)...)
+	}
+	if len(res.Blobs) == 0 {
+		res.Blobs = nil
 	}
 	return res, nil
 }
@@ -238,14 +248,14 @@ func unmetParts(red *agentsession.Session, id string, n agentsession.Entry, pos 
 // redactEntry makes the redacted entry for the original's entry at pos,
 // short of its request_hash and its commit: rewritten, redacted,
 // re-pointed, marked and its ID cleared.
-func redactEntry(p Profile, f StringRedactor, rw *agentsession.Rewriter, remap agentsession.Remap, original *agentsession.Session, order []agentsession.Entry, pos int, findings *[]Finding) (agentsession.Entry, error) {
+func redactEntry(p Profile, f StringRedactor, rw *agentsession.Rewriter, remap agentsession.Remap, original *agentsession.Session, order []agentsession.Entry, pos int, findings *[]Finding, blobs map[string][]byte) (agentsession.Entry, error) {
 	e := order[pos-1]
 	body, err := rw.Rewrite(e)
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range p.Entries {
-		c := &EntryContext{Original: original, Order: order, Position: pos, redactor: redactorName(r), findings: findings}
+		c := &EntryContext{Original: original, Order: order, Position: pos, redactor: redactorName(r), findings: findings, blobs: blobs}
 		out, err := r.RedactEntry(c, body)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", c.redactor, err)
