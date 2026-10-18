@@ -665,3 +665,31 @@ func TestRedactLeavesDataURLsWithoutImages(t *testing.T) {
 		t.Errorf("text %q", got)
 	}
 }
+
+// TestRedactUnmetPartHash: a part named by the hash of a text no entry
+// holds keeps the original's hash, and is reported by its id, without
+// the hash; parts whose texts the Rewriter met are not.
+func TestRedactUnmetPartHash(t *testing.T) {
+	c := &clock{}
+	s := newOriginal("orig-unmet")
+	keys := "Never print " + fakeKey + "."
+	appendAt(t, s, c, agentsession.Settings{}.InstructionsDelta([]agentsession.InstructionPart{{ID: "keys", Text: keys}}))
+	appendAt(t, s, c, user("hello"))
+	ghost := agentsession.HashText("a fake text no entry holds")
+	appendAt(t, s, c, &agentsession.ConfigEntry{InstructionsParts: []agentsession.InstructionPart{
+		{ID: "keys", Hash: agentsession.HashText(keys)},
+		{ID: "ghost", Hash: ghost},
+	}})
+	appendAt(t, s, c, user("again"))
+	res := redact(t, testProfile(), s, nil)
+	if len(res.Findings) != 1 {
+		t.Fatalf("findings %+v, want one", res.Findings)
+	}
+	f := res.Findings[0]
+	if f.Position != 3 || f.At != "/instructions_parts/1" || f.Redactor != "redact" || !strings.Contains(f.Message, `"ghost"`) || strings.Contains(f.Message, ghost) || strings.Contains(f.Message, "a fake text") {
+		t.Errorf("finding %+v", f)
+	}
+	if _, err := agentsession.Read(bytes.NewReader(fileOf(t, res.Session))); err != nil {
+		t.Errorf("the redaction does not read: %v", err)
+	}
+}

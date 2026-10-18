@@ -72,6 +72,10 @@ and a pattern that matched its payload by chance would only corrupt the
 image. A data URL that is not base64, or a line that merely starts
 `data:`, is redacted like any other string.
 
+An instruction part named by the hash of a text no earlier entry
+holds keeps the original's hash, which can confirm a guessed text;
+`Redact` reports each such part in `Result.Findings`, by its id.
+
 A sidecar image is left as it is and reported in `Result.Findings`;
 replacing it needs a blob write, which comes with the store pass. The
 scan and the review are the backstop for what the redactors miss, not

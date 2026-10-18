@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/ChristopherDavenport/agentsession"
 )
@@ -72,6 +73,14 @@ type Result struct {
 // naming a position past the original's end. Entries appended to it
 // natively stay where they are. On an error existing may hold some of
 // the new entries; discard it and read it again.
+//
+// An instruction part named by the hash of a text the Rewriter never
+// met, in no entry of the original before it, keeps the original's
+// hash, since the Rewriter has no rewritten text to name: the redacted
+// session then does not hash independently there, and the hash can
+// confirm a guessed text. Redact reports each such part as a [Finding]
+// with its entry's position, its pointer and the part's id, never its
+// hash or text.
 //
 // An error from agentsession, such as [agentsession.ErrInstructionsJoin]
 // or [agentsession.ErrKeyCollision], is wrapped with the position and
@@ -152,8 +161,60 @@ func Redact(p Profile, original, existing *agentsession.Session) (*Result, error
 		}
 		ids[e.Base().ID] = r.ID
 		res.Entries = append(res.Entries, n)
+		res.Findings = append(res.Findings, unmetParts(red, r.ID, n, pos, e.Base().ID)...)
 	}
 	return res, nil
+}
+
+// unmetParts reports each instruction part of n, committed to red as
+// id, that is named by a hash the redacted session cannot resolve on
+// its path: a hash of text the Rewriter never met, which is the
+// original's hash still. It names the part by its index and its id,
+// never by its hash or text.
+func unmetParts(red *agentsession.Session, id string, n agentsession.Entry, pos int, origID string) []Finding {
+	var (
+		parts []agentsession.InstructionPart
+		at    string
+	)
+	switch v := n.(type) {
+	case *agentsession.ConfigEntry:
+		parts, at = v.InstructionsParts, "/instructions_parts/"
+	case *agentsession.CompactionEntry:
+		parts, at = v.Config.InstructionsParts, "/config/instructions_parts/"
+	default:
+		return nil
+	}
+	var byHash []int
+	for i, part := range parts {
+		if part.Text == "" && part.Hash != "" {
+			byHash = append(byHash, i)
+		}
+	}
+	if len(byHash) == 0 {
+		return nil
+	}
+	finding := func(i int, message string) Finding {
+		return Finding{Position: pos, Entry: origID, At: at + strconv.Itoa(i), Redactor: "redact", Message: message}
+	}
+	var out []Finding
+	ctx, err := red.ContextAt(id)
+	if err != nil {
+		for _, i := range byHash {
+			out = append(out, finding(i, fmt.Sprintf("instruction part %q is named by a hash that could not be checked against the redacted session, which may be the original's", parts[i].ID)))
+		}
+		return out
+	}
+	inForce := map[string]agentsession.InstructionPart{}
+	for _, part := range ctx.Settings.InstructionsParts {
+		inForce[part.ID] = part
+	}
+	for _, i := range byHash {
+		if now, ok := inForce[parts[i].ID]; ok && !now.Unresolved() {
+			continue
+		}
+		out = append(out, finding(i, fmt.Sprintf("instruction part %q keeps the original's hash: its text is in no entry the redaction was given, so the hash was not rewritten, and it can confirm a guessed text", parts[i].ID)))
+	}
+	return out
 }
 
 // redactEntry makes the redacted entry for the original's entry at pos,

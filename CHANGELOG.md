@@ -38,3 +38,6 @@ versions may break the API.
   `Chain`) passes a string that is wholly a base64 data URL untouched,
   so a pattern matching an inline image's payload by chance no longer
   corrupts it when a profile has no `Images`.
+- Added: `Redact` reports, as a `Finding` with the part's id, each
+  instruction part that keeps the original's hash because its text is in
+  no entry the redaction was given.
