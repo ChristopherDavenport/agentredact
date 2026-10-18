@@ -252,6 +252,22 @@ func forkOriginal(t *testing.T, c *clock) *agentsession.Session {
 	return f
 }
 
+// twoRootsOriginal holds two trees, each with a turn whose response
+// verifies; the leaf ends on the second.
+func twoRootsOriginal(t *testing.T, c *clock) *agentsession.Session {
+	t.Helper()
+	s := newOriginal("orig-two-roots")
+	appendAt(t, s, c, user("first tree, "+fakePassword))
+	turn(t, s, c, "resp-1", "one "+fakeKey)
+	s.ResetLeaf()
+	appendAt(t, s, c, user("second tree, in "+fakeHome))
+	turn(t, s, c, "resp-2", "two")
+	if roots := s.Roots(); len(roots) != 2 {
+		t.Fatalf("%d roots, want 2", len(roots))
+	}
+	return s
+}
+
 func fileOf(t *testing.T, s *agentsession.Session) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -341,6 +357,7 @@ func TestRedact(t *testing.T) {
 		{"instruction parts", partsOriginal},
 		{"inline image", imageOriginal},
 		{"fork", forkOriginal},
+		{"two roots", twoRootsOriginal},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			orig := tt.build(t, &clock{})
@@ -366,6 +383,7 @@ func TestRedactResume(t *testing.T) {
 		{"compaction", compactionOriginal},
 		{"instruction parts", partsOriginal},
 		{"fork", forkOriginal},
+		{"two roots", twoRootsOriginal},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c := &clock{}
@@ -615,6 +633,30 @@ func TestRedactWrapsAgentsessionErrors(t *testing.T) {
 	if !strings.Contains(err.Error(), "entry 2") || !strings.Contains(err.Error(), id) {
 		t.Errorf("%v does not name entry 2 (%s)", err, id)
 	}
+}
+
+// TestRedactResumeNewRoot: an original that grows a third root after it
+// was redacted resumes into a redaction that equals a fresh one.
+func TestRedactResumeNewRoot(t *testing.T) {
+	c := &clock{}
+	orig := twoRootsOriginal(t, c)
+	p := testProfile()
+	first := redact(t, p, orig, nil)
+	orig.ResetLeaf()
+	appendAt(t, orig, c, user("third tree, "+fakeKey))
+	turn(t, orig, c, "resp-3", "three")
+	grown := redact(t, p, orig, first.Session)
+	if len(grown.Entries) != 3 {
+		t.Errorf("resume wrote %d entries, want 3", len(grown.Entries))
+	}
+	if roots := grown.Session.Roots(); len(roots) != 3 {
+		t.Errorf("the redaction has %d roots, want 3", len(roots))
+	}
+	fresh := redact(t, p, orig, nil)
+	if a, b := fileOf(t, grown.Session), fileOf(t, fresh.Session); !bytes.Equal(a, b) {
+		t.Errorf("the resumed redaction differs from a fresh one:\n%s\n---\n%s", a, b)
+	}
+	checkRedaction(t, p, orig, fresh)
 }
 
 func TestChainLeavesBase64DataURLs(t *testing.T) {
