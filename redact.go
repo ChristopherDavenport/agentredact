@@ -24,8 +24,9 @@ type Result struct {
 	// nothing is written to a store.
 	Session *agentsession.Session
 	// Entries are the entries this call committed to Session, in
-	// order, their IDs set: all of them for a new session, and only the
-	// new ones for a resumed one, which is what a store appends.
+	// order, their IDs set, block placeholders included: all of them for
+	// a new session, and only the new ones for a resumed one, which is
+	// what a store appends.
 	Entries []agentsession.Entry
 	// Findings are what the redaction wrote without redacting, which
 	// must be looked at before the session leaves: see [Finding].
@@ -40,18 +41,90 @@ type Result struct {
 }
 
 // Redact applies the profile p to the session original and returns the
-// redacted session, in memory. Each entry of the original, in its file
-// order ([agentsession.FileOrder]), becomes one entry of the redaction:
-// its strings rewritten by p's string redactors through one
-// [agentsession.Rewriter], then p's entry redactors applied in order,
-// its references re-pointed with [agentsession.RemapRefs] to the
-// entries already written, and marked redacted with its position,
-// [n], counting from 1 ([agentsession.SetRedacted]). A response is then
-// given the request_hash its request rebuilds to in the redacted
-// session ([agentsession.Session.SetRequestHash]), unless its
-// request_hash did not verify in the original, or it had none, when it
-// gets none, so the redaction never certifies a request the original
-// could not. Then it is committed.
+// redacted session, in memory.
+//
+// First p's session redactors choose the branches to leave out
+// ([SessionRedactor]); the entries they leave out reach no other
+// redactor and their positions appear nowhere. Then each other entry of
+// the original, in its file order ([agentsession.FileOrder]), has its
+// strings rewritten by p's string redactors through one
+// [agentsession.Rewriter], and p's entry redactors applied in order. An
+// [EntryRedactor] changes the entry; a [StructureRedactor] may leave it
+// out, fold it into a block placeholder, or write several entries in
+// its place. Each entry written has its references re-pointed with
+// [agentsession.RemapRefs] to the entries already written, and is
+// marked redacted with the position it was made from, [n], counting
+// from 1, or [] when a structural redactor added it
+// ([agentsession.SetRedacted]). A response is then given the
+// request_hash its request rebuilds to in the redacted session
+// ([agentsession.Session.SetRequestHash]), unless its request_hash did
+// not verify in the original, or it had none, when it gets none, so the
+// redaction never certifies a request the original could not. Then it
+// is committed.
+//
+// # Leaving entries out
+//
+// An entry left out with nothing in its place has the entries under it
+// hang from the nearest entry kept above it. An entry folded into a
+// block placeholder joins the run of folded entries above it on its
+// path; when a kept entry follows the run, Redact writes the run's
+// placeholder under the entry kept above the run, and the kept entry
+// under it. The placeholder is a custom entry under [PlaceholderNS],
+// marked with the run's positions, [[from, to]] where they are
+// consecutive in file order and several elements where they are not,
+// its timestamp the first entry's, its data the number of entries; it
+// adds nothing to any request. A run no kept entry follows yet, at the
+// end of a path, is withheld: nothing is written for it until the
+// original grows a kept entry under it, so a block is written once, as
+// one placeholder, however the run grew.
+//
+// A member of a kept entry that named an entry left out names what was
+// kept in its place, the block placeholder or the nearest entry kept
+// above it (a label's, outcome's or judged_by link's target, a branch
+// summary's from), or is removed where naming another entry would
+// change what it says: a parents element left out with no placeholder,
+// a queued_from, an omit item. A required member with nothing in its
+// place is refused with [ErrNoPlace].
+//
+// Some entries belong to a group, and leaving out its head leaves out
+// the group, in the same way (folded or with nothing in its place):
+//
+//   - a call: its function_call item, and after it every
+//     function_call_output, dispatch and decision bound to it, every
+//     subsession or peer link with its call_id, cancel notices among
+//     them, and every custom entry with its call_id;
+//   - a run: its start and the end that closes it on the path;
+//   - a response and the items it envelopes ([agentsession.OutputEntries]),
+//     where the items come first: leaving out every one of them leaves
+//     out the response, and leaving out some keeps it, enveloping the
+//     rest.
+//
+// Leaving out a group's member while its head is kept is refused, since
+// the head was already written when the member is met: an output,
+// dispatch, decision or link of a kept call ([ErrSplitsCall]), a
+// response whose items are kept ([ErrSplitsResponse]), a run end whose
+// start is kept ([ErrSplitsRun]). So is a config entry
+// ([ErrLeavesOutConfig]). Where leaving out changes a kept entry's
+// meaning, Redact carries it through: a run end, when the original's run
+// verified, gets the pending list and, unless it was error or
+// interrupted, the reason its redacted segment reads; a compaction's
+// pinned item whose item entries were all left out leaves with them; an
+// omit list loses the IDs left out, and an omit that only added them is
+// dropped; a compaction's first_kept left out names the first entry
+// standing for one from it to the compaction, or, when every one was
+// left out with nothing in its place, the entry in its place when that
+// adds nothing to the context, and is otherwise refused
+// ([ErrFirstKept]). Last, when anything was left out, each leaf's path
+// whose original verified its records is held to
+// [agentsession.Session.VerifyRecords]; a failure, such as a run that
+// resumes a call left out, is refused with [ErrBreaksRecords]. The rules
+// agentsession holds a commit to, such as an answer for a call whose
+// only dispatch was on a branch left out, refuse there, wrapped as
+// below. Redact writes no base, so the base rule holds of any root it
+// leaves: an entry whose ancestors were all left out is a root. One
+// consequence is left as it falls: a queued entry kept whose draining
+// item was left out reads, as the format has it, as an input still owed
+// unless a run end follows it on the path.
 //
 // The header is new: it carries redacted, redacted_from naming the
 // original and p, and the ID [agentsession.RedactedSessionID] derives
@@ -85,15 +158,24 @@ type Result struct {
 //
 // existing, when not nil, is the redaction of original under p that an
 // earlier call made, as a store holds it: Redact appends to it, and
-// returns it, only the original's entries past the highest position its
-// entries name, so a redacted session grows with its original and
-// equals, entry for entry, a fresh redaction of the grown original. Its
-// header is kept. Redact refuses, with [ErrNotThisRedaction], an
-// existing session whose redacted_from names another original or
-// another profile, whose ID is not the derived one, that has a base, or
-// one of whose entries made from one position is not of the type of the
-// original's entry there; and, wrapping [agentsession.ErrStaleOriginal],
-// one naming a position past the original's end. Entries appended to it
+// returns it, so a redacted session grows with its original and equals,
+// entry for entry, a fresh redaction of the grown original. What Redact
+// writes at a position depends on the original's entries up to it
+// alone, provided the redactors' decisions do, so the work done is
+// every position up to the highest any marked entry of existing names,
+// ranges included. Redact replays those positions, matching each entry
+// a fresh redaction would write there against existing rather than
+// writing it, which restores the runs still withheld, and writes the
+// rest; a position past it that was left out is decided again, the same
+// way, and still writes nothing. Its header is kept. Redact refuses,
+// with [ErrNotThisRedaction], an existing session whose redacted_from
+// names another original or another profile, whose ID is not the
+// derived one, that has a base, or one of whose entries made from one
+// position is not of the type a fresh redaction writes there; wrapping
+// [agentsession.ErrStaleOriginal], one naming a position past the
+// original's end; and, with [ErrResumeDiverged], one that holds what a
+// fresh redaction would not write, or lacks what it would, as after a
+// [KeepLeafPath] leaf moved to another branch. Entries appended to it
 // natively stay where they are. On an error existing may hold some of
 // the new entries; discard it and read it again.
 //
@@ -115,83 +197,61 @@ func Redact(p Profile, original, existing *agentsession.Session) (*Result, error
 	if original == nil {
 		return nil, errors.New("agentredact: no original session")
 	}
-	origID := original.ID()
-	redID := agentsession.RedactedSessionID(origID, p.Name)
-	f := p.StringFunc()
-	order := agentsession.FileOrder(original)
-	ids := map[string]string{}
-	done := 0
-	red := existing
-	if red == nil {
-		h, err := redactedHeader(p, original.Header(), redID, f)
+	r := &redaction{
+		p:        p,
+		f:        p.StringFunc(),
+		original: original,
+		order:    agentsession.FileOrder(original),
+		origID:   original.ID(),
+		placed:   map[string]*placed{},
+	}
+	r.redID = agentsession.RedactedSessionID(r.origID, p.Name)
+	r.rw = agentsession.NewRewriter(r.f)
+	if existing == nil {
+		h, err := redactedHeader(p, original.Header(), r.redID, r.f)
 		if err != nil {
 			return nil, err
 		}
-		red = agentsession.New(h)
+		r.red = agentsession.New(h)
 	} else {
-		var err error
-		if done, err = resumePoint(p, origID, redID, existing, order, ids); err != nil {
+		if err := r.resume(existing); err != nil {
 			return nil, err
 		}
+		r.red = existing
 	}
-	remap := agentsession.Remap{
-		Entry: func(session, entry string) (string, bool) {
-			if session != "" && session != origID {
-				return "", false
-			}
-			id, ok := ids[entry]
-			return id, ok
-		},
-		Session: func(id string) (string, bool) {
-			if id == origID {
-				return redID, true
-			}
-			return "", false
-		},
+	r.res = &Result{Session: r.red, Blobs: map[string][]byte{}}
+	out, err := r.sessions()
+	if err != nil {
+		return nil, err
 	}
-	rw := agentsession.NewRewriter(f)
-	// The Rewriter meets every entry from the first, so a part named by
-	// hash in a new entry names the rewritten text an earlier one holds.
-	for i := 0; i < done; i++ {
-		if _, err := rw.Rewrite(order[i]); err != nil {
-			return nil, entryErr(origID, i+1, order[i], err)
-		}
-	}
-	res := &Result{Session: red, Blobs: map[string][]byte{}}
-	for i := done; i < len(order); i++ {
-		e, pos := order[i], i+1
-		n, err := redactEntry(p, f, rw, remap, original, order, pos, &res.Findings, res.Blobs)
+	for i, e := range r.order {
+		pos := i + 1
+		// The Rewriter meets every entry from the first, those left out
+		// and those already redacted among them, so a part named by hash
+		// names the rewritten text an earlier entry holds.
+		body, err := r.rw.Rewrite(e)
 		if err != nil {
-			return nil, entryErr(origID, pos, e, err)
+			return nil, entryErr(r.origID, pos, e, err)
 		}
-		if n.Base().Parent == "" && red.Len() > 0 {
-			// A root: Commit puts an entry with no parent under the leaf,
-			// and SetRequestHash rebuilds a response's request there.
-			red.ResetLeaf()
+		if out[i] {
+			r.placed[e.Base().ID] = &placed{fate: dropped, pos: pos}
+			r.leftOut = true
+			continue
 		}
-		if resp, ok := n.(*agentsession.ResponseEntry); ok {
-			if resp.RequestHash != "" && original.Verify(e.Base().ID) != nil {
-				resp.RequestHash = "" // never certify a request the original could not
-			}
-			if err := red.SetRequestHash(resp); err != nil {
-				return nil, entryErr(origID, pos, e, err)
-			}
+		if err := r.entry(pos, e, body); err != nil {
+			return nil, entryErr(r.origID, pos, e, err)
 		}
-		r, err := red.Commit(n)
-		if err != nil {
-			return nil, entryErr(origID, pos, e, err)
-		}
-		if r.Outcome == agentsession.Held {
-			return nil, entryErr(origID, pos, e, errors.New("the redacted session already holds the entry"))
-		}
-		ids[e.Base().ID] = r.ID
-		res.Entries = append(res.Entries, n)
-		res.Findings = append(res.Findings, unmetParts(red, r.ID, n, pos)...)
 	}
-	if len(res.Blobs) == 0 {
-		res.Blobs = nil
+	if err := r.unmatched(); err != nil {
+		return nil, err
 	}
-	return res, nil
+	if err := r.checkRecords(); err != nil {
+		return nil, err
+	}
+	if len(r.res.Blobs) == 0 {
+		r.res.Blobs = nil
+	}
+	return r.res, nil
 }
 
 // unmetParts reports each instruction part of n, committed to red as
@@ -243,59 +303,6 @@ func unmetParts(red *agentsession.Session, id string, n agentsession.Entry, pos 
 		out = append(out, finding(i, fmt.Sprintf("instruction part %q keeps the original's hash: its text is in no entry the redaction was given, so the hash was not rewritten, and it can confirm a guessed text", parts[i].ID)))
 	}
 	return out
-}
-
-// redactEntry makes the redacted entry for the original's entry at pos,
-// short of its request_hash and its commit: rewritten, redacted,
-// re-pointed, marked and its ID cleared.
-func redactEntry(p Profile, f StringRedactor, rw *agentsession.Rewriter, remap agentsession.Remap, original *agentsession.Session, order []agentsession.Entry, pos int, findings *[]Finding, blobs map[string][]byte) (agentsession.Entry, error) {
-	e := order[pos-1]
-	body, err := rw.Rewrite(e)
-	if err != nil {
-		return nil, err
-	}
-	for _, r := range p.Entries {
-		c := &EntryContext{Original: original, Order: order, Position: pos, redactor: redactorName(r), findings: findings, blobs: blobs}
-		out, err := r.RedactEntry(c, body)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", c.redactor, err)
-		}
-		if out == nil || out.EntryType() != e.EntryType() {
-			return nil, fmt.Errorf("%s: returned no %s entry", c.redactor, e.EntryType())
-		}
-		body = out
-	}
-	if err := inspect(body, f, pos, findings); err != nil {
-		return nil, err
-	}
-	rr, err := agentsession.RemapRefs(body, remap)
-	if err != nil {
-		return nil, err
-	}
-	for _, u := range rr.Unmapped {
-		if u.Entry != "" && (u.Session == "" || u.Session == original.ID()) {
-			return nil, fmt.Errorf("%s names an entry the redaction has not written", u.At)
-		}
-		*findings = append(*findings, Finding{
-			Position: pos,
-			At:       u.At,
-			Redactor: "redact",
-			Message:  "a reference into another session kept as written: it names that session's original entry or ID, which can confirm a guess, until the store pass re-points it",
-		})
-	}
-	if rr.Opaque {
-		*findings = append(*findings, Finding{
-			Position: pos,
-			Redactor: "redact",
-			Message:  "extension entry: its parent and parents were re-pointed, but a member of its own may still name an entry of the original",
-		})
-	}
-	n := rr.Entry
-	n.Base().ID = ""
-	if err := agentsession.SetRedacted(n, []agentsession.Span{{From: pos, To: pos}}); err != nil {
-		return nil, err
-	}
-	return n, nil
 }
 
 // redactedHeader is the header of a new redaction of the original whose
@@ -363,51 +370,6 @@ func redactedHeader(p Profile, h agentsession.Header, redID string, f StringReda
 		return agentsession.Header{}, err
 	}
 	return n, nil
-}
-
-// resumePoint checks that existing is the redaction of the original
-// under p, fills ids with the original's entries it already holds
-// redactions of, and returns the highest original position its entries
-// name: the original's entries up to it are done.
-func resumePoint(p Profile, origID, redID string, existing *agentsession.Session, order []agentsession.Entry, ids map[string]string) (int, error) {
-	h := existing.Header()
-	switch {
-	case !h.Redacted || h.RedactedFrom == nil:
-		return 0, fmt.Errorf("%w: %s is not a redacted session", ErrNotThisRedaction, h.ID)
-	case h.RedactedFrom.Session != origID:
-		return 0, fmt.Errorf("%w: %s was redacted from %s, not %s", ErrNotThisRedaction, h.ID, h.RedactedFrom.Session, origID)
-	case h.RedactedFrom.Profile != p.Name:
-		return 0, fmt.Errorf("%w: %s was redacted under profile %q, not %q", ErrNotThisRedaction, h.ID, h.RedactedFrom.Profile, p.Name)
-	case h.ID != redID:
-		return 0, fmt.Errorf("%w: %s is not the ID the original and profile derive, %s", ErrNotThisRedaction, h.ID, redID)
-	case h.Base != "":
-		return 0, fmt.Errorf("%w: %s has a base; resuming a fork of a redaction is the store pass's", ErrNotThisRedaction, h.ID)
-	}
-	done := 0
-	held := agentsession.FileOrder(existing)
-	for _, e := range held {
-		spans, _ := agentsession.RedactedOf(e) // none on an entry appended natively
-		for _, sp := range spans {
-			if sp.To > len(order) {
-				return 0, fmt.Errorf("agentredact: %s: entry %s names position %d of %s, which holds %d entries: %w", h.ID, e.Base().ID, sp.To, origID, len(order), agentsession.ErrStaleOriginal)
-			}
-			done = max(done, sp.To)
-		}
-	}
-	for _, e := range held {
-		spans, _ := agentsession.RedactedOf(e)
-		if len(spans) != 1 || spans[0].From != spans[0].To {
-			continue
-		}
-		o := order[spans[0].From-1]
-		if o.EntryType() != e.EntryType() {
-			return 0, fmt.Errorf("%w: %s: the entry redacted from position %d is a %s, and the original's there a %s", ErrNotThisRedaction, h.ID, spans[0].From, e.EntryType(), o.EntryType())
-		}
-		if _, seen := ids[o.Base().ID]; !seen {
-			ids[o.Base().ID] = e.Base().ID
-		}
-	}
-	return done, nil
 }
 
 // entryErr wraps err with the entry of the original it came from.

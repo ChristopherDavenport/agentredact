@@ -32,7 +32,12 @@ type Profile struct {
 	Strings []StringRedactor
 	// Entries are applied in order to each entry after its strings are
 	// rewritten, and, those that are [HeaderRedactor]s, to the header.
+	// Those that are [StructureRedactor]s may leave an entry out, fold
+	// it into a block placeholder or write several in its place.
 	Entries []EntryRedactor
+	// Sessions choose whole branches to leave out, before any entry is
+	// redacted: see [SessionRedactor].
+	Sessions []SessionRedactor
 }
 
 // ErrProfileName is returned for a profile name [ValidateProfileName]
@@ -101,6 +106,11 @@ func (p Profile) Validate() error {
 	for i, e := range p.Entries {
 		if e == nil {
 			return fmt.Errorf("agentredact: profile %s: entry redactor %d is nil", p.Name, i)
+		}
+	}
+	for i, s := range p.Sessions {
+		if s == nil {
+			return fmt.Errorf("agentredact: profile %s: session redactor %d is nil", p.Name, i)
 		}
 	}
 	return nil

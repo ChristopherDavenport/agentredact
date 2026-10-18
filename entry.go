@@ -25,11 +25,11 @@ import (
 // error; it never passes it silently.
 //
 // One entry in, one entry out. A redactor that leaves an entry out,
-// writes a placeholder for a run of them, merges or splits entries, or
-// drops a branch, changes the session's structure and is not an
-// EntryRedactor: it will be an interface of its own beside this one,
-// which Redact checks for on each redactor of a profile, so redactors
-// written to this one keep working unchanged.
+// folds a run of them into a block placeholder or writes several
+// entries in one's place changes the session's structure: it is a
+// [StructureRedactor], which [Redact] checks for on each redactor of a
+// profile, so redactors written to this interface keep working
+// unchanged. One that drops a branch is a [SessionRedactor].
 type EntryRedactor interface {
 	RedactEntry(c *EntryContext, e agentsession.Entry) (agentsession.Entry, error)
 }

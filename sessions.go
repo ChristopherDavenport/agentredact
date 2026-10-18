@@ -1,0 +1,98 @@
+package agentredact
+
+import (
+	"fmt"
+
+	"github.com/ChristopherDavenport/agentsession"
+)
+
+// SessionRedactor chooses whole branches of an original to leave out.
+// [Redact] asks each of a profile's session redactors once, before it
+// redacts any entry, and leaves out every entry any of them selects:
+// such an entry reaches no entry redactor, needs no placeholder, and
+// its position appears in no redacted entry. Entries kept elsewhere
+// that named one name what was kept in its place, as [Redact] says.
+//
+// LeaveOut returns, for each entry of order (the original's file order,
+// prefix included), whether to leave it out. It leaves out whole
+// branches: an entry under one it leaves out is left out too, and
+// Redact refuses one that is kept with [ErrSessionRedactor]. It must be
+// deterministic. A choice that rests on each entry's path alone, as
+// [DropBranches] given a predicate over the path makes, is the same
+// however the original grows, so a resumed redaction stays equal to a
+// fresh one; one that reads the whole session, as [KeepLeafPath] does,
+// may change as the original grows, and Redact then refuses to resume
+// with [ErrResumeDiverged] rather than write a redaction no fresh one
+// would.
+type SessionRedactor interface {
+	LeaveOut(original *agentsession.Session, order []agentsession.Entry) ([]bool, error)
+}
+
+// KeepLeafPath keeps only the entries on the path to the original's
+// leaf ([agentsession.Session.Leaf]: in a store its head, in a file what
+// the file's rules give), prefix included, and leaves out every other
+// branch. The redaction then grows with the original as long as the
+// leaf moves along its branch; once the leaf moves to another branch,
+// entries already redacted are off the new path, and resuming is
+// refused with [ErrResumeDiverged].
+func KeepLeafPath() SessionRedactor { return keepLeafPath{} }
+
+type keepLeafPath struct{}
+
+func (keepLeafPath) Name() string { return "keep-leaf-path" }
+
+func (keepLeafPath) LeaveOut(original *agentsession.Session, order []agentsession.Entry) ([]bool, error) {
+	on := map[string]bool{}
+	if leaf := original.Leaf(); leaf != "" {
+		for _, e := range original.Path(leaf) {
+			on[e.Base().ID] = true
+		}
+	}
+	out := make([]bool, len(order))
+	for i, e := range order {
+		out[i] = !on[e.Base().ID]
+	}
+	return out, nil
+}
+
+// DropBranches leaves out every entry drop selects, with everything
+// under it: a branch, here, is an entry and the entries below it. drop
+// is asked about each entry in file order that is not already under one
+// it selected; c.Entry() is the original entry, and c.Path() its path.
+// It must be deterministic. A drop that reads the entry and its path
+// alone keeps resuming equal to a fresh redaction, and a fork's prefix
+// equal to its origin's; one that reads what came after, such as the
+// entry's siblings, may not (see [SessionRedactor]).
+func DropBranches(drop func(c *EntryContext) bool) SessionRedactor {
+	return dropBranches{drop: drop}
+}
+
+type dropBranches struct {
+	drop func(c *EntryContext) bool
+}
+
+func (dropBranches) Name() string { return "drop-branches" }
+
+func (r dropBranches) LeaveOut(original *agentsession.Session, order []agentsession.Entry) ([]bool, error) {
+	if r.drop == nil {
+		return nil, fmt.Errorf("agentredact: drop-branches: no drop function")
+	}
+	out := make([]bool, len(order))
+	dropped := map[string]bool{}
+	for i, e := range order {
+		b := e.Base()
+		if dropped[b.Parent] || r.drop(&EntryContext{Original: original, Order: order, Position: i + 1}) {
+			out[i] = true
+			dropped[b.ID] = true
+		}
+	}
+	return out, nil
+}
+
+// sessionName is the name an error gives a session redactor.
+func sessionName(r SessionRedactor) string {
+	if n, ok := r.(interface{ Name() string }); ok {
+		return n.Name()
+	}
+	return "session"
+}
