@@ -176,8 +176,9 @@ type Result struct {
 // original's end; and, with [ErrResumeDiverged], one that holds what a
 // fresh redaction would not write, or lacks what it would, as after a
 // [KeepLeafPath] leaf moved to another branch. Entries appended to it
-// natively stay where they are. On an error existing may hold some of
-// the new entries; discard it and read it again.
+// natively stay where they are. Those refusals come before anything is
+// written to existing; on any later error existing may hold some of the
+// new entries, so discard it and read it again.
 //
 // An instruction part named by the hash of a text the Rewriter never
 // met, in no entry of the original before it, keeps the original's
@@ -226,6 +227,13 @@ func Redact(p Profile, original, existing *agentsession.Session) (*Result, error
 	}
 	for i, e := range r.order {
 		pos := i + 1
+		if pos == r.done+1 {
+			// Replayed: refuse an existing redaction a fresh one does not
+			// write before anything is written to it.
+			if err := r.unmatched(); err != nil {
+				return nil, err
+			}
+		}
 		// The Rewriter meets every entry from the first, those left out
 		// and those already redacted among them, so a part named by hash
 		// names the rewritten text an earlier entry holds.
@@ -242,8 +250,10 @@ func Redact(p Profile, original, existing *agentsession.Session) (*Result, error
 			return nil, entryErr(r.origID, pos, e, err)
 		}
 	}
-	if err := r.unmatched(); err != nil {
-		return nil, err
+	if r.done == len(r.order) {
+		if err := r.unmatched(); err != nil {
+			return nil, err
+		}
 	}
 	if err := r.checkRecords(); err != nil {
 		return nil, err

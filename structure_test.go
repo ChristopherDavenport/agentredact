@@ -519,8 +519,12 @@ func TestKeepLeafPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	appendAt(t, s, c, user("branch C"))
+	before := fileOf(t, red)
 	if _, err := Redact(p, s, red); !errors.Is(err, ErrResumeDiverged) {
 		t.Errorf("resuming after the leaf moved: %v, want ErrResumeDiverged", err)
+	}
+	if !bytes.Equal(fileOf(t, red), before) {
+		t.Error("the refused resume wrote to the existing redaction")
 	}
 }
 
@@ -757,4 +761,24 @@ func TestForkSharedPrefix(t *testing.T) {
 	if a, b := shared(ro.Session), shared(rf.Session); len(a) != 5 || strings.Join(a, " ") != strings.Join(b, " ") {
 		t.Errorf("the shared prefix differs:\n%v\n%v", a, b)
 	}
+}
+
+// TestLeftOutReportsNothing: what the entry redactors report or add for
+// an entry a structural redactor then leaves out goes with it: no
+// finding names it and no blob is returned for it.
+func TestLeftOutReportsNothing(t *testing.T) {
+	c := &clock{}
+	s := agentsession.New(agentsession.Header{ID: "orig-left-media", CreatedAt: t0, Media: agentsession.MediaSidecar})
+	appendAt(t, s, c, user("first"))
+	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.UserMessage(
+		&openresponses.InputImage{ImageURL: "sidecar:" + agentsession.HashText("FAKE-IMAGE-BLOB-0002")},
+		&openresponses.InputFile{Filename: "fake.pdf", FileData: "sidecar:" + agentsession.HashText("FAKE-PDF-BLOB-0002")},
+	)))
+	turn(t, s, c, "resp-1", "one")
+	p := structProfile("test.media@1", []EntryRedactor{LeaveOut(atPositions(2))})
+	res := redact(t, p, s, nil)
+	if len(res.Findings) != 0 || res.Blobs != nil {
+		t.Errorf("findings %+v and blobs %v for an entry left out", res.Findings, res.Blobs)
+	}
+	checkStructural(t, p, s, res, []string{"1", "3", "4"})
 }

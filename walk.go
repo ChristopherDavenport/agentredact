@@ -155,8 +155,19 @@ func (r *redaction) entry(pos int, e, body agentsession.Entry) error {
 			block bool
 			err   error
 		)
-		if made, block, err = r.chain(pos, body, replay); err != nil {
+		// What the redactors report or add for an entry then left out
+		// is dropped with it: a finding names an entry written, and a
+		// blob is one a written entry names.
+		found, blobs := len(r.res.Findings), map[string][]byte{}
+		if made, block, err = r.chain(pos, body, replay, blobs); err != nil {
 			return err
+		}
+		if len(made) == 0 {
+			r.res.Findings = r.res.Findings[:found]
+		} else {
+			for h, b := range blobs {
+				r.res.Blobs[h] = b
+			}
 		}
 		if len(made) == 0 {
 			how = omitted
@@ -353,17 +364,17 @@ func (r *redaction) runStart(e agentsession.Entry) string {
 // chain applies the profile's entry redactors, in order, to body, the
 // rewritten entry at pos, and returns the entries to write in its
 // place: none when a structural redactor left it out, and block set
-// when one folded it into a block placeholder. Replaying, nothing is
-// reported and no blob is kept, since that was done when the entry was
-// written.
-func (r *redaction) chain(pos int, body agentsession.Entry, replay bool) ([]Made, bool, error) {
+// when one folded it into a block placeholder. The blobs the redactors
+// add go in kept. Replaying, nothing is reported and no blob is kept,
+// since that was done when the entry was written.
+func (r *redaction) chain(pos int, body agentsession.Entry, replay bool, kept map[string][]byte) ([]Made, bool, error) {
 	cur := []Made{{Entry: body}}
 	var (
 		findings *[]Finding
 		blobs    map[string][]byte
 	)
 	if !replay {
-		findings, blobs = &r.res.Findings, r.res.Blobs
+		findings, blobs = &r.res.Findings, kept
 	}
 	for _, red := range r.p.Entries {
 		c := &EntryContext{Original: r.original, Order: r.order, Position: pos, redactor: redactorName(red), findings: findings, blobs: blobs}
