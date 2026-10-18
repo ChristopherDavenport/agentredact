@@ -18,7 +18,9 @@ import (
 // alone, and must keep no state between calls: Redact skips the
 // entries it already wrote when it resumes, and a profile may redact
 // many sessions at once, so what a redactor needs of earlier entries it
-// reads from [EntryContext.Order]. What it cannot redact it reports
+// reads from [EntryContext.Path], or [EntryContext.Order] where file
+// order is what it needs; a placeholder numbered along the path gives a
+// fork and its origin the same prefix. What it cannot redact it reports
 // with [EntryContext.Report], and leaves as it is or refuses with an
 // error; it never passes it silently.
 //
@@ -62,6 +64,14 @@ type EntryContext struct {
 
 	redactor string
 	findings *[]Finding
+}
+
+// Path returns the original's path to the entry, root first, the entry
+// last, as [agentsession.Session.Path] gives it: a fork's prefix
+// included. What a redactor numbers or compares along it, a fork and
+// its origin number alike in their shared prefix.
+func (c *EntryContext) Path() []agentsession.Entry {
+	return c.Original.Path(c.Entry().Base().ID)
 }
 
 // Entry returns the original entry, unredacted, that the one given to

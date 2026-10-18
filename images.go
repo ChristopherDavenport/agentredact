@@ -18,14 +18,21 @@ const DefaultImagePlaceholder = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAA
 
 // Images replaces every inline image an entry holds with placeholder, a
 // base64 data URL of an image, such as [DefaultImagePlaceholder]. An
-// inline image is a string that is a data URL of an image media type
-// (data:image/...), wherever the entry holds it: an input_image part's
-// image_url in a message, a function call's output, a compaction's
-// summary or pinned items, a queued item, or a member the format does
-// not define. The item around it is kept as it was, detail and file_id
-// included, so it stays valid and inline, as RFC 0001 requires a
-// redaction to keep media in its form. The placeholder is the same for
-// every image, so the output depends on nothing but the input.
+// inline image here is a string that is wholly a data URL of an image
+// media type (data:image/..., the scheme matched without regard to
+// case), wherever the entry holds it: an input_image part's image_url
+// in a message, a function call's output given as content parts, a
+// compaction's summary or pinned items, a queued item, or a member the
+// format does not define. The item around it is kept as it was, detail
+// and file_id included, so it stays valid and inline, as RFC 0001
+// requires a redaction to keep media in its form. The placeholder is
+// the same for every image, so the output depends on nothing but the
+// input.
+//
+// Only whole-string data URLs are replaced. An image data URL inside a
+// longer string, such as a tool's text output or markdown, is kept,
+// after the string redactors, and [Redact] reports it; so does inline
+// media that is not an image, such as an input_file's PDF.
 //
 // A sidecar reference (sidecar:sha256:...) is not replaced: replacing
 // one means writing the placeholder's blob beside the redacted session,
@@ -47,7 +54,7 @@ func (r images) RedactEntry(c *EntryContext, e agentsession.Entry) (agentsession
 	if err != nil {
 		return nil, err
 	}
-	if !bytes.Contains(data, []byte("data:")) && !bytes.Contains(data, []byte("sidecar:")) {
+	if lower := bytes.ToLower(data); !bytes.Contains(lower, []byte("data:")) && !bytes.Contains(lower, []byte("sidecar:")) {
 		return e, nil
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))

@@ -25,14 +25,17 @@ import (
 //
 // It keeps the envelope, legacy_id, and workspace in a form that keeps
 // substitutions (RFC 0001, env) as the original recorded them, but
-// says nothing of the file system: kind (local, container or remote)
-// is kept, and the rest, ref and the members the format leaves to the
-// harness, such as a host, becomes ref "[REDACTED workspace <n>]", n
-// counting the distinct workspaces the original's env entries name, in
-// file order, from 1. Two env entries naming one workspace name one
-// placeholder, and two naming different ones different placeholders,
-// so a reader still sees where a session moved to another file system.
-// An absent workspace stays absent. An env entry so blanked is valid:
+// says nothing of the file system: kind (local, container or remote),
+// as the string redactors left it, is kept, and the rest, ref and the
+// members the format leaves to the harness, such as a host, becomes ref
+// "[REDACTED workspace <n>]", n counting from 1 the distinct workspaces
+// the env entries on the entry's path name, root first, compared in
+// canonical form (members sorted, numbers by value, so 1 and 1.0 are
+// one). Along a path, two env entries naming one workspace name one
+// placeholder, and two naming different ones different placeholders, so
+// a reader still sees where a session moved to another file system; and
+// since only the path counts, a fork and its origin number their shared
+// prefix alike. An absent workspace stays absent. An env entry so blanked is valid:
 // every member of one is optional.
 //
 // It changes no other entry.
@@ -57,12 +60,19 @@ func (environment) RedactEntry(c *EntryContext, e agentsession.Entry) (agentsess
 	for k := range env.Unknown {
 		blanked[k] = true
 	}
+	kind := ""
+	if env.Workspace != nil {
+		kind = env.Workspace.Kind // as the string redactors left it
+	}
 	env.CWD, env.VCS, env.Files, env.Tools, env.Unknown = "", nil, nil, nil, nil
-	ws, err := workspacePlaceholder(c)
+	n, err := workspaceOrdinal(c)
 	if err != nil {
 		return nil, err
 	}
-	env.Workspace = ws
+	env.Workspace = nil
+	if n > 0 {
+		env.Workspace = &agentsession.Workspace{Kind: kind, Ref: fmt.Sprintf("[REDACTED workspace %d]", n)}
+	}
 	if len(env.Normalised) > 0 {
 		var kept []agentsession.Normalisation
 		for _, n := range env.Normalised {
@@ -81,24 +91,24 @@ func firstToken(at string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(t, "~1", "/"), "~0", "~")
 }
 
-// workspacePlaceholder is the workspace the entry at c's position is
-// written with: nil for an absent one, and otherwise its kind and the
-// ordinal of its canonical form among the distinct workspaces the
-// original's env entries name up to it.
-func workspacePlaceholder(c *EntryContext) (*agentsession.Workspace, error) {
+// workspaceOrdinal is the number the workspace of the original entry
+// at c's position is written with: 0 for an absent one, and otherwise
+// the ordinal of its canonical form among the distinct workspaces the
+// env entries on the entry's path name, root first.
+func workspaceOrdinal(c *EntryContext) (int, error) {
 	own, _ := c.Entry().(*agentsession.EnvEntry)
 	if own == nil || absentWorkspace(own.Workspace) {
-		return nil, nil
+		return 0, nil
 	}
 	var seen [][]byte
-	for _, e := range c.Order[:c.Position] {
+	for _, e := range c.Path() {
 		env, ok := e.(*agentsession.EnvEntry)
 		if !ok || absentWorkspace(env.Workspace) {
 			continue
 		}
 		key, err := canonicalJSON(env.Workspace)
 		if err != nil {
-			return nil, fmt.Errorf("agentredact: environment: workspace of %s: %w", e.Base().ID, err)
+			return 0, fmt.Errorf("agentredact: environment: workspace at position %d: %w", c.Position, err)
 		}
 		n := 0
 		for i, k := range seen {
@@ -111,11 +121,11 @@ func workspacePlaceholder(c *EntryContext) (*agentsession.Workspace, error) {
 			seen = append(seen, key)
 			n = len(seen)
 		}
-		if e == own {
-			return &agentsession.Workspace{Kind: own.Workspace.Kind, Ref: fmt.Sprintf("[REDACTED workspace %d]", n)}, nil
+		if e.Base().ID == own.ID {
+			return n, nil
 		}
 	}
-	return nil, fmt.Errorf("agentredact: environment: entry %s is not at position %d of the original", own.ID, c.Position)
+	return 0, fmt.Errorf("agentredact: environment: the entry at position %d is not on its own path", c.Position)
 }
 
 // absentWorkspace reports whether w is no workspace, as the
@@ -124,17 +134,17 @@ func absentWorkspace(w *agentsession.Workspace) bool {
 	return w == nil || w.Kind == "" && w.Ref == "" && len(w.Unknown) == 0
 }
 
-// canonicalJSON encodes v with every object's members sorted, so two
-// equal values give equal bytes.
+// canonicalJSON encodes v with every object's members sorted and every
+// number written by its value as JCS writes it (encoding/json writes a
+// float64 as ES6 does), so two values RFC 0001 compares equal give
+// equal bytes: 1 and 1.0 are one number.
 func canonicalJSON(v any) ([]byte, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
 	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
 	var tree any
-	if err := dec.Decode(&tree); err != nil {
+	if err := json.Unmarshal(data, &tree); err != nil {
 		return nil, err
 	}
 	return json.Marshal(tree)
