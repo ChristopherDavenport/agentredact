@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 
 	"github.com/ChristopherDavenport/agentsession"
@@ -49,18 +50,31 @@ type Result struct {
 // original and p, and the ID [agentsession.RedactedSessionID] derives
 // from the two. Of the original's header members it keeps created_at,
 // payload, records, media, parent_session and spawned_by as written;
-// gives cwd, harness's name and version, and every string inside the
-// members the format does not define, to p's string redactors; and
-// writes no base. format is the one agentsession writes. Then each of
-// p's entry redactors that is a [HeaderRedactor] redacts it, as
-// [Environment] blanks cwd.
+// gives cwd, harness's name and version, and every member the format
+// does not define, its name and every name and string inside it at any
+// depth, to p's string redactors; and writes no base. Two names of one
+// object made one, or a name made one the format defines, is refused
+// with [agentsession.ErrKeyCollision]. format is the one agentsession
+// writes. Then each of p's entry redactors that is a [HeaderRedactor]
+// redacts it, as [Environment] blanks cwd.
+//
+// An entry holding a member name, at any depth, that p's string
+// redactors would change is refused with [ErrKeyNotRedacted]: the
+// Rewriter gives a redactor no member name but an env entry's file
+// paths, so the name would be written as the original had it. The check
+// cannot tell a name the format defines from one a writer chose, so a
+// rule that would change a format member name, such as a literal rule
+// for "content", refuses every entry that holds it.
 //
 // An original that is a fork, one with a base, is redacted without a
 // base: its prefix is redacted into entries of the redaction's own,
 // whose positions count in the fork's file order, as RFC 0001 allows.
-// A reference into another session, a parents element or a link naming
-// one, and parent_session, stays as written; re-pointing them into
-// redactions held alongside is the store pass's.
+// Redact has no mode that writes a fork of a redaction; the store pass
+// (#3) adds it. A reference into another session, a parents element or
+// a link naming one, and parent_session, stays as written, and each is
+// reported as a [Finding]; re-pointing them into redactions held
+// alongside is the store pass's. So are inline media that is not an
+// image and an image data URL inside a longer string, which are kept.
 //
 // existing, when not nil, is the redaction of original under p that an
 // earlier call made, as a store holds it: Redact appends to it, and
@@ -69,8 +83,10 @@ type Result struct {
 // equals, entry for entry, a fresh redaction of the grown original. Its
 // header is kept. Redact refuses, with [ErrNotThisRedaction], an
 // existing session whose redacted_from names another original or
-// another profile, and, wrapping [agentsession.ErrStaleOriginal], one
-// naming a position past the original's end. Entries appended to it
+// another profile, whose ID is not the derived one, that has a base, or
+// one of whose entries made from one position is not of the type of the
+// original's entry there; and, wrapping [agentsession.ErrStaleOriginal],
+// one naming a position past the original's end. Entries appended to it
 // natively stay where they are. On an error existing may hold some of
 // the new entries; discard it and read it again.
 //
@@ -137,9 +153,14 @@ func Redact(p Profile, original, existing *agentsession.Session) (*Result, error
 	res := &Result{Session: red}
 	for i := done; i < len(order); i++ {
 		e, pos := order[i], i+1
-		n, err := redactEntry(p, rw, remap, original, order, pos, &res.Findings)
+		n, err := redactEntry(p, f, rw, remap, original, order, pos, &res.Findings)
 		if err != nil {
 			return nil, entryErr(origID, pos, e, err)
+		}
+		if n.Base().Parent == "" && red.Len() > 0 {
+			// A root: Commit puts an entry with no parent under the leaf,
+			// and SetRequestHash rebuilds a response's request there.
+			red.ResetLeaf()
 		}
 		if resp, ok := n.(*agentsession.ResponseEntry); ok {
 			if resp.RequestHash != "" && original.Verify(e.Base().ID) != nil {
@@ -148,9 +169,6 @@ func Redact(p Profile, original, existing *agentsession.Session) (*Result, error
 			if err := red.SetRequestHash(resp); err != nil {
 				return nil, entryErr(origID, pos, e, err)
 			}
-		}
-		if n.Base().Parent == "" && red.Len() > 0 {
-			red.ResetLeaf() // a root: Commit puts an entry with no parent under the leaf
 		}
 		r, err := red.Commit(n)
 		if err != nil {
@@ -161,7 +179,7 @@ func Redact(p Profile, original, existing *agentsession.Session) (*Result, error
 		}
 		ids[e.Base().ID] = r.ID
 		res.Entries = append(res.Entries, n)
-		res.Findings = append(res.Findings, unmetParts(red, r.ID, n, pos, e.Base().ID)...)
+		res.Findings = append(res.Findings, unmetParts(red, r.ID, n, pos)...)
 	}
 	return res, nil
 }
@@ -171,7 +189,7 @@ func Redact(p Profile, original, existing *agentsession.Session) (*Result, error
 // its path: a hash of text the Rewriter never met, which is the
 // original's hash still. It names the part by its index and its id,
 // never by its hash or text.
-func unmetParts(red *agentsession.Session, id string, n agentsession.Entry, pos int, origID string) []Finding {
+func unmetParts(red *agentsession.Session, id string, n agentsession.Entry, pos int) []Finding {
 	var (
 		parts []agentsession.InstructionPart
 		at    string
@@ -194,7 +212,7 @@ func unmetParts(red *agentsession.Session, id string, n agentsession.Entry, pos 
 		return nil
 	}
 	finding := func(i int, message string) Finding {
-		return Finding{Position: pos, Entry: origID, At: at + strconv.Itoa(i), Redactor: "redact", Message: message}
+		return Finding{Position: pos, At: at + strconv.Itoa(i), Redactor: "redact", Message: message}
 	}
 	var out []Finding
 	ctx, err := red.ContextAt(id)
@@ -220,7 +238,7 @@ func unmetParts(red *agentsession.Session, id string, n agentsession.Entry, pos 
 // redactEntry makes the redacted entry for the original's entry at pos,
 // short of its request_hash and its commit: rewritten, redacted,
 // re-pointed, marked and its ID cleared.
-func redactEntry(p Profile, rw *agentsession.Rewriter, remap agentsession.Remap, original *agentsession.Session, order []agentsession.Entry, pos int, findings *[]Finding) (agentsession.Entry, error) {
+func redactEntry(p Profile, f StringRedactor, rw *agentsession.Rewriter, remap agentsession.Remap, original *agentsession.Session, order []agentsession.Entry, pos int, findings *[]Finding) (agentsession.Entry, error) {
 	e := order[pos-1]
 	body, err := rw.Rewrite(e)
 	if err != nil {
@@ -237,19 +255,27 @@ func redactEntry(p Profile, rw *agentsession.Rewriter, remap agentsession.Remap,
 		}
 		body = out
 	}
+	if err := inspect(body, f, pos, findings); err != nil {
+		return nil, err
+	}
 	rr, err := agentsession.RemapRefs(body, remap)
 	if err != nil {
 		return nil, err
 	}
 	for _, u := range rr.Unmapped {
 		if u.Entry != "" && (u.Session == "" || u.Session == original.ID()) {
-			return nil, fmt.Errorf("%s names %s, which the redaction has not written", u.At, u.Entry)
+			return nil, fmt.Errorf("%s names an entry the redaction has not written", u.At)
 		}
+		*findings = append(*findings, Finding{
+			Position: pos,
+			At:       u.At,
+			Redactor: "redact",
+			Message:  "a reference into another session kept as written: it names that session's original entry or ID, which can confirm a guess, until the store pass re-points it",
+		})
 	}
 	if rr.Opaque {
 		*findings = append(*findings, Finding{
 			Position: pos,
-			Entry:    e.Base().ID,
 			Redactor: "redact",
 			Message:  "extension entry: its parent and parents were re-pointed, but a member of its own may still name an entry of the original",
 		})
@@ -281,18 +307,30 @@ func redactedHeader(p Profile, h agentsession.Header, redID string, f StringReda
 	if h.Harness != nil {
 		n.Harness = &agentsession.Harness{Name: nonEmpty(h.Harness.Name, f), Version: nonEmpty(h.Harness.Version, f)}
 	}
-	for k, raw := range h.Extra {
+	keys := make([]string, 0, len(h.Extra))
+	for k := range h.Extra {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
 		if k == "redacted_from" {
 			continue // a member in another form, from before 0.13: this header writes its own
 		}
-		v, err := rewriteJSON(raw, f)
+		name := f(k)
+		if _, taken := n.Extra[name]; taken {
+			return agentsession.Header{}, fmt.Errorf("%w: header members %s", agentsession.ErrKeyCollision, pointerToken(name))
+		}
+		v, err := rewriteJSON(h.Extra[k], f)
 		if err != nil {
-			return agentsession.Header{}, fmt.Errorf("agentredact: header member %s: %w", k, err)
+			return agentsession.Header{}, fmt.Errorf("agentredact: header member %s: %w", pointerToken(name), err)
 		}
 		if n.Extra == nil {
 			n.Extra = map[string]json.RawMessage{}
 		}
-		n.Extra[k] = v
+		n.Extra[name] = v
+	}
+	if err := extraStaysExtra(n); err != nil {
+		return agentsession.Header{}, err
 	}
 	n, _ = agentsession.RemapHeaderRefs(n, agentsession.Remap{
 		Session: func(id string) (string, bool) {
@@ -336,22 +374,27 @@ func resumePoint(p Profile, origID, redID string, existing *agentsession.Session
 		return 0, fmt.Errorf("%w: %s has a base; resuming a fork of a redaction is the store pass's", ErrNotThisRedaction, h.ID)
 	}
 	done := 0
-	for _, e := range agentsession.FileOrder(existing) {
-		spans, ok := agentsession.RedactedOf(e)
-		if !ok {
-			continue // appended natively
-		}
+	held := agentsession.FileOrder(existing)
+	for _, e := range held {
+		spans, _ := agentsession.RedactedOf(e) // none on an entry appended natively
 		for _, sp := range spans {
 			if sp.To > len(order) {
 				return 0, fmt.Errorf("agentredact: %s: entry %s names position %d of %s, which holds %d entries: %w", h.ID, e.Base().ID, sp.To, origID, len(order), agentsession.ErrStaleOriginal)
 			}
 			done = max(done, sp.To)
 		}
-		if len(spans) == 1 && spans[0].From == spans[0].To {
-			orig := order[spans[0].From-1].Base().ID
-			if _, seen := ids[orig]; !seen {
-				ids[orig] = e.Base().ID
-			}
+	}
+	for _, e := range held {
+		spans, _ := agentsession.RedactedOf(e)
+		if len(spans) != 1 || spans[0].From != spans[0].To {
+			continue
+		}
+		o := order[spans[0].From-1]
+		if o.EntryType() != e.EntryType() {
+			return 0, fmt.Errorf("%w: %s: the entry redacted from position %d is a %s, and the original's there a %s", ErrNotThisRedaction, h.ID, spans[0].From, e.EntryType(), o.EntryType())
+		}
+		if _, seen := ids[o.Base().ID]; !seen {
+			ids[o.Base().ID] = e.Base().ID
 		}
 	}
 	return done, nil
@@ -362,8 +405,10 @@ func entryErr(origID string, pos int, e agentsession.Entry, err error) error {
 	return fmt.Errorf("agentredact: redacting %s, entry %d (%s %s): %w", origID, pos, e.EntryType(), e.Base().ID, err)
 }
 
-// rewriteJSON applies f to every string value in raw, JSON, at any
-// depth; member names, numbers and literals are kept as written.
+// rewriteJSON applies f to every string value and every member name in
+// raw, JSON, at any depth; numbers and literals are kept as written. Two
+// names of one object made one are [agentsession.ErrKeyCollision], named
+// by a pointer built from rewritten names.
 func rewriteJSON(raw json.RawMessage, f StringRedactor) (json.RawMessage, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
@@ -371,23 +416,40 @@ func rewriteJSON(raw json.RawMessage, f StringRedactor) (json.RawMessage, error)
 	if err := dec.Decode(&v); err != nil {
 		return nil, err
 	}
-	var walk func(v any) any
-	walk = func(v any) any {
+	var walk func(v any, at string) (any, error)
+	walk = func(v any, at string) (any, error) {
 		switch x := v.(type) {
 		case string:
-			return f(x)
+			return f(x), nil
 		case []any:
 			for i := range x {
-				x[i] = walk(x[i])
+				w, err := walk(x[i], fmt.Sprintf("%s/%d", at, i))
+				if err != nil {
+					return nil, err
+				}
+				x[i] = w
 			}
 		case map[string]any:
+			out := make(map[string]any, len(x))
 			for _, k := range sortedMembers(x) {
-				x[k] = walk(x[k])
+				name := f(k)
+				if _, taken := out[name]; taken {
+					return nil, fmt.Errorf("%w: at %s", agentsession.ErrKeyCollision, at+"/"+pointerToken(name))
+				}
+				w, err := walk(x[k], at+"/"+pointerToken(name))
+				if err != nil {
+					return nil, err
+				}
+				out[name] = w
 			}
+			return out, nil
 		}
-		return v
+		return v, nil
 	}
-	v = walk(v)
+	v, err := walk(v, "")
+	if err != nil {
+		return nil, err
+	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -395,6 +457,28 @@ func rewriteJSON(raw json.RawMessage, f StringRedactor) (json.RawMessage, error)
 		return nil, err
 	}
 	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n")), nil
+}
+
+// extraStaysExtra refuses a header one of whose members the format does
+// not define was renamed to a member it does, which agentsession would
+// read as that member: the header is written and read again, and Extra
+// must come back whole.
+func extraStaysExtra(h agentsession.Header) error {
+	if h.Format == "" {
+		h.Format = agentsession.Format // what New fills, under which redacted_from is typed
+	}
+	data, err := json.Marshal(h)
+	if err != nil {
+		return err
+	}
+	var back agentsession.Header
+	if err := json.Unmarshal(data, &back); err != nil {
+		return err
+	}
+	if len(back.Extra) != len(h.Extra) {
+		return fmt.Errorf("%w: a header member was renamed to one the format defines", agentsession.ErrKeyCollision)
+	}
+	return nil
 }
 
 // nonEmpty is f(s) for a string that is not empty, and "" for one that

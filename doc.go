@@ -11,19 +11,25 @@
 // the one function an agentsession Rewriter applies to every string,
 // such as [Secrets], [HomePaths], [Patterns] and the rules [ParseRules]
 // reads; and [EntryRedactor]s, applied to each entry after, such as
-// [Environment] and [Images]. All are deterministic. The joined string
-// function passes a string that is wholly a base64 data URL untouched,
-// since a redactor matches text as written: a secret encoded in base64,
-// in URL encoding or in an image's bytes is not found, and the scan and
-// the review are the backstop. [Redact] applies a
-// profile to one session and returns the redacted session in memory,
-// or grows an earlier redaction by what the original appended. The
-// pass that keeps one redacted session per original per profile in a
-// store is to come; the scan, review and publish stages are packages
-// of their own. What a valid redacted
-// session is, and what a store does with one, is agentsession's: this
-// module reaches strings through its Rewriter, references through
-// RemapRefs, positions through SetRedacted and request hashes through
-// Session.SetRequestHash, and never re-derives the format.
-// docs/plans/agentredact.md is the design.
+// [Environment] and [Images]. All are deterministic. A redactor matches
+// text as written: a secret encoded in base64, in URL encoding or in an
+// image's bytes is not found, so the joined function keeps a base64
+// data URL's payload as it is, giving the redactors its media type and
+// parameters alone; the scan and the review are the backstop.
+//
+// [Redact] applies a profile to one session and returns the redacted
+// session in memory, or grows an earlier redaction by what the original
+// appended. It renames the member names in the header's unknown
+// members, refuses an entry holding a member name the redactors would
+// change ([ErrKeyNotRedacted]), and reports what it kept unredacted as
+// local [Finding]s. It writes a fork without a base; a mode that writes
+// a fork of a redaction comes with the store pass (#3), which keeps one
+// redacted session per original per profile in a store. The scan,
+// review and publish stages are packages of their own.
+//
+// What a valid redacted session is, and what a store does with one, is
+// agentsession's: this module reaches strings through its Rewriter,
+// references through RemapRefs, positions through SetRedacted and
+// request hashes through Session.SetRequestHash, and never re-derives
+// the format. docs/plans/agentredact.md is the design.
 package agentredact

@@ -65,21 +65,59 @@ The string redactors match text as it is written. They do not find:
 - a secret split across two strings, or across an instruction part
   boundary.
 
-A string that is wholly a base64 data URL, as an inline image is held,
-is passed by every string redactor untouched: the profile's composed
-function returns it as it is. Nothing in it could be found as written,
-and a pattern that matched its payload by chance would only corrupt the
-image. A data URL that is not base64, or a line that merely starts
-`data:`, is redacted like any other string.
+Of a string that is wholly a base64 data URL, as inline media is held,
+the redactors are given the media type and parameters, which can hold a
+file name, and the payload is kept as it is: nothing in it could be
+found as written, and a pattern that matched it by chance would only
+corrupt the media. A token written as such a payload, base64 characters
+alone, is kept too. A data URL that is not base64, or a line that
+merely starts `data:`, is redacted like any other string.
 
-An instruction part named by the hash of a text no earlier entry
-holds keeps the original's hash, which can confirm a guessed text;
-`Redact` reports each such part in `Result.Findings`, by its id.
+### Member names
 
-A sidecar image is left as it is and reported in `Result.Findings`;
-replacing it needs a blob write, which comes with the store pass. The
-scan and the review are the backstop for what the redactors miss, not
-a guarantee.
+agentsession's Rewriter gives a redactor no member name but an env
+entry's file paths, and a harness often keys a map by a file path. So
+`Redact` renames, through the string redactors, every member name in
+the header's members the format does not define, at any depth, and
+refuses with `ErrKeyNotRedacted` an entry holding a member name the
+redactors would change, in a custom entry's data, an outcome's details,
+a member the format does not define or an extension entry: a profile
+that would leave a matched name in place does not produce a redaction.
+The check cannot tell a name the format defines from one a writer chose,
+so a rule matching one, such as a literal rule for `content`, refuses
+every entry holding it. When agentsession renames such names itself,
+renaming replaces the refusal.
+
+### Kept as written
+
+Some members are kept as the original wrote them, by design, and a
+profile's redactors never see them:
+
+- an entry's `legacy_id`, which in a migrated file is its pre-0.5 ID,
+  and `parents` beyond its entry and session references;
+- `call_id`s, a run's pending call IDs and the header's `spawned_by`,
+  which pair calls with their outputs and derive subsession IDs;
+- the header's `created_at`, `payload`, `records`, `media` and
+  `parent_session`;
+- references into other sessions, `parent_session`, a `parents` element
+  or a link naming one, which hold that session's original IDs until
+  the store pass re-points them; each is reported in `Result.Findings`;
+- an env entry's file hashes, when the profile has no `Environment`;
+- a sidecar reference, when the profile has no `Images`; with it, each
+  is reported, since replacing one needs a blob write, which comes with
+  the store pass;
+- an instruction part named by the hash of a text no earlier entry
+  holds keeps the original's hash, which can confirm a guessed text;
+  each is reported, by its id;
+- inline media that is not an image, such as an input_file's PDF, and
+  an image data URL inside a longer string, such as tool output or
+  markdown: `Images` replaces whole-string images only; each is
+  reported.
+
+`Result.Findings` are local: they name an entry by its position in the
+original and hold no value and no original hash, and they are never
+published with the redacted session. The scan and the review are the
+backstop for what the redactors miss, not a guarantee.
 
 ## Status
 

@@ -16,28 +16,37 @@ versions may break the API.
   agentpolicy.
 - Added: `Profile`, a named, versioned redactor set, and
   `ValidateProfileName` (`<name>@<version>`, version an integer from 1).
-- Added: the string redactors `Secrets` (exact values, longest first),
-  `HomePaths` (paths under home become `~`-relative, `/` and `\`
-  separators), `Patterns` and `DefaultPatterns` (agentpolicy's
-  `guard.DefaultSecrets`, each match written `[REDACTED <name>]`), and
+- Added: the string redactors `Secrets` (exact values, longest first);
+  `HomePaths` (paths under home become `~`-relative, home bounded on
+  both sides, any of `/`, `\`, `\\` and `\/` between segments, a drive
+  letter in either case); `Patterns` and `DefaultPatterns`, each match
+  written `[REDACTED <name>]`, over `DefaultSecretPatterns`, a copy of
+  agentpolicy v0.0.17's `guard.DefaultSecrets` that a test pins; and
   `ParseRules`, git-filter-repo's `--replace-text` format, `glob:`
-  included, with errors naming the line.
+  included, refusing what filter-repo would silently misread, with
+  errors naming the line.
+- Added: a profile's joined string function (`Profile.StringFunc`,
+  `Chain`) keeps a base64 data URL's payload as it is and gives its
+  media type and parameters to the redactors, so a pattern matching an
+  inline image's payload by chance does not corrupt it.
 - Added: the `EntryRedactor` and `HeaderRedactor` interfaces;
   `Environment`, which blanks an env entry's cwd, vcs, files, tools and
-  harness members, keeps workspace substitutions as numbered
-  placeholders, and blanks the header's cwd; and `Images`, which
-  replaces inline images with a placeholder data URL and reports
-  sidecar ones as `Finding`s.
-- Added: `Redact`, which applies a profile to one session in memory:
-  a new header with `redacted`, `redacted_from` and the derived ID, one
-  redacted entry per original entry marked `[n]`, references re-pointed,
-  request hashes recomputed (cleared where the original's did not
-  verify), a fork written without a base, and resuming an existing
-  redaction by appending only the entries past its highest position.
-- Added: a profile's joined string function (`Profile.StringFunc`,
-  `Chain`) passes a string that is wholly a base64 data URL untouched,
-  so a pattern matching an inline image's payload by chance no longer
-  corrupts it when a profile has no `Images`.
-- Added: `Redact` reports, as a `Finding` with the part's id, each
-  instruction part that keeps the original's hash because its text is in
-  no entry the redaction was given.
+  harness members, keeps workspace substitutions as placeholders
+  numbered along the entry's path, and blanks the header's cwd; and
+  `Images`, which replaces whole-string inline images with a placeholder
+  data URL and reports sidecar ones.
+- Added: `Redact`, which applies a profile to one session in memory: a
+  new header with `redacted`, `redacted_from` and the derived ID, its
+  unknown members' names renamed; one redacted entry per original entry
+  marked `[n]`, references re-pointed, request hashes recomputed
+  (cleared where the original's did not verify); an entry holding a
+  member name the redactors would change refused with
+  `ErrKeyNotRedacted`; and resuming an existing redaction by appending
+  only the entries past its highest position. A fork is written without
+  a base; writing a fork of a redaction is the store pass's (#3), which
+  adds that mode.
+- Added: `Finding`, local reports of what `Redact` kept: sidecar
+  references, inline non-image media, image data URLs inside longer
+  strings, references into other sessions, extension entries, and
+  instruction parts that keep the original's hash.
+- Changed: `make deps` checks what the tests import too.

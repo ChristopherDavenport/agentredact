@@ -268,6 +268,28 @@ func twoRootsOriginal(t *testing.T, c *clock) *agentsession.Session {
 	return s
 }
 
+// rootResponseOriginal holds a response with no parent, after another
+// tree, whose request hash verifies.
+func rootResponseOriginal(t *testing.T, c *clock) *agentsession.Session {
+	t.Helper()
+	s := newOriginal("orig-root-response")
+	appendAt(t, s, c, user("a tree first, "+fakePassword))
+	turn(t, s, c, "resp-1", "one")
+	s.ResetLeaf()
+	resp := &agentsession.ResponseEntry{ResponseID: "resp-root", Status: openresponses.ResponseStatusCompleted, RequestHash: "sha256:to-compute"}
+	if err := s.SetRequestHash(resp); err != nil {
+		t.Fatal(err)
+	}
+	id := appendAt(t, s, c, resp)
+	if e, _ := s.Entry(id); e.Base().Parent != "" {
+		t.Fatal("the response is not a root")
+	}
+	if err := s.Verify(id); err != nil {
+		t.Fatalf("the root response does not verify: %v", err)
+	}
+	return s
+}
+
 func fileOf(t *testing.T, s *agentsession.Session) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -358,6 +380,7 @@ func TestRedact(t *testing.T) {
 		{"inline image", imageOriginal},
 		{"fork", forkOriginal},
 		{"two roots", twoRootsOriginal},
+		{"root response", rootResponseOriginal},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			orig := tt.build(t, &clock{})
@@ -669,6 +692,8 @@ func TestChainLeavesBase64DataURLs(t *testing.T) {
 		{"data:image/png;base64,AAA " + fakeKey, "data:image/png;base64,[REDACTED] [REDACTED openai_key]"},
 		{"see data:image/png;base64,AAA", "see data:image/png;base64,[REDACTED]"},
 		{"data:image/png;base64,", "data:image/png;base64,"},
+		{"data:x;token=" + fakeKey + ";base64,AA", "data:x;token=[REDACTED openai_key];base64,AA"},
+		{"data:application/pdf;name=AAA.pdf;base64,AAA", "data:application/pdf;name=[REDACTED].pdf;base64,AAA"},
 	} {
 		if got := r(tt.in); got != tt.want {
 			t.Errorf("Chain(%q) = %q, want %q", tt.in, got, tt.want)

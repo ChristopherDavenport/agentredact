@@ -81,33 +81,35 @@ func (c *EntryContext) Entry() agentsession.Entry {
 }
 
 // Report records something the redactor found in this entry and did
-// not redact: at is an RFC 6901 pointer into the entry, and message
-// says what and why, and must not quote the value.
+// not redact: at is an RFC 6901 pointer into the entry as the redactor
+// was given it, so built from rewritten member names, and message says
+// what and why, and must quote neither the value nor an original hash.
 func (c *EntryContext) Report(at, message string) {
 	if c.findings == nil {
 		return
 	}
-	*c.findings = append(*c.findings, Finding{
-		Position: c.Position,
-		Entry:    c.Entry().Base().ID,
-		At:       at,
-		Redactor: c.redactor,
-		Message:  message,
-	})
+	*c.findings = append(*c.findings, Finding{Position: c.Position, At: at, Redactor: c.redactor, Message: message})
 }
 
 // Finding is something [Redact] wrote without redacting it, which a
 // person or a later stage must look at before the redacted session
-// leaves: a sidecar image an inline-only redactor could not replace, an
-// extension entry whose own members name entries as written. It never
-// holds the value it is about.
+// leaves: a sidecar image an inline-only redactor could not replace,
+// inline media that is not an image, an image inside a longer string,
+// an instruction part that keeps the original's hash, a reference into
+// another session, an extension entry whose own members name entries as
+// written.
+//
+// A Finding is local, for whoever holds the original: it names the
+// entry by its position in the original, which maps back only with the
+// original in hand, and it holds neither the value it is about nor any
+// hash of the original. It is not part of the redacted session and is
+// never published with it.
 type Finding struct {
 	// Position is the entry's position in the original's file order,
 	// counting from 1.
 	Position int
-	// Entry is the original entry's ID.
-	Entry string
-	// At is an RFC 6901 pointer into the entry, "" for the whole entry.
+	// At is an RFC 6901 pointer into the redacted entry, built from its
+	// rewritten member names, "" for the whole entry.
 	At string
 	// Redactor names what reported it: an entry redactor's name, or
 	// "redact" for Redact itself.
