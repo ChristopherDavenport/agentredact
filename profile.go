@@ -107,18 +107,62 @@ func (p Profile) Validate() error {
 }
 
 // StringFunc returns the profile's string redactors joined in order,
-// the function a Rewriter applies.
+// the function a Rewriter applies. Like [Chain], it leaves a base64
+// data URL as it is.
 func (p Profile) StringFunc() StringRedactor {
 	return Chain(p.Strings...)
 }
 
-// Chain joins string redactors into one that applies each in order.
+// Chain joins string redactors into one that applies each in order,
+// except to a string that is wholly a base64 data URL, which it returns
+// as it is without calling any of them: data:, an optional media type
+// and parameters with no whitespace, ";base64,", and a payload of the
+// base64 alphabet alone (standard or URL-safe, padding included), as
+// an inline image is held. A redactor matches text as written and does
+// not decode base64, so it could find nothing there but a pattern
+// matching the payload by chance, and replacing that would corrupt the
+// media while hiding nothing. Text inside such a payload is not found:
+// see the README. A data URL that is not base64 holds its text as
+// written, which a redactor can find, so it is redacted like any other
+// string, as is a line that merely starts "data:", such as a
+// server-sent event.
 func Chain(rs ...StringRedactor) StringRedactor {
 	rs = append([]StringRedactor(nil), rs...)
 	return func(s string) string {
+		if isBase64DataURL(s) {
+			return s
+		}
 		for _, r := range rs {
 			s = r(s)
 		}
 		return s
 	}
+}
+
+// isBase64DataURL reports whether s is wholly a base64 data URL
+// (RFC 2397), its scheme and base64 marker matched without regard to
+// case.
+func isBase64DataURL(s string) bool {
+	if len(s) < len("data:") || !strings.EqualFold(s[:len("data:")], "data:") {
+		return false
+	}
+	meta, payload, ok := strings.Cut(s[len("data:"):], ",")
+	if !ok || payload == "" {
+		return false
+	}
+	const marker = ";base64"
+	if len(meta) < len(marker) || !strings.EqualFold(meta[len(meta)-len(marker):], marker) {
+		return false
+	}
+	for i := 0; i < len(meta); i++ {
+		if c := meta[i]; c <= ' ' || c >= 0x7f || c == '"' || c == '\\' {
+			return false
+		}
+	}
+	for i := 0; i < len(payload); i++ {
+		if c := payload[i]; !isAlnum(c) && c != '+' && c != '/' && c != '=' && c != '-' && c != '_' {
+			return false
+		}
+	}
+	return true
 }

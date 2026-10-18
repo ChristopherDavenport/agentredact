@@ -65,6 +65,13 @@ The string redactors match text as it is written. They do not find:
 - a secret split across two strings, or across an instruction part
   boundary.
 
+A string that is wholly a base64 data URL, as an inline image is held,
+is passed by every string redactor untouched: the profile's composed
+function returns it as it is. Nothing in it could be found as written,
+and a pattern that matched its payload by chance would only corrupt the
+image. A data URL that is not base64, or a line that merely starts
+`data:`, is redacted like any other string.
+
 A sidecar image is left as it is and reported in `Result.Findings`;
 replacing it needs a blob write, which comes with the store pass. The
 scan and the review are the backstop for what the redactors miss, not

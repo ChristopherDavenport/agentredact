@@ -34,3 +34,7 @@ versions may break the API.
   request hashes recomputed (cleared where the original's did not
   verify), a fork written without a base, and resuming an existing
   redaction by appending only the entries past its highest position.
+- Added: a profile's joined string function (`Profile.StringFunc`,
+  `Chain`) passes a string that is wholly a base64 data URL untouched,
+  so a pattern matching an inline image's payload by chance no longer
+  corrupts it when a profile has no `Images`.

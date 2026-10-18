@@ -616,3 +616,52 @@ func TestRedactWrapsAgentsessionErrors(t *testing.T) {
 		t.Errorf("%v does not name entry 2 (%s)", err, id)
 	}
 }
+
+func TestChainLeavesBase64DataURLs(t *testing.T) {
+	r := Chain(DefaultPatterns(), Secrets("AAA"))
+	for _, tt := range []struct{ in, want string }{
+		{"data:image/png;base64,AAA+AKIAFAKE0000EXAMPLE0+AAA", "data:image/png;base64,AAA+AKIAFAKE0000EXAMPLE0+AAA"},
+		{"DATA:;BASE64,AAA_-=", "DATA:;BASE64,AAA_-="},
+		{"data: " + fakeKey, "data: [REDACTED openai_key]"},
+		{"data:text/plain," + fakeKey, "data:text/plain,[REDACTED openai_key]"},
+		{"data:image/png;base64,AAA " + fakeKey, "data:image/png;base64,[REDACTED] [REDACTED openai_key]"},
+		{"see data:image/png;base64,AAA", "see data:image/png;base64,[REDACTED]"},
+		{"data:image/png;base64,", "data:image/png;base64,"},
+	} {
+		if got := r(tt.in); got != tt.want {
+			t.Errorf("Chain(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestRedactLeavesDataURLsWithoutImages: a profile with patterns and no
+// Images leaves an inline image byte for byte, though its payload holds
+// a pattern match, and still redacts the text beside it.
+func TestRedactLeavesDataURLsWithoutImages(t *testing.T) {
+	// "+" is not a word character, so \b holds around the key shape;
+	// 28 characters of the base64 alphabet decode.
+	payload := "AAA+AKIAFAKE0000EXAMPLE0+AAA"
+	if _, err := base64.StdEncoding.DecodeString(payload); err != nil {
+		t.Fatalf("the payload is not base64: %v", err)
+	}
+	url := "data:image/png;base64," + payload
+	if DefaultPatterns()(url) == url {
+		t.Fatal("the payload holds no pattern match; the case proves nothing")
+	}
+	c := &clock{}
+	s := newOriginal("orig-data-url")
+	msg := openresponses.UserMessage(
+		&openresponses.InputText{Text: "key " + fakeKey},
+		&openresponses.InputImage{ImageURL: url},
+	)
+	appendAt(t, s, c, agentsession.NewItemEntry(msg))
+	p := Profile{Name: "patterns@1", Strings: []StringRedactor{DefaultPatterns()}}
+	res := redact(t, p, s, nil)
+	m := res.Session.Entries()[0].(*agentsession.ItemEntry).Item.(*openresponses.Message)
+	if got := m.Content[1].(*openresponses.InputImage).ImageURL; got != url {
+		t.Errorf("image_url %q, want %q", got, url)
+	}
+	if got := m.Content[0].(*openresponses.InputText).Text; got != "key [REDACTED openai_key]" {
+		t.Errorf("text %q", got)
+	}
+}

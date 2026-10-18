@@ -11,7 +11,11 @@
 // the one function an agentsession Rewriter applies to every string,
 // such as [Secrets], [HomePaths], [Patterns] and the rules [ParseRules]
 // reads; and [EntryRedactor]s, applied to each entry after, such as
-// [Environment] and [Images]. All are deterministic. [Redact] applies a
+// [Environment] and [Images]. All are deterministic. The joined string
+// function passes a string that is wholly a base64 data URL untouched,
+// since a redactor matches text as written: a secret encoded in base64,
+// in URL encoding or in an image's bytes is not found, and the scan and
+// the review are the backstop. [Redact] applies a
 // profile to one session and returns the redacted session in memory,
 // or grows an earlier redaction by what the original appended. The
 // pass that keeps one redacted session per original per profile in a
