@@ -45,27 +45,47 @@ type templatePart struct {
 //	regex:\bdriver\b==>pilot     a regular expression
 //	glob:*666*==>                a glob, here replaced with nothing
 //
-// As filter-repo reads it: lines are split on LF, and every CR and LF
-// at a line's end is trimmed; the replacement is what follows the last
-// "==>" on the line, and a line without one is replaced with
+// As filter-repo reads it: lines are split on LF, and a CR before the
+// LF is trimmed; the replacement is what follows the last "==>" on the
+// line, and a line without one is replaced with
 // [DefaultRuleReplacement]; a "regex:" or "glob:" prefix makes the rest
 // a pattern and a "literal:" prefix, or none, a literal; a blank line is
-// skipped. filter-repo has no comment syntax in this file, unlike in its
-// --paths-from-file, so neither has this: a line starting with "#" is a
-// literal and replaces every "#" it matches. Every literal is applied,
-// in file order, before every pattern, in file order, as filter-repo
-// applies them, each to what the rules before it left.
+// skipped; whitespace inside a line, trailing whitespace included, is
+// part of the rule, so "sk-abc " matches only with the space. filter-repo
+// has no comment syntax in this file, unlike in its --paths-from-file,
+// so neither has this: a line starting with "#" is a literal and
+// replaces every "#" it matches. Every literal is applied, in file
+// order, before every pattern, in file order, as filter-repo applies
+// them, each to what the rules before it left.
+//
+// Where filter-repo would read a file in a way no one means, this
+// refuses or repairs it instead: a leading UTF-8 byte order mark, which
+// Windows editors write and which would make the first rule never
+// match, is dropped; a line of whitespace alone, which would replace
+// every space, and a CR not followed by LF, which in a file of bare-CR
+// line endings would make the whole file one literal, are errors.
 //
 // Where filter-repo uses Python, this uses Go:
 //
 //   - A regex is Go's RE2 syntax, which shares Python's common
 //     constructs, (?P<name>...) and (?m) among them; one Go cannot
-//     compile, a lookaround or a backreference, is an error.
+//     compile, a lookaround or a backreference, is an error. Two that Go
+//     compiles but reads otherwise are errors too: {,n}, which Python
+//     reads as 0 to n and Go as the text itself, and a POSIX class such
+//     as [[:alpha:]], which Python reads as a plain set.
+//   - Differences that remain: without (?m), $ matches in Go only at
+//     the very end of the string, and in Python also before a final
+//     newline, so regex:token \S+$ misses "token abc\n" here; . and a
+//     class match one character, where filter-repo, which reads bytes,
+//     matches one byte; and an empty match just after another match is
+//     replaced in Python 3.7 and later, not in Go.
 //   - A regex's replacement takes Python's group references, \1 to \99,
-//     \g<n> and \g<name>, and the escapes \\, \n, \t, \r, \f, \v, \a and
-//     \b; a backslash before any other ASCII letter or digit is an error,
-//     as in Python, and before anything else stays as written. A
-//     literal's replacement is taken as written.
+//     \g<n> (n digits alone) and \g<name>, and the escapes \\, \n, \t,
+//     \r, \f, \v, \a and \b. An octal escape, \0 or three octal digits
+//     such as \101, which Python reads as a character, is an error, as
+//     is a backslash before any other ASCII letter or digit; before
+//     anything else the backslash stays as written. A literal's
+//     replacement is taken as written.
 //   - A glob is translated as Python's fnmatch.translate does, without
 //     its anchors, as filter-repo strips them: * is any run of
 //     characters but a newline, ? one character but a newline, and
@@ -73,31 +93,39 @@ type templatePart struct {
 //     character itself.
 //
 // Each of these is an error naming the line, counted from 1, and
-// wrapping [ErrRules]: a regex or a glob that does not compile, a
-// replacement template that does not parse or names a group the
-// pattern does not have, a line that is not UTF-8, and a line that is
-// not blank but leaves nothing to match, such as "==>x", "literal:" or
-// "regex:==>x". filter-repo skips an empty literal and reads an empty
-// "regex:" as the literal text "regex:"; a rule silently dropped is a
-// value passed, so here both are refused.
+// wrapping [ErrRules]: a regex or a glob that does not compile, or uses
+// a construct Go reads otherwise; a replacement template that does not
+// parse or names a group the pattern does not have; a line that is not
+// UTF-8, that holds a bare CR, or that is whitespace alone; and a line
+// that is not blank but leaves nothing to match, such as "==>x",
+// "literal:" or "regex:==>x". filter-repo skips an empty literal and
+// reads an empty "regex:" as the literal text "regex:"; a rule silently
+// dropped is a value passed, so here both are refused.
 func ParseRules(r io.Reader) (StringRedactor, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("agentredact: reading rules: %w", err)
 	}
 	var literals, regexes []rule
+	data = bytes.TrimPrefix(data, []byte("\ufeff"))
 	lines := bytes.Split(data, []byte("\n"))
 	if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
 		lines = lines[:len(lines)-1] // the newline ending the last line
 	}
 	for i, raw := range lines {
 		n := i + 1
-		line := strings.TrimRight(string(raw), "\r\n")
+		line := strings.TrimSuffix(string(raw), "\r")
 		if line == "" {
 			continue
 		}
 		if !utf8.ValidString(line) {
 			return nil, fmt.Errorf("%w: line %d is not UTF-8", ErrRules, n)
+		}
+		if strings.Contains(line, "\r") {
+			return nil, fmt.Errorf("%w: line %d holds a carriage return not followed by a line feed", ErrRules, n)
+		}
+		if strings.TrimSpace(line) == "" {
+			return nil, fmt.Errorf("%w: line %d is whitespace alone, which would replace every space", ErrRules, n)
 		}
 		match, repl := line, DefaultRuleReplacement
 		if j := strings.LastIndex(line, "==>"); j >= 0 {
@@ -109,6 +137,9 @@ func ParseRules(r io.Reader) (StringRedactor, error) {
 			expr = strings.TrimPrefix(match, "regex:")
 			if expr == "" {
 				return nil, fmt.Errorf("%w: line %d: an empty regex", ErrRules, n)
+			}
+			if err := readOtherwise(expr); err != nil {
+				return nil, fmt.Errorf("%w: line %d: %v", ErrRules, n, err)
 			}
 		case strings.HasPrefix(match, "glob:"):
 			g := strings.TrimPrefix(match, "glob:")
@@ -220,9 +251,10 @@ func parseTemplate(t string, re *regexp.Regexp) ([]templatePart, error) {
 			if ref == "" {
 				return nil, errors.New(`an empty \g<>`)
 			}
-			if g, err := strconv.Atoi(ref); err == nil {
-				if g < 0 {
-					return nil, fmt.Errorf("group %d", g)
+			if allDigits(ref) {
+				g, err := strconv.Atoi(ref)
+				if err != nil {
+					return nil, fmt.Errorf(`\g<%s>: %v`, ref, err)
 				}
 				if err := group(g); err != nil {
 					return nil, err
@@ -234,6 +266,8 @@ func parseTemplate(t string, re *regexp.Regexp) ([]templatePart, error) {
 			}
 			flush()
 			out = append(out, templatePart{name: ref, group: -1})
+		case c == '0' || isOctal(c) && i+2 < len(t) && isOctal(t[i+1]) && isOctal(t[i+2]):
+			return nil, errors.New("an octal escape, which Python reads as a character")
 		case c >= '1' && c <= '9':
 			g := int(c - '0')
 			if i+1 < len(t) && t[i+1] >= '0' && t[i+1] <= '9' {
@@ -268,6 +302,53 @@ func parseTemplate(t string, re *regexp.Regexp) ([]templatePart, error) {
 	}
 	flush()
 	return out, nil
+}
+
+func isOctal(c byte) bool { return c >= '0' && c <= '7' }
+
+func allDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// readOtherwise refuses a regex holding a construct Go compiles but
+// reads otherwise than Python: {,n} outside a class, and a POSIX class
+// [:name:] inside one. Escaped characters are skipped, and a ] first in
+// a class is a member of it.
+func readOtherwise(expr string) error {
+	inClass, first := false, 0
+	for i := 0; i < len(expr); i++ {
+		c := expr[i]
+		if c == '\\' {
+			i++
+			continue
+		}
+		if inClass {
+			switch {
+			case c == '[' && i+1 < len(expr) && expr[i+1] == ':':
+				return errors.New("a POSIX class [:name:], which Python reads as a plain set")
+			case c == ']' && i > first:
+				inClass = false
+			}
+			continue
+		}
+		switch c {
+		case '[':
+			inClass, first = true, i+1
+			if first < len(expr) && expr[first] == '^' {
+				first++
+			}
+		case '{':
+			if i+1 < len(expr) && expr[i+1] == ',' {
+				return errors.New("{,n}, which Python reads as 0 to n and Go as the text itself")
+			}
+		}
+	}
+	return nil
 }
 
 // globToRegex translates a glob as Python's fnmatch.translate does,

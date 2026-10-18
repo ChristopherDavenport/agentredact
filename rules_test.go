@@ -34,6 +34,14 @@ func TestParseRules(t *testing.T) {
 		{"glob unclosed bracket", "glob:a[b==>X", "a[b", "X"},
 		{"glob quotes regex syntax", "glob:a.b==>X", "a.b axb", "X axb"},
 		{"literals before regexes", "regex:b+==>R\nab==>L", "ab abb", "L LR"},
+		{"BOM dropped", "\ufefffake-secret==>X", "a fake-secret", "a X"},
+		{"trailing space kept", "sk-fake ==>X", "sk-fake sk-fake\n", "Xsk-fake\n"},
+		{"$ only at the very end", `regex:tok \S+$==>X`, "tok abc\n", "tok abc\n"},
+		{"$ with (?m)", `regex:(?m)tok \S+$==>X`, "tok abc\n", "X\n"},
+		{"escaped brace", `regex:a\{,2}==>X`, "a{,2}", "X"},
+		{"brace in a class", `regex:[{,]==>X`, "{,", "XX"},
+		{"bracket first in a class", `regex:[]:]==>X`, "]:", "XX"},
+		{"two-digit group", `regex:(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)==>\10`, "abcdefghij", "j"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r, err := ParseRules(strings.NewReader(tt.rules))
@@ -65,6 +73,14 @@ func TestParseRulesErrors(t *testing.T) {
 		{"octal escape", `regex:a==>\0`, "line 1"},
 		{"trailing backslash", `regex:a==>b\`, "line 1"},
 		{"not UTF-8", "ok\n\xff\xfe", "line 2"},
+		{"{,n}", "regex:sk-[a-z0-9]{,40}", "line 1"},
+		{"POSIX class", "ok\nregex:[[:alpha:]]+", "line 2"},
+		{"POSIX class after a member", "regex:[a[:digit:]]", "line 1"},
+		{"three-digit octal", `regex:(a)==>\101`, "line 1"},
+		{"signed group number", `regex:(a)==>\g<+1>`, "line 1"},
+		{"whitespace line", "ok\n \t\n", "line 2"},
+		{"bare CR", "one\rtwo\nthree", "line 1"},
+		{"CR inside a CRLF file", "a\r\nb\rc\r\n", "line 2"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := ParseRules(strings.NewReader(tt.rules))
