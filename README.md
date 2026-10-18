@@ -45,11 +45,67 @@ p := agentredact.Profile{
 res, err := agentredact.Redact(p, original, nil) // or the earlier redaction, to grow it
 ```
 
+`Result.Blobs` holds the blobs the redacted session needs beyond the
+original's, such as the placeholder that replaced a sidecar image,
+keyed by hash; store them beside it.
+
 A profile names one set of rules; change the rules and bump the
 version, or two redactions end up mixed in one session.
 `ParseRules` reads a rules file in git-filter-repo's `--replace-text`
 form (`literal==>replacement`, `regex:pattern==>replacement`,
 `glob:pattern==>replacement`, a bare line for `***REMOVED***`).
+
+### Leaving entries out
+
+Structural redactors go in `Entries` beside the others; session
+redactors in `Sessions`:
+
+```go
+// Fold reasoning items into block placeholders, deciding from the entry alone.
+p.Entries = append(p.Entries, agentredact.BlockOut(func(c *agentredact.EntryContext, e agentsession.Entry) bool {
+	it, ok := c.Entry().(*agentsession.ItemEntry)
+	return ok && it.Item.ItemType() == openresponses.ItemTypeReasoning
+}))
+p.Sessions = []agentredact.SessionRedactor{agentredact.KeepLeafPath()}
+```
+
+- `LeaveOut(match)` writes nothing for a matching entry: the entries
+  under it hang from the nearest entry kept above it.
+- `BlockOut(match)` folds matching entries into block placeholders: a
+  run of them along a path becomes one custom entry
+  (`"ns":"agentredact"`, `"data":{"redacted":"block","entries":n}`)
+  marked with their positions, `[[from, to]]` where they are
+  consecutive. A placeholder adds nothing to the model's context, so a
+  redacted session's requests are the original's less what was left
+  out. A run is written once a kept entry follows it on its path; a
+  run at the end of a path is withheld until one does, so a block is
+  one placeholder however the original grows.
+- `KeepLeafPath()` keeps only the path to the session's leaf (its head
+  in a store); `DropBranches(drop)` leaves out each entry `drop`
+  selects and everything under it. Session redactors run first, and
+  what they leave out reaches no other redactor and needs no
+  placeholder.
+- Your own: a `StructureRedactor` returns the entries to write in an
+  entry's place, none, or `Block()`; a `SessionRedactor` returns which
+  entries to leave out, whole branches only.
+
+What is left out never breaks the format. A call leaves with its
+output, dispatches, decisions and links; a response with its items, when
+every one of them is left out; a run's end with its start. Leaving out
+a member of such a group while its head is kept, a config entry, or
+what a compaction's `first_kept` needs, is refused with an error naming
+the position (`ErrSplitsCall`, `ErrSplitsResponse`, `ErrSplitsRun`,
+`ErrLeavesOutConfig`, `ErrFirstKept`, `ErrNoPlace`, `ErrBreaksRecords`).
+Where leaving out changes a kept entry, `Redact` carries it through: a
+reference names what was kept in the entry's place, a run end's pending
+list and reason follow its redacted segment, a pinned item leaves with
+its entry, and an omit list loses what was left out.
+
+Resuming stays equal to a fresh redaction as long as each decision
+rests on the entry and its path, which a fork and its origin then share
+too. A decision that reads more, such as `KeepLeafPath` after the leaf
+moved to another branch, makes `Redact` refuse to resume with
+`ErrResumeDiverged`; redact afresh.
 
 ### What is not found
 
@@ -103,9 +159,9 @@ profile's redactors never see them:
   or a link naming one, which hold that session's original IDs until
   the store pass re-points them; each is reported in `Result.Findings`;
 - an env entry's file hashes, when the profile has no `Environment`;
-- a sidecar reference, when the profile has no `Images`; with it, each
-  is reported, since replacing one needs a blob write, which comes with
-  the store pass;
+- a sidecar reference, when the profile has no `Images`; with it, a
+  sidecar image is replaced, and other sidecar media, such as a file,
+  is kept and reported;
 - an instruction part named by the hash of a text no earlier entry
   holds keeps the original's hash, which can confirm a guessed text;
   each is reported, by its id;
@@ -122,9 +178,10 @@ backstop for what the redactors miss, not a guarantee.
 ## Status
 
 Profiles, the string redactors (`Secrets`, `HomePaths`, `Patterns`,
-`ParseRules`), the entry redactors `Environment` and `Images` (inline
-images), and `Redact`, which applies a profile to one session, are
-here. The design is [docs/plans/agentredact.md](docs/plans/agentredact.md);
+`ParseRules`), the entry redactors `Environment` and `Images`, the
+structural redactors `LeaveOut` and `BlockOut`, the session redactors
+`KeepLeafPath` and `DropBranches`, and `Redact`, which applies a
+profile to one session, are here. The design is [docs/plans/agentredact.md](docs/plans/agentredact.md);
 the work is tracked in issues
 [#2](https://github.com/ChristopherDavenport/agentredact/issues/2) (redactors),
 [#3](https://github.com/ChristopherDavenport/agentredact/issues/3) (the store pass),

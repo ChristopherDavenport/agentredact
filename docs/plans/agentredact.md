@@ -154,6 +154,23 @@ text depends only on what it replaces. A fork and its origin then give
 their shared prefix the same bytes, and a rerun writes what it wrote
 before, so a store pass converges instead of forking its own output.
 
+**Leaving out, and resuming.** What a redaction writes at a position
+depends on the original's entries up to it alone: a structural
+decision reads the entry and its path, a group is led by its earliest
+entry (a call takes its records, a run's start its end, and a
+response's items, all left out, take the response), and a block
+placeholder is written as the step that writes the kept entry closing
+its run, a run at the end of a path being withheld. So no progress
+record is needed: a resume replays every position up to the highest
+any marked entry names, ranges included, matching what a fresh
+redaction writes there against what the redaction holds, which
+restores the runs still withheld, and writes the rest. A session
+redactor that reads the whole session, such as keeping the leaf's
+path, can make that match fail after growth; the resume is then
+refused rather than written. The placeholder is a custom entry under
+`agentredact`, not an item: it adds nothing to the requests, so a
+redacted session's requests are the original's less what was left out.
+
 **Profiles.** A profile names a redactor set and its version, such as
 `default@1`. It is written to `redacted_from.profile` and goes into the
 derived ID, so two profiles of one original are two sessions, and one
@@ -276,9 +293,6 @@ verdicts, and each safe to run again.
   bounded?
 - First dataset host: Hugging Face? Does a dataset repository count as
   a store, and does its upload client clear the dependency rule?
-- Resuming per branch: positions find the work already done, but a
-  redactor that leaves entries out, or a session redactor that drops a
-  branch, needs to record its own progress.
 - Catching a profile reused for changed rules: a digest of the rules
   would confirm guessed secret values if published, so it can only be
   kept beside the private store, never in `redacted_from`.

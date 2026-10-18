@@ -50,3 +50,35 @@ versions may break the API.
   strings, references into other sessions, extension entries, and
   instruction parts that keep the original's hash.
 - Changed: `make deps` checks what the tests import too.
+- Added: structural redactors. `StructureRedactor`, an `EntryRedactor`
+  that `Redact` finds by type assertion in `Profile.Entries`, returns
+  the entries to write in an entry's place (`Made`, `[]` for one
+  added), none to leave it out, or `Block()` to fold it into a block
+  placeholder; `LeaveOut` and `BlockOut` are the built-ins, and
+  `StructureRedactorFunc` the adapter. A block placeholder is a custom
+  entry under `PlaceholderNS` (`agentredact`) marked with the positions
+  it stands for, `[[from, to]]` where consecutive, written once a kept
+  entry follows its run on the path and withheld while the run is open.
+- Added: session redactors, in the new `Profile.Sessions`:
+  `SessionRedactor`, `KeepLeafPath` and `DropBranches`. They leave out
+  whole branches before any entry is redacted.
+- Added: what is left out stays valid. A call leaves with its output,
+  dispatches, decisions and links, a response with all its items, a
+  run's end with its start; references to what was left out name what
+  was kept in its place or are removed; a run end's pending list and
+  reason, a compaction's pinned items and first_kept, and omit lists are
+  carried through. What would break a rule is refused by name:
+  `ErrSplitsCall`, `ErrSplitsResponse`, `ErrSplitsRun`,
+  `ErrLeavesOutConfig`, `ErrFirstKept`, `ErrNoPlace`,
+  `ErrBreaksRecords`, `ErrSessionRedactor`.
+- Changed: `Redact` resumes by replaying the positions an existing
+  redaction covers, ranges included, matching what a fresh redaction
+  writes there against what it holds, so a resume equals a fresh
+  redaction with entries left out and runs withheld; one that cannot,
+  as after a `KeepLeafPath` leaf moved to another branch, is refused
+  with `ErrResumeDiverged`.
+- Changed: `Images` replaces sidecar images too, with a sidecar
+  reference to the placeholder's bytes, and `Redact` returns the blobs
+  the redacted session needs in `Result.Blobs`, keyed by hash, through
+  the new `EntryContext.AddBlob`. Sidecar media that is not an image is
+  kept and reported.
