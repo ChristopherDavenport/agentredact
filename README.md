@@ -90,22 +90,45 @@ p.Sessions = []agentredact.SessionRedactor{agentredact.KeepLeafPath()}
   entries to leave out, whole branches only.
 
 What is left out never breaks the format. A call leaves with its
-output, dispatches, decisions and links; a response with its items, when
-every one of them is left out; a run's end with its start. Leaving out
-a member of such a group while its head is kept, a config entry, or
-what a compaction's `first_kept` needs, is refused with an error naming
-the position (`ErrSplitsCall`, `ErrSplitsResponse`, `ErrSplitsRun`,
-`ErrLeavesOutConfig`, `ErrFirstKept`, `ErrNoPlace`, `ErrBreaksRecords`).
-Where leaving out changes a kept entry, `Redact` carries it through: a
-reference names what was kept in the entry's place, a run end's pending
-list and reason follow its redacted segment, a pinned item leaves with
-its entry, and an omit list loses what was left out.
+output, dispatches, decisions and links; a queued input with the items
+drained from it, since it holds the input verbatim; a response with its
+items, when every one of them is left out; a run's end with its start.
+Leaving out a member of such a group while its head is kept, a config
+entry, a compaction, or what a compaction's `first_kept` needs, is
+refused with an error naming the position (`ErrSplitsCall`,
+`ErrSplitsQueued`, `ErrSplitsResponse`, `ErrSplitsRun`,
+`ErrLeavesOutConfig`, `ErrLeavesOutCompaction`, `ErrFirstKept`,
+`ErrNoPlace`, `ErrGroupHead`, `ErrBreaksRecords`). Session redactors are
+held to the same group rules before anything is written, so
+`KeepLeafPath` refuses a session whose path relies on another branch,
+such as a call answered on the path whose dispatch is off it.
 
-Resuming stays equal to a fresh redaction as long as each decision
-rests on the entry and its path, which a fork and its origin then share
-too. A decision that reads more, such as `KeepLeafPath` after the leaf
-moved to another branch, makes `Redact` refuse to resume with
-`ErrResumeDiverged`; redact afresh.
+Where leaving out changes a kept entry, `Redact` carries it through. A
+reference names the entry's block placeholder; with none, a label or
+outcome naming it is left out too, and a `judged_by` target, a
+`parents` element, a `queued_from` or an omit item is removed. A run
+end's pending list and reason follow its redacted segment, a pinned
+item leaves with its entry, and an omit list loses what was left out.
+
+Some kept entries restate what was left out and cannot lose it without
+changing requests. `Redact` keeps them and reports each in
+`Result.Findings`, with no value:
+
+- a branch summary of a branch left out, which `KeepLeafPath` and
+  `DropBranches` leave on the kept path;
+- a compaction whose summary, or a provider's encrypted compaction
+  item, covers entries left out before its `first_kept`;
+- an entry converging a branch left out: what it merged is in its own
+  payload;
+- an item's `source` or a run start's `trigger` copying the trigger of
+  a queued input left out.
+
+Resuming stays equal to a fresh redaction, byte for byte, as long as
+each redactor's output rests on the entry and its path, which a fork
+and its origin then share too. A resume rebuilds every entry it already
+holds and refuses, with `ErrResumeDiverged` and before writing, one
+that differs: a profile name reused for changed rules, or
+`KeepLeafPath` after the leaf moved to another branch. Redact afresh.
 
 ### What is not found
 

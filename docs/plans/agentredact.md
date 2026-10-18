@@ -157,14 +157,16 @@ before, so a store pass converges instead of forking its own output.
 **Leaving out, and resuming.** What a redaction writes at a position
 depends on the original's entries up to it alone: a structural
 decision reads the entry and its path, a group is led by its earliest
-entry (a call takes its records, a run's start its end, and a
-response's items, all left out, take the response), and a block
+entry (a call takes its records, a run's start its end, a queued
+input the items drained from it, and a response's items, all left out,
+take the response), and a block
 placeholder is written as the step that writes the kept entry closing
 its run, a run at the end of a path being withheld. So no progress
 record is needed: a resume replays every position up to the highest
-any marked entry names, ranges included, matching what a fresh
-redaction writes there against what the redaction holds, which
-restores the runs still withheld, and writes the rest. A session
+any marked entry names, ranges included, rebuilding what a fresh
+redaction writes there and requiring the redaction to hold an entry of
+the same ID, which restores the runs still withheld and refuses a
+profile reused for changed rules, and writes the rest. A session
 redactor that reads the whole session, such as keeping the leaf's
 path, can make that match fail after growth; the resume is then
 refused rather than written. The placeholder is a custom entry under
