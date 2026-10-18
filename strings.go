@@ -2,6 +2,7 @@ package agentredact
 
 import (
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -51,19 +52,30 @@ func compactSorted(s []string) []string {
 }
 
 // HomePaths shortens paths under the home directory home: home followed
-// by a separator, '/' or '\', becomes "~" and that separator, so
-// /home/example/src becomes ~/src and C:\Users\example\src becomes
-// ~\src, and home itself becomes "~" where it ends the string or is
-// followed by anything but a letter, a digit, '_' or '-', which would
-// make it part of a longer name. So /home/example2, another user's
-// home, is left alone, where agentsession's export.HomePaths would have
-// written ~2, while "/home/example." ending a sentence, and
-// /home/example.bak, become "~." and ~.bak.
+// by a separator becomes "~" and that separator, so /home/example/src
+// becomes ~/src and C:\Users\example\src becomes ~\src, and home itself
+// becomes "~" where it ends the string or is followed by anything but a
+// letter, a digit, '_' or '-', which would make it part of a longer
+// name. So /home/example2, another user's home, is left alone, where
+// agentsession's export.HomePaths would have written ~2, while
+// "/home/example." ending a sentence, and /home/example.bak, become "~."
+// and ~.bak. Home must also start the string or follow a character that
+// cannot be part of a path segment, so /mnt/backup/home/example is left
+// alone; anything but a letter, a digit, '.', '_' or '-' will do, a
+// quote, a space or a colon.
+//
+// Between home's segments any separator matches, whatever home was
+// given with: '/', '\', and the JSON-escaped spellings '\\' and '\/',
+// as a tool's JSON output or a repr holds them; so C:/Users/example/src
+// and C:\\Users\\example\\src are shortened too. A drive letter matches
+// in either case (c:\Users\example), as Windows tools write it; the
+// other segments match as written. A spelling with a doubled separator,
+// /home//example, is not matched.
 //
 // home is taken as written, trailing separators trimmed, and a home
 // holding no backslash is cleaned as a slash path; the result does not
-// depend on the platform it runs on. An empty home, ".", "/" or "\"
-// changes nothing.
+// depend on the platform it runs on. An empty home, ".", "/", "\" or a
+// drive alone changes nothing.
 func HomePaths(home string) StringRedactor {
 	if !strings.Contains(home, `\`) && home != "" {
 		home = path.Clean(home)
@@ -71,30 +83,71 @@ func HomePaths(home string) StringRedactor {
 	for len(home) > 1 && (strings.HasSuffix(home, "/") || strings.HasSuffix(home, `\`)) {
 		home = home[:len(home)-1]
 	}
-	if home == "" || home == "." || home == "/" || home == `\` {
+	re := homePattern(home)
+	if re == nil {
 		return func(s string) string { return s }
 	}
 	return func(s string) string {
-		if !strings.Contains(s, home) {
+		matches := re.FindAllStringIndex(s, -1)
+		if matches == nil {
 			return s
 		}
 		var b strings.Builder
-		for {
-			i := strings.Index(s, home)
-			if i < 0 {
-				b.WriteString(s)
-				return b.String()
+		last := 0
+		for _, m := range matches {
+			before := m[0] == 0 || !partOfSegment(s[m[0]-1])
+			rest := s[m[1]:]
+			after := rest == "" || rest[0] == '/' || rest[0] == '\\' || !continuesSegment(rest[0])
+			if !before || !after {
+				continue
 			}
-			b.WriteString(s[:i])
-			rest := s[i+len(home):]
-			if rest == "" || !continuesSegment(rest[0]) {
-				b.WriteString("~")
-			} else {
-				b.WriteString(home)
-			}
-			s = rest
+			b.WriteString(s[last:m[0]])
+			b.WriteString("~")
+			last = m[1]
 		}
+		b.WriteString(s[last:])
+		return b.String()
 	}
+}
+
+// homeSeparator matches one separator as a string may spell it: '/',
+// '\', and the JSON-escaped '\\' and '\/', the longer spellings first.
+const homeSeparator = `(?:\\\\|\\/|/|\\)`
+
+// homePattern is the pattern home's spellings match, or nil for a home
+// that changes nothing.
+func homePattern(home string) *regexp.Regexp {
+	if home == "" || home == "." {
+		return nil
+	}
+	var b strings.Builder
+	rest := home
+	if len(home) >= 2 && home[1] == ':' && (home[0] >= 'a' && home[0] <= 'z' || home[0] >= 'A' && home[0] <= 'Z') {
+		b.WriteString("[" + strings.ToLower(home[:1]) + strings.ToUpper(home[:1]) + "]:")
+		rest = home[2:]
+	}
+	lead := 0
+	for lead < len(rest) && (rest[lead] == '/' || rest[lead] == '\\') {
+		lead++
+	}
+	segs := strings.FieldsFunc(rest[lead:], func(r rune) bool { return r == '/' || r == '\\' })
+	if len(segs) == 0 {
+		return nil
+	}
+	b.WriteString(strings.Repeat(homeSeparator, lead))
+	for i, seg := range segs {
+		if i > 0 {
+			b.WriteString(homeSeparator)
+		}
+		b.WriteString(regexp.QuoteMeta(seg))
+	}
+	return regexp.MustCompile(b.String())
+}
+
+// partOfSegment reports whether c, before a home directory, makes it
+// the tail of a longer path rather than the directory itself.
+func partOfSegment(c byte) bool {
+	return isAlnum(c) || c == '.' || c == '_' || c == '-' || c >= 0x80
 }
 
 // continuesSegment reports whether c, after a home directory, makes it
@@ -125,10 +178,30 @@ func Patterns(patterns ...guard.Pattern) StringRedactor {
 	}
 }
 
-// DefaultPatterns is [Patterns] over agentpolicy's guard.DefaultSecrets
-// as they are when it is called: cloud and API keys with a recognisable
-// prefix, the common hosting and chat services' tokens, private key
-// blocks and JSON web tokens.
+// DefaultPatterns is [Patterns] over [DefaultSecretPatterns].
 func DefaultPatterns() StringRedactor {
-	return Patterns(guard.DefaultSecrets...)
+	return Patterns(DefaultSecretPatterns()...)
+}
+
+// DefaultSecretPatterns returns, afresh on each call, the patterns
+// [DefaultPatterns] uses: a copy of agentpolicy v0.0.17's
+// guard.DefaultSecrets, cloud and API keys with a recognisable prefix,
+// the common hosting and chat services' tokens, private key blocks and
+// JSON web tokens. It is a copy, not guard.DefaultSecrets itself, which
+// is a variable any linked package may append to and an agentpolicy
+// upgrade may change: either would change what a profile writes under
+// the same name. A test fails when agentpolicy's list differs from this
+// one, so a change is taken here deliberately, with the profiles that
+// use it given a new version.
+func DefaultSecretPatterns() []guard.Pattern {
+	return []guard.Pattern{
+		{Name: "aws_access_key", Regexp: regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`)},
+		{Name: "github_token", Regexp: regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{36,}\b`)},
+		{Name: "github_pat", Regexp: regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{22,}\b`)},
+		{Name: "slack_token", Regexp: regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`)},
+		{Name: "google_api_key", Regexp: regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`)},
+		{Name: "openai_key", Regexp: regexp.MustCompile(`\bsk-(?:[A-Za-z0-9]+-)?[A-Za-z0-9_-]{20,}\b`)},
+		{Name: "private_key", Regexp: regexp.MustCompile(`-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )?PRIVATE KEY-----|-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----`)},
+		{Name: "jwt", Regexp: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)},
+	}
 }

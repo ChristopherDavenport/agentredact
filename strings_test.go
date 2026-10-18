@@ -77,6 +77,17 @@ func TestHomePaths(t *testing.T) {
 		{`C:\Users\example`, `C:\Users\example\src\x.go`, `~\src\x.go`},
 		{`C:\Users\example\`, `C:\Users\example`, `~`},
 		{"/home/./example", "/home/example/x", "~/x"},
+		{`C:\Users\example`, `c:\Users\example\src`, `~\src`},
+		{`C:\Users\example`, `C:/Users/example/src`, `~/src`},
+		{`C:\Users\example`, `"C:\\Users\\example\\src"`, `"~\\src"`},
+		{"/home/example", `"\/home\/example\/src"`, `"~\/src"`},
+		{"/home/example", `/home\example/x`, `~/x`},
+		{`C:\Users\example`, `C:\users\example`, `C:\users\example`},
+		{"/home/example", "/mnt/backup/home/example/x", "/mnt/backup/home/example/x"},
+		{"/home/example", "x/home/example", "x/home/example"},
+		{"/home/example", "path:/home/example", "path:~"},
+		{"/home/example", "/home//example/x", "/home//example/x"},
+		{`C:\`, `C:\x`, `C:\x`},
 		{"", "/home/example", "/home/example"},
 		{"/", "/etc", "/etc"},
 		{".", "./x", "./x"},
@@ -120,5 +131,26 @@ func TestChain(t *testing.T) {
 	r := Chain(Secrets("/home/example"), HomePaths("/home/example"))
 	if got := r("/home/example/x"); got != "[REDACTED]/x" {
 		t.Errorf("Chain = %q", got)
+	}
+}
+
+// TestDefaultSecretPatternsPinned fails when agentpolicy's
+// guard.DefaultSecrets differs from the copy DefaultPatterns uses: take
+// the change into DefaultSecretPatterns deliberately, and give every
+// profile that uses it a new version.
+func TestDefaultSecretPatternsPinned(t *testing.T) {
+	ours := DefaultSecretPatterns()
+	if len(ours) != len(guard.DefaultSecrets) {
+		t.Fatalf("agentpolicy has %d default patterns, the copy %d", len(guard.DefaultSecrets), len(ours))
+	}
+	for i, p := range guard.DefaultSecrets {
+		if ours[i].Name != p.Name || ours[i].Regexp.String() != p.Regexp.String() {
+			t.Errorf("pattern %d: agentpolicy has %s %q, the copy %s %q", i, p.Name, p.Regexp, ours[i].Name, ours[i].Regexp)
+		}
+	}
+	// A fresh copy each call: changing one changes nothing else.
+	ours[0].Name = "changed"
+	if DefaultSecretPatterns()[0].Name == "changed" {
+		t.Error("DefaultSecretPatterns shares its list")
 	}
 }
