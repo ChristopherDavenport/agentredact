@@ -34,13 +34,18 @@ reach="$direct$family/agentturn $family/agenttool "
 # module is one go list could not resolve, which go build would refuse
 # too. awk joins the two, since bash 3.2, which macOS ships, has no
 # associative arrays.
-pkgs=$($GO list -deps -f '{{if not .Standard}}{{.ImportPath}} {{with .Module}}{{.Path}}{{else}}?{{end}}{{end}}' ./...)
-imports=$($GO list -f '{{.ImportPath}}{{range .Imports}} {{.}}{{end}}' ./...)
+#
+# -test takes in what the tests import, which run on the same unredacted
+# sessions. It lists a package's test variant as "pkg [pkg.test]", so the
+# module is printed first and the import path second, and the bracketed
+# variant name is a field no package is keyed by.
+pkgs=$($GO list -deps -test -f '{{if not .Standard}}{{with .Module}}{{.Path}}{{else}}?{{end}} {{.ImportPath}}{{end}}' ./...)
+imports=$($GO list -test -f '{{.ImportPath}}{{range .Imports}} {{.}}{{end}}' ./...)
 
 # Direct imports, by module, from the direct set alone; then every
 # module the build reaches, from the reach set.
 awk -v direct="$direct" -v reach="$reach" '
-  FNR == NR { if (NF) mod[$1] = $2; next }
+  FNR == NR { if (NF) mod[$2] = $1; next }
   {
     for (i = 2; i <= NF; i++) {
       if (!($i in mod)) continue # the standard library
