@@ -27,16 +27,62 @@ current, a TruffleHog scan, an LLM review, a manifest, and a publish to
 a redacted-only store or a dataset export. Secrets encoded in base64,
 URL encoding or image bytes are not found by the redactors.
 
+## Redacting a session
+
+```go
+p := agentredact.Profile{
+	Name: "default@1",
+	Strings: []agentredact.StringRedactor{
+		agentredact.Secrets(apiKey),
+		agentredact.HomePaths(home),
+		agentredact.DefaultPatterns(),
+	},
+	Entries: []agentredact.EntryRedactor{
+		agentredact.Environment(),
+		agentredact.Images(agentredact.DefaultImagePlaceholder),
+	},
+}
+res, err := agentredact.Redact(p, original, nil) // or the earlier redaction, to grow it
+```
+
+A profile names one set of rules; change the rules and bump the
+version, or two redactions end up mixed in one session.
+`ParseRules` reads a rules file in git-filter-repo's `--replace-text`
+form (`literal==>replacement`, `regex:pattern==>replacement`,
+`glob:pattern==>replacement`, a bare line for `***REMOVED***`).
+
+### What is not found
+
+The string redactors match text as it is written. They do not find:
+
+- a secret encoded in base64, such as one inside a basic-auth header,
+  a JWT payload or a base64 blob a tool printed;
+- a secret in URL encoding (`%2F`, `+` for a space) or any other
+  escaping the session holds as text;
+- anything in an image's bytes: inline media reaches a redactor as its
+  undecoded data URL, `Images` replaces an image whole or keeps it, and
+  nothing reads the text in a screenshot;
+- a secret split across two strings, or across an instruction part
+  boundary.
+
+A sidecar image is left as it is and reported in `Result.Findings`;
+replacing it needs a blob write, which comes with the store pass. The
+scan and the review are the backstop for what the redactors miss, not
+a guarantee.
+
 ## Status
 
-A scaffold. The design is [docs/plans/agentredact.md](docs/plans/agentredact.md);
+Profiles, the string redactors (`Secrets`, `HomePaths`, `Patterns`,
+`ParseRules`), the entry redactors `Environment` and `Images` (inline
+images), and `Redact`, which applies a profile to one session, are
+here. The design is [docs/plans/agentredact.md](docs/plans/agentredact.md);
 the work is tracked in issues
 [#2](https://github.com/ChristopherDavenport/agentredact/issues/2) (redactors),
 [#3](https://github.com/ChristopherDavenport/agentredact/issues/3) (the store pass),
 [#4](https://github.com/ChristopherDavenport/agentredact/issues/4) (scan),
 [#5](https://github.com/ChristopherDavenport/agentredact/issues/5) (review) and
 [#6](https://github.com/ChristopherDavenport/agentredact/issues/6) (manifest and publish).
-There is no API or command yet.
+There is no command yet.
 
 ## Development
 

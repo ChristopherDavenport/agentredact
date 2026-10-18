@@ -7,11 +7,16 @@
 // profile, and its hashes, request hashes included, are computed over
 // what it holds, so it verifies, grows and resumes like any other.
 //
-// The package will hold the redactors, at three levels (strings,
-// entries, sessions), deterministic and named by a profile, and the
-// pass that keeps one redacted session per original per profile in the
-// same store, appending as the original grows; the scan, review and
-// publish stages are packages of their own. What a valid redacted
+// A [Profile] names a set of redactors: [StringRedactor]s, joined into
+// the one function an agentsession Rewriter applies to every string,
+// such as [Secrets], [HomePaths], [Patterns] and the rules [ParseRules]
+// reads; and [EntryRedactor]s, applied to each entry after, such as
+// [Environment] and [Images]. All are deterministic. [Redact] applies a
+// profile to one session and returns the redacted session in memory,
+// or grows an earlier redaction by what the original appended. The
+// pass that keeps one redacted session per original per profile in a
+// store is to come; the scan, review and publish stages are packages
+// of their own. What a valid redacted
 // session is, and what a store does with one, is agentsession's: this
 // module reaches strings through its Rewriter, references through
 // RemapRefs, positions through SetRedacted and request hashes through
