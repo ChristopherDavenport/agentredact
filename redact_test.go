@@ -387,8 +387,18 @@ func TestRedact(t *testing.T) {
 			p := testProfile()
 			res := redact(t, p, orig, nil)
 			checkRedaction(t, p, orig, res)
-			if len(res.Findings) != 0 {
-				t.Errorf("findings %+v", res.Findings)
+			var want []Finding
+			if orig.Header().ParentSession != "" {
+				// A fork redacted alone keeps its origin's ID, and says so.
+				want = []Finding{{At: "/parent_session", Redactor: "redact"}}
+			}
+			if len(res.Findings) != len(want) {
+				t.Fatalf("findings %+v, want %+v", res.Findings, want)
+			}
+			for i, f := range res.Findings {
+				if f.Position != want[i].Position || f.At != want[i].At || f.Redactor != want[i].Redactor {
+					t.Errorf("finding %+v, want %+v", f, want[i])
+				}
 			}
 		})
 	}

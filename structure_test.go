@@ -175,11 +175,6 @@ func marks(t *testing.T, s *agentsession.Session) []string {
 	return out
 }
 
-func isPlaceholder(e agentsession.Entry) bool {
-	c, ok := e.(*agentsession.CustomEntry)
-	return ok && c.NS == PlaceholderNS
-}
-
 // checkStructural holds a fresh redaction that may leave entries out to
 // every rule: the marks wanted, each kept entry of its original's type
 // and each placeholder counting what it stands for, the file reading

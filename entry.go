@@ -122,10 +122,10 @@ func (c *EntryContext) AddBlob(data []byte) string {
 // never published with it.
 type Finding struct {
 	// Position is the entry's position in the original's file order,
-	// counting from 1.
+	// counting from 1, or 0 for the redacted session's header.
 	Position int
-	// At is an RFC 6901 pointer into the redacted entry, built from its
-	// rewritten member names, "" for the whole entry.
+	// At is an RFC 6901 pointer into the redacted entry, or the header,
+	// built from its rewritten member names, "" for the whole entry.
 	At string
 	// Redactor names what reported it: an entry redactor's name, or
 	// "redact" for Redact itself.
