@@ -646,3 +646,37 @@ func TestZeroTimestamp(t *testing.T) {
 		}
 	}
 }
+
+// TestKeepLeafPathRewindInRun: a session rewound inside a run redacts
+// under KeepLeafPath; the run's end, on the abandoned branch, goes with
+// it, and the run reads as open on the kept path, as in the original.
+//
+//	1 start  2 user  3 msg  4 resp-1  5 user (abandoned)  6 msg  7 resp-x
+//	8 end done  [abandoned]   9 user (4)  10 msg  11 resp-2  [leaf]
+func TestKeepLeafPathRewindInRun(t *testing.T) {
+	c := &clock{}
+	s := agentsession.New(agentsession.Header{ID: "orig-rewind-run", CreatedAt: t0, Records: []string{agentsession.TypeRun}})
+	appendAt(t, s, c, agentsession.NewRunStart("run-1", agentsession.SourceInput, ""))
+	appendAt(t, s, c, user("question"))
+	resp1 := turn(t, s, c, "resp-1", "answer")
+	p := structProfile("test.leaf@1", nil, KeepLeafPath())
+	red := redact(t, p, s, nil).Session
+	appendAt(t, s, c, user("abandoned in the run"))
+	turn(t, s, c, "resp-x", "abandoned reply")
+	appendAt(t, s, c, agentsession.NewRunEnd("run-1", agentsession.ReasonDone, "", nil))
+	if err := s.Branch(resp1); err != nil {
+		t.Fatal(err)
+	}
+	appendAt(t, s, c, user("retry"))
+	turn(t, s, c, "resp-2", "again")
+	res := redact(t, p, s, nil)
+	checkStructural(t, p, s, res, []string{"1", "2", "3", "4", "9", "10", "11"})
+	absent(t, res, "abandoned")
+	runs, err := res.Session.Runs(res.Session.Leaf())
+	if err != nil || len(runs) != 1 || runs[0].End != nil {
+		t.Errorf("runs %+v %v, want one, open", runs, err)
+	}
+	red = resumeEqualsFresh(t, p, s, red)
+	appendAt(t, s, c, user("more on the leaf"))
+	resumeEqualsFresh(t, p, s, red)
+}

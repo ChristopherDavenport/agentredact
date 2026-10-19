@@ -420,7 +420,9 @@ func (r *redaction) splits(e agentsession.Entry, kept func(id string) bool) erro
 // checkSessions holds what the session redactors left out to the group
 // rules, before anything is written: a member of a group left out while
 // its head is kept is refused, as it is of a structural redactor. A
-// head left out takes its members with it, since they are under it.
+// head left out takes its members with it, since they are under it. A
+// run end whose parent is left out too is not refused: it was on no
+// kept path, where the run already reads as open.
 func (r *redaction) checkSessions(out []bool) error {
 	at := make(map[string]int, len(r.order))
 	for i, e := range r.order {
@@ -432,6 +434,11 @@ func (r *redaction) checkSessions(out []bool) error {
 	}
 	for i, e := range r.order {
 		if !out[i] {
+			continue
+		}
+		if end, ok := e.(*agentsession.RunEntry); ok && end.IsEnd() && !kept(end.Parent) {
+			// Never on a kept path: there the run already reads as open,
+			// which RFC 0001 holds ordinary, and EndRun closes on resume.
 			continue
 		}
 		if err := r.splits(e, kept); err != nil {

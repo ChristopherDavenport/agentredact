@@ -65,6 +65,8 @@ versions may break the API.
   before anything is written. `KeepLeafPath` keeps the path's own
   records that sit off it, such as a call's dispatch on a branch a retry
   rewound past, where they sit, and refuses one it cannot keep in place.
+  A run's end left out with its parent leaves the run open on the kept
+  path, under any session redactor.
 - Added: what is left out stays valid. A call leaves with its output,
   dispatches, decisions and links, a queued input with the items drained
   from it, a response with all its items, a run's end with its start. A

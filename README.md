@@ -103,9 +103,11 @@ held to the same group rules before anything is written.
 `KeepLeafPath` widens its own choice instead: it keeps the path's own
 records that sit off it, where they sit, such as the dispatch of a call
 on the path made on a branch a retry rewound past, or a run's end, and
-nothing else of the abandoned branch. One whose parent belongs to the
-abandoned conversation, such as a run's end after a rewind inside the
-run, cannot be kept in place, and the redaction is refused.
+nothing else of the abandoned branch. A run's end left out with its
+parent, as after a rewind inside the run under any session redactor,
+goes with it, and the run reads as open on the kept path, as it does in
+the original. Any other record whose parent belongs to the abandoned
+conversation cannot be kept in place, and the redaction is refused.
 
 Where leaving out changes a kept entry, `Redact` carries it through. A
 reference names the entry's block placeholder; with none, a label or

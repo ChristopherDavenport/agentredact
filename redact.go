@@ -116,8 +116,10 @@ type Result struct {
 // drained from a kept queued input ([ErrSplitsQueued]), a response whose
 // items are kept ([ErrSplitsResponse]), a run end whose start is kept
 // ([ErrSplitsRun]). The same rules hold what the session redactors leave
-// out, checked before anything is written; [KeepLeafPath] keeps the
-// path's own records that sit off it rather than dropping them. A group
+// out, checked before anything is written, but for a run end whose
+// parent they leave out too, which goes with it and leaves the run open
+// on the kept path; [KeepLeafPath] keeps the path's own records that
+// sit off it rather than dropping them. A group
 // head written as an entry of another type is refused ([ErrGroupHead]).
 // So is leaving out a config entry or a compaction ([ErrLeavesOutConfig],
 // [ErrLeavesOutCompaction]): later entries resolve against what they put

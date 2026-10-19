@@ -21,7 +21,10 @@ import (
 // call's output, dispatch, decision or link, an item drained from a
 // queued input, a run's end, or a response left out while what it
 // belongs with is kept is refused ([ErrSplitsCall] and the others), as
-// it is of a structural redactor. It must be
+// it is of a structural redactor. A run's end whose parent is left out
+// too is left out with it: it was on no kept path, where the run
+// already reads as open, as RFC 0001 allows, and a writer resuming the
+// redaction closes it ([agentsession.Session.EndRun]). It must be
 // deterministic. A choice that rests on each entry's path alone, as
 // [DropBranches] given a predicate over the path makes, is the same
 // however the original grows, so a resumed redaction stays equal to a
@@ -42,11 +45,13 @@ type SessionRedactor interface {
 // enveloping items on it, and an item drained from a queued input on
 // it. Such an entry is kept where it sits, under its parent, when that
 // parent is kept, as after a retry that rewound to before a call's
-// dispatch; nothing else of the abandoned branch is. One whose parent
-// is part of the abandoned conversation, such as a run's end after a
-// rewind inside the run, cannot be kept in place, and the redaction is
-// refused with the group's sentinel ([ErrSplitsCall], [ErrSplitsRun] and
-// the others) before anything is written. The redaction then grows with the original as long as the
+// dispatch; nothing else of the abandoned branch is. A run's end whose
+// parent is part of the abandoned conversation, as after a rewind inside
+// the run, is left out with it, and the run reads as open on the path,
+// as it does in the original. Any other record whose parent is part of
+// the abandoned conversation cannot be kept in place, and the redaction
+// is refused with the group's sentinel ([ErrSplitsCall] and the others)
+// before anything is written. The redaction then grows with the original as long as the
 // leaf moves along its branch; once the leaf moves to another branch,
 // entries already redacted are off the new path, and resuming is
 // refused with [ErrResumeDiverged].
@@ -96,7 +101,9 @@ func (keepLeafPath) LeaveOut(original *agentsession.Session, order []agentsessio
 // equal to its origin's; one that reads what came after, such as the
 // entry's siblings, may not (see [SessionRedactor]). As with
 // [KeepLeafPath], summaries and converged results on the kept branches
-// that restate a dropped one stay, and are reported.
+// that restate a dropped one stay, and are reported. A run's end left
+// out with its parent leaves the run open on the kept path; one left
+// out while its parent is kept is refused ([ErrSplitsRun]).
 func DropBranches(drop func(c *EntryContext) bool) SessionRedactor {
 	return dropBranches{drop: drop}
 }
