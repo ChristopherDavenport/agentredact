@@ -390,6 +390,11 @@ func TestRedact(t *testing.T) {
 			if len(res.Findings) != 0 {
 				t.Errorf("findings %+v", res.Findings)
 			}
+			if ps := orig.Header().ParentSession; ps != "" {
+				if got := res.Session.Header().ParentSession; got != agentsession.RedactedSessionID(ps, p.Name) {
+					t.Errorf("parent_session %q, want the derived redaction of %s", got, ps)
+				}
+			}
 		})
 	}
 }
@@ -681,7 +686,8 @@ func TestImagesPlaceholder(t *testing.T) {
 }
 
 // TestRedactWrapsAgentsessionErrors: a refusal from agentsession names
-// the entry that failed and is found by errors.Is.
+// the entry that failed by its position, never its hash, and is found
+// by errors.Is.
 func TestRedactWrapsAgentsessionErrors(t *testing.T) {
 	c := &clock{}
 	s := newOriginal("orig-collide")
@@ -697,8 +703,8 @@ func TestRedactWrapsAgentsessionErrors(t *testing.T) {
 	if !errors.Is(err, agentsession.ErrKeyCollision) {
 		t.Fatalf("err %v, want ErrKeyCollision", err)
 	}
-	if !strings.Contains(err.Error(), "entry 2") || !strings.Contains(err.Error(), id) {
-		t.Errorf("%v does not name entry 2 (%s)", err, id)
+	if !strings.Contains(err.Error(), "entry 2") || strings.Contains(err.Error(), id) || hashRef.MatchString(err.Error()) {
+		t.Errorf("%v does not name entry 2 by its position alone", err)
 	}
 }
 

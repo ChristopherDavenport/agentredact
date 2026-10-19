@@ -38,8 +38,8 @@ func inspect(e agentsession.Entry, f StringRedactor, pos int, findings *[]Findin
 		return err
 	}
 	_, env := e.(*agentsession.EnvEntry)
-	report := func(at, message string) {
-		*findings = append(*findings, Finding{Position: pos, At: at, Redactor: "redact", Message: message})
+	report := func(kind FindingKind, at, message string) {
+		*findings = append(*findings, Finding{Kind: kind, Position: pos, At: at, Redactor: "redact", Message: message})
 	}
 	var walk func(v any, at string) error
 	walk = func(v any, at string) error {
@@ -47,10 +47,10 @@ func inspect(e agentsession.Entry, f StringRedactor, pos int, findings *[]Findin
 		case string:
 			switch {
 			case isBase64DataURL(x) && !isImageDataURL(x):
-				report(at, "inline media that is not an image kept as it is: no redactor replaces it, and text in it is not found")
+				report(FindingInlineMedia, at, "inline media that is not an image kept as it is: no redactor replaces it, and text in it is not found")
 			case !isImageDataURL(x):
 				for range strings.Count(strings.ToLower(x), "data:image/") {
-					report(at, "an image data URL inside a longer string kept as it is: Images replaces whole-string data URLs only")
+					report(FindingEmbeddedImage, at, "an image data URL inside a longer string kept as it is: Images replaces whole-string data URLs only")
 				}
 			}
 		case []any:

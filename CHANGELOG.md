@@ -98,3 +98,55 @@ versions may break the API.
   the redacted session needs in `Result.Blobs`, keyed by hash, through
   the new `EntryContext.AddBlob`. Sidecar media that is not an image is
   kept and reported.
+- Added: `RedactStore`, the store-wide pass (#3). It keeps one
+  redaction per original under a profile in the same store, creating
+  the missing ones through the store's `agentsession.Importer` and
+  appending what originals added since with `Store.Append`; a rerun
+  with nothing new writes nothing. Redacted sessions are skipped. Each
+  original is redacted after the sessions it hashes over (its fork's
+  origin, those its `parents` name), and `StoreOptions.Select` narrows
+  the originals, taking their dependencies along. Blobs a redaction
+  made are written first through the store's `PutBlob` (`BlobWriter`,
+  which the cas store has); in a store without one such a redaction is
+  not written (`ErrNoBlobWriter`). `StoreReport` gives per session the
+  entries and blobs written, whether it was up to date, the findings of
+  the whole redaction on every run, its warnings and the native entries
+  its redaction holds. `Publishable` is false while it holds a native
+  entry, waits, or holds a finding of a kind
+  `StoreOptions.AcceptFindings` does not accept. A session that fails
+  stops its dependents (`ErrDependency`) and no other; sessions in a
+  cycle report `ErrCycle`. A session naming an entry of a session the
+  store does not hold, or a fork whose origin the store does not hold
+  or whose base its snapshot lacks, waits (`WaitingOn`), with nothing
+  written, and so do its dependents. A redaction that grew a new root
+  is refused before writing (`ErrRootAppend`), a known limit until
+  agentsession appends a root. The redaction is released however a
+  write ends; after appends, where the store has `SetHead`, its head is
+  set to where an import of the same file puts it. Planning reads one
+  session at a time; each is read in full at its turn.
+- Added: `WithOrigin` and `Origin`: `Redact` writes a fork as a fork of
+  its origin's redaction, at the entry standing for its base, sharing
+  its prefix, with its own entries counting positions in the fork's
+  file order. The prefix's fates come from replaying the origin's
+  redaction up to the base (`ErrOriginBehind` when it does not reach
+  it); a base the origin's redaction dropped is `ErrBaseLeftOut`. A
+  redaction resumes in the mode it was written in.
+- Changed: `Redact` writes every reference to another session,
+  `parent_session`, a link's `session` and a `parents` element's
+  session, as the redaction the profile derives for it, whether or not
+  that session is at hand, so no original session ID is kept.
+- Added: `WithAlongside` and `Alongside`: the entry a `parents` element
+  names in another session is re-pointed through that session's new
+  `Result.Counterparts`; one left out there is removed and reported,
+  one it does not hold is `ErrUnmappedRef`, and without the
+  counterparts it is kept and reported.
+- Added: `Finding.Kind`, a stable `FindingKind` (`sidecar-media`,
+  `inline-media`, `embedded-image`, `original-hash`,
+  `foreign-reference`, `extension-entry`, `restates-left-out`,
+  `redactor`). `Redact` reports the findings of the whole redaction on
+  every call, a resume's replayed entries included.
+- Changed: no error from `Redact` names an entry of the original by its
+  hash: it is named by its position, and any other hash is elided.
+- Changed: a redaction whose append stopped between a block placeholder
+  and the kept entry closing its run resumes, rather than reading as
+  diverged.
