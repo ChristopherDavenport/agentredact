@@ -25,11 +25,11 @@ import (
 // error; it never passes it silently.
 //
 // One entry in, one entry out. A redactor that leaves an entry out,
-// writes a placeholder for a run of them, merges or splits entries, or
-// drops a branch, changes the session's structure and is not an
-// EntryRedactor: it will be an interface of its own beside this one,
-// which Redact checks for on each redactor of a profile, so redactors
-// written to this one keep working unchanged.
+// folds a run of them into a block placeholder or writes several
+// entries in one's place changes the session's structure: it is a
+// [StructureRedactor], which [Redact] checks for on each redactor of a
+// profile, so redactors written to this interface keep working
+// unchanged. One that drops a branch is a [SessionRedactor].
 type EntryRedactor interface {
 	RedactEntry(c *EntryContext, e agentsession.Entry) (agentsession.Entry, error)
 }
@@ -64,6 +64,7 @@ type EntryContext struct {
 
 	redactor string
 	findings *[]Finding
+	blobs    map[string][]byte
 }
 
 // Path returns the original's path to the entry, root first, the entry
@@ -91,10 +92,25 @@ func (c *EntryContext) Report(at, message string) {
 	*c.findings = append(*c.findings, Finding{Position: c.Position, At: at, Redactor: c.redactor, Message: message})
 }
 
+// AddBlob records data as a blob the redacted session needs, such as
+// the replacement for a sidecar image, and returns its hash,
+// sha256:<hex>, which a sidecar: URL names. [Redact] returns the blobs
+// of the entries it commits in [Result.Blobs] for the caller to store
+// beside the redacted session; it writes none itself. A blob the
+// original holds and the redaction keeps is not added: it is the
+// original's, shared.
+func (c *EntryContext) AddBlob(data []byte) string {
+	hash := agentsession.HashBytes(data)
+	if c.blobs != nil {
+		c.blobs[hash] = append([]byte(nil), data...)
+	}
+	return hash
+}
+
 // Finding is something [Redact] wrote without redacting it, which a
 // person or a later stage must look at before the redacted session
-// leaves: a sidecar image an inline-only redactor could not replace,
-// inline media that is not an image, an image inside a longer string,
+// leaves: sidecar or inline media that is not an image, an image
+// inside a longer string,
 // an instruction part that keeps the original's hash, a reference into
 // another session, an extension entry whose own members name entries as
 // written.

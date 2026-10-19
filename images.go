@@ -16,29 +16,38 @@ import (
 // the placeholder [Images] is usually given.
 const DefaultImagePlaceholder = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 
-// Images replaces every inline image an entry holds with placeholder, a
-// base64 data URL of an image, such as [DefaultImagePlaceholder]. An
-// inline image here is a string that is wholly a data URL of an image
+// Images replaces every image an entry holds with placeholder, a base64
+// data URL of an image, such as [DefaultImagePlaceholder], keeping each
+// in its form, as RFC 0001 requires of a redaction: an inline image
+// stays inline and a sidecar image stays sidecar.
+//
+// An inline image is a string that is wholly a data URL of an image
 // media type (data:image/..., the scheme matched without regard to
 // case), wherever the entry holds it: an input_image part's image_url
 // in a message, a function call's output given as content parts, a
 // compaction's summary or pinned items, a queued item, or a member the
-// format does not define. The item around it is kept as it was, detail
-// and file_id included, so it stays valid and inline, as RFC 0001
-// requires a redaction to keep media in its form. The placeholder is
-// the same for every image, so the output depends on nothing but the
-// input.
+// format does not define. It becomes placeholder itself.
 //
-// Only whole-string data URLs are replaced. An image data URL inside a
-// longer string, such as a tool's text output or markdown, is kept,
-// after the string redactors, and [Redact] reports it; so does inline
-// media that is not an image, such as an input_file's PDF.
+// A sidecar image is a sidecar: URL held as an image_url member, as an
+// input_image part or a screenshot holds one. Its replacement blob is
+// the placeholder's decoded bytes, added with [EntryContext.AddBlob] so
+// that [Redact] returns it in [Result.Blobs], and the URL becomes
+// sidecar: and that blob's hash, sha256:<hex>, so the item names the
+// replacement as the format has a replaced blob named. The caller
+// stores the blob beside the redacted session; the original's blob is
+// not carried. A sidecar URL anywhere else, such as an input_file's
+// file_data or file_url, is media that is not an image: it is kept as
+// it is and reported as a [Finding], so the session is not mistaken for
+// one with its media redacted.
 //
-// A sidecar reference (sidecar:sha256:...) is not replaced: replacing
-// one means writing the placeholder's blob beside the redacted session,
-// which an in-memory redaction cannot do. Each is left as it is and
-// reported as a [Finding], so the session is not mistaken for one with
-// its media redacted.
+// The item around an image is kept as it was, detail and file_id
+// included, so it stays valid. The placeholder is the same for every
+// image, so the output depends on nothing but the input.
+//
+// Only whole strings are replaced. An image data URL inside a longer
+// string, such as a tool's text output or markdown, is kept, after the
+// string redactors, and [Redact] reports it; so does inline media that
+// is not an image, such as an input_file's PDF.
 //
 // Text inside an image's bytes is not read: an image is replaced or
 // kept whole, and no OCR is done. A placeholder that is not a base64
@@ -69,31 +78,48 @@ func (r images) RedactEntry(c *EntryContext, e agentsession.Entry) (agentsession
 	}
 	changed := false
 	var walkErr error
-	var walk func(v any, at string) any
-	walk = func(v any, at string) any {
+	fail := func(err error) {
+		if walkErr == nil {
+			walkErr = err
+		}
+	}
+	var walk func(v any, at, member string) any
+	walk = func(v any, at, member string) any {
 		switch x := v.(type) {
 		case string:
 			switch {
 			case isImageDataURL(x):
-				if walkErr == nil {
-					walkErr = checkPlaceholder(r.placeholder)
+				if err := checkPlaceholder(r.placeholder); err != nil {
+					fail(err)
+					return x
 				}
 				if x != r.placeholder {
 					changed = true
 				}
 				return r.placeholder
+			case strings.HasPrefix(x, "sidecar:") && member == "image_url":
+				blob, err := placeholderBytes(r.placeholder)
+				if err != nil {
+					fail(err)
+					return x
+				}
+				url := "sidecar:" + c.AddBlob(blob)
+				if x != url {
+					changed = true
+				}
+				return url
 			case strings.HasPrefix(x, "sidecar:"):
-				c.Report(at, "sidecar media left as it is: replacing it needs the placeholder's blob written beside the redacted session")
+				c.Report(at, "sidecar media that is not an image left as it is: no redactor replaces it, and text in it is not found")
 			}
 			return x
 		case []any:
 			for i := range x {
-				x[i] = walk(x[i], at+"/"+strconv.Itoa(i))
+				x[i] = walk(x[i], at+"/"+strconv.Itoa(i), "")
 			}
 			return x
 		case map[string]any:
 			for _, k := range sortedMembers(x) {
-				x[k] = walk(x[k], at+"/"+pointerToken(k))
+				x[k] = walk(x[k], at+"/"+pointerToken(k), k)
 			}
 			return x
 		}
@@ -103,7 +129,7 @@ func (r images) RedactEntry(c *EntryContext, e agentsession.Entry) (agentsession
 		if envelopeMember[k] {
 			continue
 		}
-		root[k] = walk(root[k], "/"+pointerToken(k))
+		root[k] = walk(root[k], "/"+pointerToken(k), k)
 	}
 	if walkErr != nil {
 		return nil, walkErr
@@ -144,17 +170,25 @@ func isImageDataURL(s string) bool {
 
 // checkPlaceholder reports whether p is a base64 data URL of an image.
 func checkPlaceholder(p string) error {
+	_, err := placeholderBytes(p)
+	return err
+}
+
+// placeholderBytes returns the bytes of p, a base64 data URL of an
+// image, which a sidecar image is replaced with.
+func placeholderBytes(p string) ([]byte, error) {
 	if !isImageDataURL(p) {
-		return fmt.Errorf("agentredact: images: the placeholder is not a data URL of an image")
+		return nil, fmt.Errorf("agentredact: images: the placeholder is not a data URL of an image")
 	}
 	meta, payload, ok := strings.Cut(p[len("data:"):], ",")
 	if !ok || !strings.HasSuffix(strings.ToLower(meta), ";base64") {
-		return fmt.Errorf("agentredact: images: the placeholder is not a base64 data URL")
+		return nil, fmt.Errorf("agentredact: images: the placeholder is not a base64 data URL")
 	}
-	if _, err := base64.StdEncoding.DecodeString(payload); err != nil {
-		return fmt.Errorf("agentredact: images: the placeholder's payload: %w", err)
+	data, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return nil, fmt.Errorf("agentredact: images: the placeholder's payload: %w", err)
 	}
-	return nil
+	return data, nil
 }
 
 // pointerToken escapes a member name for an RFC 6901 pointer.

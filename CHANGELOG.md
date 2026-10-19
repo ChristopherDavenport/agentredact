@@ -50,3 +50,51 @@ versions may break the API.
   strings, references into other sessions, extension entries, and
   instruction parts that keep the original's hash.
 - Changed: `make deps` checks what the tests import too.
+- Added: structural redactors. `StructureRedactor`, an `EntryRedactor`
+  that `Redact` finds by type assertion in `Profile.Entries`, returns
+  the entries to write in an entry's place (`Made`, `[]` for one
+  added), none to leave it out, or `Block()` to fold it into a block
+  placeholder; `LeaveOut` and `BlockOut` are the built-ins, and
+  `StructureRedactorFunc` the adapter. A block placeholder is a custom
+  entry under `PlaceholderNS` (`agentredact`) marked with the positions
+  it stands for, `[[from, to]]` where consecutive, written once a kept
+  entry follows its run on the path and withheld while the run is open.
+- Added: session redactors, in the new `Profile.Sessions`:
+  `SessionRedactor`, `KeepLeafPath` and `DropBranches`. They leave out
+  whole branches before any entry is redacted, held to the group rules
+  before anything is written. `KeepLeafPath` keeps the path's own
+  records that sit off it, such as a call's dispatch on a branch a retry
+  rewound past, where they sit, and refuses one it cannot keep in place.
+  A run's end left out with its parent leaves the run open on the kept
+  path, under any session redactor.
+- Added: what is left out stays valid. A call leaves with its output,
+  dispatches, decisions and links, a queued input with the items drained
+  from it, a response with all its items, a run's end with its start. A
+  reference to an entry left out names its block placeholder; with
+  none, a label or outcome naming it is left out too, and a `judged_by`
+  target, a `parents` element, a `queued_from` or an omit item is
+  removed. A run end's pending list and reason, a compaction's pinned
+  items (failing closed) and first_kept, and omit lists are carried
+  through; a resumed run whose segment is left out whole gets no
+  placeholder. What would break a rule is refused by name:
+  `ErrSplitsCall`, `ErrSplitsQueued`, `ErrSplitsResponse`,
+  `ErrSplitsRun`, `ErrLeavesOutConfig`, `ErrLeavesOutCompaction`,
+  `ErrGroupHead`, `ErrFirstKept`, `ErrNoPlace`, `ErrBreaksRecords`,
+  `ErrSessionRedactor`.
+- Added: findings, with no value, for what restates entries left out:
+  a branch summary of a branch left out, a compaction over entries left
+  out before `first_kept`, an entry converging one left out, a pinned
+  item matching no entry, and a trigger copied from a queued input left
+  out.
+- Changed: `Redact` resumes by replaying the positions an existing
+  redaction covers, ranges included, rebuilding each entry a fresh
+  redaction writes there and requiring an entry of the same ID, so a
+  resume equals a fresh redaction byte for byte with entries left out
+  and runs withheld. One that differs, as with a profile reused for
+  changed rules or after a `KeepLeafPath` leaf moved to another branch,
+  is refused with `ErrResumeDiverged` before anything is written.
+- Changed: `Images` replaces sidecar images too, with a sidecar
+  reference to the placeholder's bytes, and `Redact` returns the blobs
+  the redacted session needs in `Result.Blobs`, keyed by hash, through
+  the new `EntryContext.AddBlob`. Sidecar media that is not an image is
+  kept and reported.
