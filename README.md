@@ -150,29 +150,41 @@ goes after those its entries hash over, its fork's origin and any
 session a `parents` element names; `StoreOptions.Select` narrows the
 originals, and takes their dependencies with them.
 
-- **Forks.** A fork whose origin is in the store is redacted as a fork
-  of the origin's redaction (`WithOrigin` on `Redact`): its base is the
-  entry standing for the original's base, its prefix the origin
-  redaction's entries, stored once, and its own entries count positions
-  in the fork's file order, prefix included, as RFC 0001 has it. A fork
-  whose base the origin's redaction left out on a dropped branch is
-  redacted without a base.
-- **References** into another original the store holds, `parent_session`,
-  a link's `session` and a `parents` element, point at its redaction;
-  a reference to a session the store does not hold stays as written and
-  is reported. `Redact` takes the same as `WithAlongside`, and
-  `Result.Counterparts` is what another session's references go through.
+- **What is written never depends on arrival order.** A reference to a
+  session, `parent_session`, a link's `session` and a `parents`
+  element's session, always names the redaction the profile derives for
+  it, held or not, so no original session ID is kept. The entry a
+  `parents` element names in another session is re-pointed through that
+  session's redaction (`WithAlongside` on `Redact`, through
+  `Result.Counterparts`); a session naming an entry of one the store
+  does not hold waits (`SessionReport.WaitingOn`), with nothing written,
+  until it arrives, and its dependents wait with it.
+- **Forks.** A fork is redacted as a fork of its origin's redaction
+  (`WithOrigin`): its base is the entry standing for the original's
+  base, its prefix the origin redaction's own entries, and its own
+  entries count positions in the fork's file order, prefix included, as
+  RFC 0001 has it. A fork whose origin the store does not hold, or whose
+  base the origin's snapshot does not hold yet, waits. Only a fork whose
+  base the origin's redaction left out (`ErrBaseLeftOut`) is redacted
+  without a base.
 - **Writing.** A new redaction is imported whole (`agentsession.Importer`,
-  as the store's record); new entries are appended with `Store.Append`.
-  Blobs a redaction made go first, through the store's `PutBlob`
-  (`BlobWriter`): the cas store has one, the memory and jsonl stores
-  do not, and a redaction naming a blob is then not written
-  (`ErrNoBlobWriter`).
+  as the store's record); new entries are appended with `Store.Append`,
+  and where the store has `SetHead` (cas) the head is set to where an
+  import would put it. Blobs a redaction made go first, through the
+  store's `PutBlob` (`BlobWriter`): the cas store has one, the memory
+  and jsonl stores do not, and a redaction naming a blob is then not
+  written (`ErrNoBlobWriter`). A redaction that grew a new root, whose
+  ancestors were all left out, cannot be appended through any store
+  yet (`ErrRootAppend`): agentsession fills an empty parent from the
+  store's leaf. The redaction is let go (`Release`) however a write ends.
 - **The report** gives, per original, the entries and blobs written,
-  whether it was up to date, its findings, and how many native entries
-  its redaction holds: one someone resumed is not publishable to a
-  redacted-only store until those entries are redacted. A session that
-  fails stops those that depend on it (`ErrDependency`) and no other.
+  whether it was up to date or waits, the findings of the whole
+  redaction on every run, each with a stable `Kind`, and how many native
+  entries it holds. `Publishable` is false while it holds a native
+  entry, waits, or holds a finding of a kind `StoreOptions.AcceptFindings`
+  does not accept; it holds for the snapshot the run read. A session
+  that fails stops those that depend on it (`ErrDependency`) and no
+  other. No error names an entry by a hash.
 
 ### What is not found
 
@@ -221,10 +233,10 @@ profile's redactors never see them:
 - `call_id`s, a run's pending call IDs and the header's `spawned_by`,
   which pair calls with their outputs and derive subsession IDs;
 - the header's `created_at`, `payload`, `records` and `media`;
-- references into sessions not redacted alongside, `parent_session`, a
-  `parents` element or a link naming one, which hold that session's
-  original IDs; the store pass re-points those into sessions the store
-  holds. Each kept is reported in `Result.Findings`;
+- the entry a `parents` element names in another session, when that
+  session's counterparts are not given to `Redact`; each is reported
+  (`FindingForeignReference`). The store pass waits for such a session
+  instead;
 - an env entry's file hashes, when the profile has no `Environment`;
 - a sidecar reference, when the profile has no `Images`; with it, a
   sidecar image is replaced, and other sidecar media, such as a file,
