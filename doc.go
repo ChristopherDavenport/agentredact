@@ -34,16 +34,20 @@
 // would change ([ErrKeyNotRedacted]), and reports what it kept
 // unredacted as local [Finding]s. It writes a fork without a base, or,
 // given its origin's redaction ([WithOrigin]), as a fork of that,
-// sharing its prefix; and it re-points references into sessions
-// redacted alongside ([WithAlongside]).
+// sharing its prefix. It writes every reference to another session as
+// the redaction the profile derives for it, and re-points the entries a
+// parents element names in sessions redacted alongside
+// ([WithAlongside]).
 //
 // [RedactStore] keeps one redacted session per original per profile in
 // a store: it redacts each original after the sessions it hashes over,
 // forks as forks of their origin's redaction, imports a new redaction
 // whole and appends to an existing one what its original added, writes
 // the blobs through the store's [BlobWriter], and reports per session
-// what it wrote, what it found and whether the redaction holds native
-// entries. A rerun with nothing new writes nothing. The scan, review and
+// what it wrote, what the whole redaction holds unredacted, whether it
+// waits for a session the store does not hold yet, and whether it holds
+// native entries. What it writes never depends on the order sessions
+// arrived in, and a rerun with nothing new writes nothing. The scan, review and
 // publish stages are packages of their own.
 //
 // What a valid redacted session is, and what a store does with one, is

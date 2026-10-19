@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"iter"
 	"slices"
 	"strings"
 	"testing"
@@ -203,6 +205,29 @@ func checkClean(t *testing.T, st agentsession.Store, rep *StoreReport) {
 			}
 		}
 	}
+	checkErrors(t, rep)
+}
+
+// checkErrors holds every error and warning in the report to naming no
+// hash and quoting no planted value.
+func checkErrors(t *testing.T, rep *StoreReport) {
+	t.Helper()
+	for _, s := range rep.Sessions {
+		texts := slices.Clone(s.Warnings)
+		if s.Err != nil {
+			texts = append(texts, s.Err.Error())
+		}
+		for _, text := range texts {
+			if hashRef.MatchString(text) {
+				t.Errorf("%s: %q names a hash", s.Original, text)
+			}
+			for _, v := range planted {
+				if strings.Contains(text, v) {
+					t.Errorf("%s: %q quotes %q", s.Original, text, v)
+				}
+			}
+		}
+	}
 }
 
 // TestRedactStoreForkAndGrowth: an original and its fork, redacted into
@@ -228,7 +253,9 @@ func TestRedactStoreForkAndGrowth(t *testing.T) {
 			if len(rep.Sessions) != 2 || rep.Sessions[0].Original != o.ID() || rep.Sessions[1].Original != f.ID() {
 				t.Fatalf("report %+v: want the origin, then the fork", rep.Sessions)
 			}
-			if r := got[o.ID()]; !r.Created || r.Fork || r.Written == 0 || !r.Publishable() {
+			// The compaction's summary restates the block left out before
+			// it: reported, and so not publishable unless accepted.
+			if r := got[o.ID()]; !r.Created || r.Fork || r.Written == 0 || r.Publishable() || len(r.Findings) != 1 || r.Findings[0].Kind != FindingRestates {
 				t.Errorf("origin %+v", r)
 			}
 			if r := got[f.ID()]; !r.Created || !r.Fork || r.Written != 3 || !r.Publishable() {
@@ -281,11 +308,14 @@ func TestRedactStoreForkAndGrowth(t *testing.T) {
 			checkClean(t, st, rep2)
 
 			before := held(t, st)
-			rep3 := redactStore(t, st, p, StoreOptions{})
+			rep3 := redactStore(t, st, p, StoreOptions{AcceptFindings: []FindingKind{FindingRestates}})
 			for _, r := range rep3.Sessions {
-				if !r.UpToDate || r.Written != 0 || r.Created || r.Blobs != 0 {
-					t.Errorf("a rerun with nothing new: %+v", r)
+				if !r.UpToDate || r.Written != 0 || r.Created || r.Blobs != 0 || !r.Publishable() {
+					t.Errorf("a rerun with nothing new, its findings accepted: %+v", r)
 				}
+			}
+			if r := bySession(rep3)[o.ID()]; len(r.Findings) != 1 {
+				t.Errorf("an up-to-date rerun reports %d findings, want the redaction's one", len(r.Findings))
 			}
 			after := held(t, st)
 			if len(after) != len(before) {
@@ -302,8 +332,9 @@ func TestRedactStoreForkAndGrowth(t *testing.T) {
 
 // TestRedactStoreReferences: references into sessions the store holds
 // point at their redactions: a parents element into another session, a
-// subsession link, and the child's parent_session. References to a
-// session the store does not hold are kept, each with a finding.
+// subsession link, and the child's parent_session. A link to a session
+// the store does not hold names its derived redaction too; a parents
+// element naming an entry of one waits for it, on every run.
 func TestRedactStoreReferences(t *testing.T) {
 	for _, kind := range storeKinds {
 		t.Run(kind.name, func(t *testing.T) {
@@ -331,19 +362,33 @@ func TestRedactStoreReferences(t *testing.T) {
 			outside := newOriginal("orig-outside")
 			appendAt(t, outside, c, user("first"))
 			appendAt(t, outside, c, &agentsession.LinkEntry{Rel: agentsession.RelContinuedIn, Session: "fake-outside-session"})
-			stray := user("merged a stranger")
-			stray.Parents = []agentsession.EntryRef{{Session: "fake-outside-session", Entry: agentsession.HashText("fake entry")}}
-			appendAt(t, outside, c, stray)
 			turn(t, outside, c, "resp-o", "ok")
 
+			stranger := newOriginal("orig-stranger")
+			stray := user("merged a stranger")
+			stray.Parents = []agentsession.EntryRef{{Session: "fake-outside-session", Entry: agentsession.HashText("fake entry")}}
+			appendAt(t, stranger, c, stray)
+
 			st := kind.open(t)
-			load(t, st, parent, child, merger, outside)
+			load(t, st, parent, child, merger, outside, stranger)
 			rep := redactStore(t, st, p, StoreOptions{})
 			got := bySession(rep)
 			for _, r := range rep.Sessions {
-				if r.Err != nil || !r.Created {
+				if r.Original == stranger.ID() {
+					continue
+				}
+				if r.Err != nil || !r.Created || !r.Publishable() {
 					t.Errorf("%s: %+v", r.Original, r)
 				}
+			}
+			for run := range 2 {
+				if r := got[stranger.ID()]; r.WaitingOn != "fake-outside-session" || r.Err != nil || r.Created || r.Publishable() {
+					t.Errorf("run %d: the session naming an entry outside the store %+v, want it waiting", run, r)
+				}
+				if _, err := readHeld(context.Background(), st, redID(stranger.ID())); !errors.Is(err, agentsession.ErrNoSession) {
+					t.Errorf("run %d: a waiting session's redaction was written: %v", run, err)
+				}
+				got = bySession(redactStore(t, st, p, StoreOptions{}))
 			}
 			var order []string
 			for _, r := range rep.Sessions {
@@ -392,17 +437,10 @@ func TestRedactStoreReferences(t *testing.T) {
 					}
 				}
 			}
-			if !bytes.Contains(fileOf(t, ro), []byte("fake-outside-session")) {
-				t.Error("the reference outside the store was not kept as written")
+			if file := fileOf(t, ro); bytes.Contains(file, []byte("fake-outside-session")) || !bytes.Contains(file, []byte(redID("fake-outside-session"))) {
+				t.Error("the link outside the store does not name the derived redaction alone")
 			}
-			var at []string
-			for _, f := range got[outside.ID()].Findings {
-				at = append(at, f.At)
-			}
-			if want := "/session,/parents/0/entry,/parents/0/session"; strings.Join(at, ",") != want {
-				t.Errorf("findings at %v, want %s", at, want)
-			}
-			for _, id := range []string{parent.ID(), childID, merger.ID()} {
+			for _, id := range []string{parent.ID(), childID, merger.ID(), outside.ID()} {
 				if len(got[id].Findings) != 0 {
 					t.Errorf("%s: findings %+v", id, got[id].Findings)
 				}
@@ -509,6 +547,9 @@ func TestRedactStoreBlobs(t *testing.T) {
 				if r := got[f.ID()]; r.Err != nil || !r.Fork {
 					t.Errorf("the fork %+v", r)
 				}
+				if r := bySession(redactStore(t, st, p, StoreOptions{}))[s.ID()]; r.Blobs != 0 || !r.UpToDate {
+					t.Errorf("a rerun of the sidecar session %+v, want no blob written", r)
+				}
 				return
 			}
 			if !errors.Is(err, ErrNoBlobWriter) {
@@ -541,7 +582,11 @@ func TestRedactStoreFailures(t *testing.T) {
 	early := appendAt(t, bad, c, user("first"))
 	appendAt(t, bad, c, &agentsession.CustomEntry{NS: "fake.notes", Data: json.RawMessage(`{"` + fakePassword + `":1}`)})
 	badFork := fork(t, bad, early, "orig-bad-fork")
-	appendAt(t, badFork, c, user("on the fork"))
+	onFork := appendAt(t, badFork, c, user("on the fork"))
+	chained := newOriginal("orig-chained") // merges from the fork: stopped two steps away
+	via := user("merged from the fork")
+	via.Parents = []agentsession.EntryRef{{Session: badFork.ID(), Entry: onFork}}
+	appendAt(t, chained, c, via)
 	merger := newOriginal("orig-merger")
 	conv := user("merged")
 	conv.Parents = []agentsession.EntryRef{{Session: bad.ID(), Entry: early}}
@@ -556,15 +601,18 @@ func TestRedactStoreFailures(t *testing.T) {
 	a, b, d := cycle("orig-cycle-a", "orig-cycle-b"), cycle("orig-cycle-b", "orig-cycle-a"), cycle("orig-cycle-d", "orig-cycle-a")
 	good, _ := richOriginal(t, c, "orig-good")
 	st := agentsession.NewMemoryStore()
-	load(t, st, bad, badFork, merger, a, b, d, good)
+	load(t, st, bad, badFork, chained, merger, a, b, d, good)
 
 	rep, err := RedactStore(context.Background(), st, p, StoreOptions{})
 	if err == nil {
 		t.Error("no error for the sessions that failed")
 	}
 	got := bySession(rep)
-	if len(rep.Sessions) != 7 {
-		t.Errorf("%d sessions reported, want 7", len(rep.Sessions))
+	if len(rep.Sessions) != 8 {
+		t.Errorf("%d sessions reported, want 8", len(rep.Sessions))
+	}
+	if r := got[chained.ID()]; !errors.Is(r.Err, ErrDependency) || !strings.Contains(r.Err.Error(), badFork.ID()) {
+		t.Errorf("a session merging from a stopped fork: %+v, want ErrDependency naming the fork", r)
 	}
 	for id, want := range map[string]error{
 		bad.ID(): ErrKeyNotRedacted, badFork.ID(): ErrDependency, merger.ID(): ErrDependency,
@@ -583,6 +631,7 @@ func TestRedactStoreFailures(t *testing.T) {
 	if r := got[good.ID()]; r.Err != nil || !r.Created {
 		t.Errorf("the unrelated session %+v", r)
 	}
+	checkErrors(t, rep)
 }
 
 // TestRedactStoreSelect: a selection takes the sessions it depends on
@@ -634,5 +683,355 @@ func TestRedactStoreBaseLeftOut(t *testing.T) {
 		if h := read(t, st, agentsession.RedactedSessionID(f.ID(), p.Name)).Header(); h.Base != "" || h.ParentSession != agentsession.RedactedSessionID(o.ID(), p.Name) {
 			t.Errorf("run %d: header base %q parent_session %q", run, h.Base, h.ParentSession)
 		}
+	}
+}
+
+// TestRedactStoreFindingsEveryRun: a finding is reported on every run,
+// an up-to-date one included, and keeps the redaction from being
+// publishable unless its kind is accepted.
+func TestRedactStoreFindingsEveryRun(t *testing.T) {
+	c := &clock{}
+	p := storeProfile()
+	s := agentsession.New(agentsession.Header{ID: "orig-pdf", CreatedAt: t0, Media: agentsession.MediaSidecar})
+	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.UserMessage(
+		&openresponses.InputText{Text: "read this"},
+		&openresponses.InputFile{Filename: "fake.pdf", FileData: "sidecar:" + agentsession.HashText("FAKE-PDF-BLOB-0004")})))
+	turn(t, s, c, "resp-1", "read")
+	st := agentsession.NewMemoryStore()
+	load(t, st, s)
+	for run := range 2 {
+		r := bySession(redactStore(t, st, p, StoreOptions{}))[s.ID()]
+		if len(r.Findings) != 1 || r.Findings[0].Kind != FindingSidecarMedia || r.Publishable() || r.UpToDate != (run == 1) {
+			t.Errorf("run %d: %+v, want the sidecar PDF reported and not publishable", run, r)
+		}
+	}
+	if r := bySession(redactStore(t, st, p, StoreOptions{AcceptFindings: []FindingKind{FindingSidecarMedia}}))[s.ID()]; !r.Publishable() {
+		t.Errorf("with the kind accepted: %+v, want publishable", r)
+	}
+}
+
+// TestRedactStoreArrivalOrder: what is written does not depend on the
+// order sessions arrived in. A session naming an entry of one the store
+// does not hold yet waits, with nothing written, and is redacted once
+// it arrives; a subsession child redacted before its parent arrives
+// names the parent's redaction from the first. Each ends equal to a
+// fresh pass over the final store.
+func TestRedactStoreArrivalOrder(t *testing.T) {
+	c := &clock{}
+	p := storeProfile()
+	target := newOriginal("orig-target")
+	appendAt(t, target, c, user("the answer is "+fakeKey))
+	answer := turn(t, target, c, "resp-t", "forty-two")
+	merger := newOriginal("orig-merger")
+	conv := user("merged the answer")
+	conv.Parents = []agentsession.EntryRef{{Session: target.ID(), Entry: answer}}
+	appendAt(t, merger, c, conv)
+	turn(t, merger, c, "resp-m", "merged")
+	mergerFork := fork(t, merger, conv.ID, "orig-merger-fork")
+	appendAt(t, mergerFork, c, user("on the merger's fork"))
+
+	parent := newOriginal("orig-parent")
+	appendAt(t, parent, c, user("spawn"))
+	respond(t, parent, c, "resp-1", call("call-sub"))
+	childID := agentsession.SubsessionID(parent.ID(), "call-sub")
+	appendAt(t, parent, c, agentsession.NewSubsessionLink(childID, "call-sub"))
+	appendAt(t, parent, c, agentsession.NewItemEntry(openresponses.NewFunctionCallOutput("call-sub", "done")))
+	turn(t, parent, c, "resp-2", "done")
+	child := agentsession.New(agentsession.Header{ID: childID, CreatedAt: t0, ParentSession: parent.ID(), SpawnedBy: "call-sub"})
+	appendAt(t, child, c, user("work"))
+	turn(t, child, c, "resp-c", "worked")
+
+	for _, kind := range storeKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			st := kind.open(t)
+			load(t, st, merger, mergerFork, child)
+			rep := redactStore(t, st, p, StoreOptions{})
+			got := bySession(rep)
+			if r := got[merger.ID()]; r.WaitingOn != target.ID() || r.Created {
+				t.Errorf("the merger before its target arrived: %+v, want waiting on it", r)
+			}
+			if r := got[mergerFork.ID()]; r.WaitingOn != merger.ID() || r.Err != nil {
+				t.Errorf("the merger's fork: %+v, want waiting on the merger", r)
+			}
+			if r := got[childID]; !r.Created {
+				t.Errorf("the child before its parent arrived: %+v", r)
+			}
+			if h := read(t, st, redID(childID)).Header(); h.ParentSession != redID(parent.ID()) {
+				t.Errorf("the child's parent_session %q, want the parent's redaction", h.ParentSession)
+			}
+			checkErrors(t, rep)
+
+			load(t, st, target, parent)
+			rep = redactStore(t, st, p, StoreOptions{})
+			for _, r := range rep.Sessions {
+				if r.Err != nil || r.WaitingOn != "" {
+					t.Errorf("after the arrivals: %+v", r)
+				}
+			}
+			if r := bySession(rep)[childID]; !r.UpToDate {
+				t.Errorf("the child, its parent arrived: %+v, want up to date", r)
+			}
+			fresh := kind.open(t)
+			load(t, fresh, target, merger, mergerFork, parent, child)
+			redactStore(t, fresh, p, StoreOptions{})
+			for _, id := range []string{target.ID(), merger.ID(), mergerFork.ID(), parent.ID(), childID} {
+				if a, b := fileOf(t, read(t, st, redID(id))), fileOf(t, read(t, fresh, redID(id))); !bytes.Equal(a, b) {
+					t.Errorf("%s: arrival order changed the redaction:\n%s\n---\n%s", id, a, b)
+				}
+			}
+		})
+	}
+}
+
+// TestRedactStoreRootAppend: a redaction that grew a new root is
+// refused before anything is written, on every run.
+func TestRedactStoreRootAppend(t *testing.T) {
+	c := &clock{}
+	p := structProfile("test.root@1", []EntryRedactor{LeaveOut(userWith("omit me"))})
+	o := newOriginal("orig-root")
+	first := appendAt(t, o, c, user("omit me"))
+	appendAt(t, o, c, user("kept"))
+	turn(t, o, c, "resp-1", "one")
+	st := agentsession.NewMemoryStore()
+	load(t, st, o)
+	redactStore(t, st, p, StoreOptions{})
+	before := fileOf(t, read(t, st, agentsession.RedactedSessionID(o.ID(), p.Name)))
+	n := len(agentsession.FileOrder(o))
+	userAt(t, o, c, first, "an edited prompt")
+	grow(t, st, o, n)
+	for run := range 2 {
+		rep, err := RedactStore(context.Background(), st, p, StoreOptions{})
+		if r := bySession(rep)[o.ID()]; !errors.Is(r.Err, ErrRootAppend) || !errors.Is(err, ErrRootAppend) || r.Written != 0 {
+			t.Errorf("run %d: %+v, want ErrRootAppend", run, r)
+		}
+	}
+	if after := fileOf(t, read(t, st, agentsession.RedactedSessionID(o.ID(), p.Name))); !bytes.Equal(after, before) {
+		t.Error("something was written for a redaction that grew a root")
+	}
+}
+
+// TestRedactStoreForkBaseNotYet: a fork whose base the origin's snapshot
+// does not hold yet waits, and is redacted as a fork once it does; it is
+// never created without a base.
+func TestRedactStoreForkBaseNotYet(t *testing.T) {
+	c := &clock{}
+	p := storeProfile()
+	o := newOriginal("orig-o")
+	appendAt(t, o, c, user("first"))
+	turn(t, o, c, "resp-1", "one")
+	early, err := agentsession.Read(bytes.NewReader(fileOf(t, o)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := len(agentsession.FileOrder(o))
+	appendAt(t, o, c, user("second"))
+	base := turn(t, o, c, "resp-2", "two")
+	f := fork(t, o, base, "orig-f")
+	appendAt(t, f, c, user("on the fork"))
+	st := agentsession.NewMemoryStore()
+	load(t, st, early, f)
+	if r := bySession(redactStore(t, st, p, StoreOptions{}))[f.ID()]; r.WaitingOn != o.ID() || r.Created {
+		t.Errorf("a fork whose base the origin does not hold yet: %+v, want waiting", r)
+	}
+	if _, err := st.Read(context.Background(), redID(f.ID())); !errors.Is(err, agentsession.ErrNoSession) {
+		t.Errorf("the fork's redaction was written: %v", err)
+	}
+	grow(t, st, o, n)
+	if r := bySession(redactStore(t, st, p, StoreOptions{}))[f.ID()]; !r.Created || !r.Fork {
+		t.Errorf("the fork once its base arrived: %+v, want created as a fork", r)
+	}
+}
+
+// TestRedactStoreLineOfForks: O, F a fork of O and G a fork of F, each
+// redacted as a fork of its origin's redaction, grown and rerun equal
+// to a fresh pass.
+func TestRedactStoreLineOfForks(t *testing.T) {
+	c := &clock{}
+	p := storeProfile()
+	o := newOriginal("orig-o")
+	appendAt(t, o, c, user("first "+fakeKey))
+	baseF := turn(t, o, c, "resp-1", "one")
+	f := fork(t, o, baseF, "orig-f")
+	appendAt(t, f, c, user("on f"))
+	baseG := turn(t, f, c, "resp-f", "f")
+	g := fork(t, f, baseG, "orig-g")
+	appendAt(t, g, c, user("on g, "+fakePassword))
+	turn(t, g, c, "resp-g", "g")
+	for _, kind := range storeKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			st := kind.open(t)
+			load(t, st, g, f, o)
+			rep := redactStore(t, st, p, StoreOptions{})
+			var order []string
+			for _, r := range rep.Sessions {
+				order = append(order, r.Original)
+				if !r.Created || r.Fork != (r.Original != o.ID()) {
+					t.Errorf("%s: %+v", r.Original, r)
+				}
+			}
+			if strings.Join(order, " ") != "orig-o orig-f orig-g" {
+				t.Errorf("order %v", order)
+			}
+			rf, rg := read(t, st, redID(f.ID())), read(t, st, redID(g.ID()))
+			if h := rg.Header(); h.ParentSession != rf.ID() || h.Base == "" {
+				t.Errorf("G's redaction: parent_session %q base %q, want a fork of %s", h.ParentSession, h.Base, rf.ID())
+			} else if _, ok := rf.Entry(h.Base); !ok {
+				t.Error("G's base is not an entry of F's redaction")
+			}
+			if h := rf.Header(); h.ParentSession != redID(o.ID()) || h.Base == "" {
+				t.Errorf("F's redaction: parent_session %q base %q", h.ParentSession, h.Base)
+			}
+			checkClean(t, st, rep)
+		})
+	}
+}
+
+// releaseCounter is a memory store that counts each Release and can
+// refuse an append.
+type releaseCounter struct {
+	*agentsession.MemoryStore
+	released  map[string]int
+	appends   int
+	failAfter int // refuse the append numbered this; 0 refuses none
+}
+
+func (s *releaseCounter) Release(id string) error {
+	s.released[id]++
+	return nil
+}
+
+func (s *releaseCounter) Append(ctx context.Context, id string, e agentsession.Entry) (string, error) {
+	s.appends++
+	if s.appends == s.failAfter {
+		return "", errors.New("fake: the disk is full")
+	}
+	return s.MemoryStore.Append(ctx, id, e)
+}
+
+// TestRedactStoreReleases: the pass lets each redaction it wrote go,
+// after an import, after appends, and after an append that failed part
+// way; the next run resumes and equals a fresh pass.
+func TestRedactStoreReleases(t *testing.T) {
+	c := &clock{}
+	p := storeProfile()
+	o, _ := richOriginal(t, c, "orig-o")
+	st := &releaseCounter{MemoryStore: agentsession.NewMemoryStore(), released: map[string]int{}}
+	load(t, st, o)
+	red := redID(o.ID())
+	redactStore(t, st, p, StoreOptions{})
+	if st.released[red] != 1 {
+		t.Errorf("released %d times after the import, want 1", st.released[red])
+	}
+	n := len(agentsession.FileOrder(o))
+	appendAt(t, o, c, user("later"))
+	turn(t, o, c, "resp-9", "nine")
+	grow(t, st, o, n)
+	st.failAfter = st.appends + 2
+	rep, err := RedactStore(context.Background(), st, p, StoreOptions{})
+	if r := bySession(rep)[o.ID()]; err == nil || r.Err == nil || r.Written != 1 {
+		t.Errorf("an append refused part way: %+v", r)
+	}
+	if st.released[red] != 2 {
+		t.Errorf("released %d times after a failed append, want 2", st.released[red])
+	}
+	checkErrors(t, rep)
+	st.failAfter = 0
+	if r := bySession(redactStore(t, st, p, StoreOptions{}))[o.ID()]; r.Err != nil || r.Written != 2 {
+		t.Errorf("the run after: %+v, want the two entries left", r)
+	}
+	if st.released[red] != 3 {
+		t.Errorf("released %d times, want 3", st.released[red])
+	}
+	fresh := agentsession.NewMemoryStore()
+	load(t, fresh, o)
+	redactStore(t, fresh, p, StoreOptions{})
+	if !bytes.Equal(fileOf(t, read(t, st, red)), fileOf(t, read(t, fresh, red))) {
+		t.Error("the redaction resumed after a failed append differs from a fresh pass")
+	}
+}
+
+// TestRedactStoreHead: a redaction grown on a branch has the head an
+// import of the same file gives, as a fresh pass's has.
+func TestRedactStoreHead(t *testing.T) {
+	for _, kind := range storeKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			c := &clock{}
+			p := storeProfile()
+			o := newOriginal("orig-o")
+			first := appendAt(t, o, c, user("first"))
+			turn(t, o, c, "resp-1", "one")
+			st := kind.open(t)
+			load(t, st, o)
+			redactStore(t, st, p, StoreOptions{})
+			n := len(agentsession.FileOrder(o))
+			userAt(t, o, c, first, "a branch")
+			grow(t, st, o, n)
+			rep := redactStore(t, st, p, StoreOptions{})
+			if r := bySession(rep)[o.ID()]; r.Written != 1 || len(r.Warnings) != 0 {
+				t.Errorf("%+v", r)
+			}
+			fresh := kind.open(t)
+			load(t, fresh, o)
+			redactStore(t, fresh, p, StoreOptions{})
+			if a, b := read(t, st, redID(o.ID())).Leaf(), read(t, fresh, redID(o.ID())).Leaf(); a != b || a == "" {
+				t.Errorf("the grown redaction's head %s, a fresh one's %s", a, b)
+			}
+		})
+	}
+}
+
+// openOnly is a store with no Reader: the pass opens what it reads.
+type openOnly struct {
+	m        *agentsession.MemoryStore
+	released map[string]int
+}
+
+func (s *openOnly) Create(ctx context.Context, h agentsession.Header) (*agentsession.Session, error) {
+	return s.m.Create(ctx, h)
+}
+func (s *openOnly) Open(ctx context.Context, id string) (*agentsession.Session, error) {
+	return s.m.Open(ctx, id)
+}
+func (s *openOnly) Append(ctx context.Context, id string, e agentsession.Entry) (string, error) {
+	return s.m.Append(ctx, id, e)
+}
+func (s *openOnly) List(ctx context.Context, f agentsession.ListFilter) iter.Seq2[agentsession.Summary, error] {
+	return s.m.List(ctx, f)
+}
+func (s *openOnly) Delete(ctx context.Context, id string) error { return s.m.Delete(ctx, id) }
+func (s *openOnly) Import(ctx context.Context, r io.Reader, asRecord bool) (*agentsession.Session, error) {
+	return s.m.Import(ctx, r, asRecord)
+}
+func (s *openOnly) Release(id string) error {
+	s.released[id]++
+	return nil
+}
+
+// TestRedactStoreOpenOnly: over a store with no Reader, the pass lets
+// go of the sessions it opened to read, and still grows a redaction
+// equal to a fresh pass.
+func TestRedactStoreOpenOnly(t *testing.T) {
+	c := &clock{}
+	p := storeProfile()
+	o, _ := richOriginal(t, c, "orig-o")
+	st := &openOnly{m: agentsession.NewMemoryStore(), released: map[string]int{}}
+	load(t, st, o)
+	redactStore(t, st, p, StoreOptions{})
+	if st.released[o.ID()] == 0 {
+		t.Error("the original opened to read was not let go")
+	}
+	n := len(agentsession.FileOrder(o))
+	appendAt(t, o, c, user("later"))
+	turn(t, o, c, "resp-9", "nine")
+	grow(t, st, o, n)
+	if r := bySession(redactStore(t, st, p, StoreOptions{}))[o.ID()]; r.Written != 3 {
+		t.Errorf("%+v, want three entries appended", r)
+	}
+	fresh := agentsession.NewMemoryStore()
+	load(t, fresh, o)
+	redactStore(t, fresh, p, StoreOptions{})
+	got, _ := st.m.Read(context.Background(), redID(o.ID()))
+	if !bytes.Equal(fileOf(t, got), fileOf(t, read(t, fresh, redID(o.ID())))) {
+		t.Error("the redaction the store holds differs from a fresh pass")
 	}
 }

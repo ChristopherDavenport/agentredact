@@ -203,8 +203,9 @@ func TestWorkspaceKindRedacted(t *testing.T) {
 	}
 }
 
-// TestCrossSessionReferences: references into other sessions stay as
-// written and are each reported.
+// TestCrossSessionReferences: a reference to another session names its
+// derived redaction; an entry of another session whose counterparts are
+// not given stays as written and is reported.
 func TestCrossSessionReferences(t *testing.T) {
 	c := &clock{}
 	s := newOriginal("orig-cross")
@@ -217,16 +218,23 @@ func TestCrossSessionReferences(t *testing.T) {
 	var got []string
 	for _, f := range res.Findings {
 		got = append(got, f.At)
+		if f.Kind != FindingForeignReference {
+			t.Errorf("finding %+v, want a foreign reference", f)
+		}
 		if strings.Contains(f.Message, "fake-other-session") || strings.Contains(f.Message, "sha256:") {
 			t.Errorf("finding quotes a reference: %+v", f)
 		}
 	}
-	want := []string{"/session", "/parents/0/entry", "/parents/0/session"}
+	want := []string{"/parents/0/entry"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("findings at %v, want %v", got, want)
 	}
-	if !bytes.Contains(fileOf(t, res.Session), []byte("fake-other-session")) {
-		t.Error("the reference was not kept as written")
+	file := fileOf(t, res.Session)
+	if bytes.Contains(file, []byte("fake-other-session")) {
+		t.Error("the other session's original ID was kept")
+	}
+	if !bytes.Contains(file, []byte(agentsession.RedactedSessionID("fake-other-session", testProfile().Name))) {
+		t.Error("the other session's derived redaction is not named")
 	}
 }
 

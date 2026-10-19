@@ -374,11 +374,12 @@ func TestForkOfRedactionRefusals(t *testing.T) {
 	}
 }
 
-// TestAlongside re-points references into a session redacted alongside:
-// parent_session, a link's session and a parents element, whose entry
-// names the one standing for it there, or is removed when that one was
-// left out; one naming nothing that session's original holds is
-// refused.
+// TestAlongside re-points references into another session:
+// parent_session, a link's session and a parents element's session to
+// its derived redaction always; a parents element's entry to the one
+// standing for it there when its counterparts are given, removed when
+// that one was left out, refused when it names nothing that session
+// holds, and kept, reported, when the counterparts are not given.
 func TestAlongside(t *testing.T) {
 	c := &clock{}
 	p := blockProfile("test.alongside@1")
@@ -393,10 +394,7 @@ func TestAlongside(t *testing.T) {
 	if r1.Counterparts[folded] != "" || r1.Counterparts[answer] == "" {
 		t.Errorf("counterparts %v", r1.Counterparts)
 	}
-	along := Alongside{
-		Sessions: map[string]string{s1.ID(): r1.Session.ID()},
-		Entries:  map[string]map[string]string{s1.ID(): r1.Counterparts},
-	}
+	along := Alongside{Entries: map[string]map[string]string{s1.ID(): r1.Counterparts}}
 
 	s2 := agentsession.New(agentsession.Header{ID: "orig-s2", CreatedAt: t0, ParentSession: s1.ID()})
 	userAt(t, s2, c, "", "start")
@@ -451,8 +449,22 @@ func TestAlongside(t *testing.T) {
 	if _, err := Redact(p, s3, nil, WithAlongside(along)); !errors.Is(err, ErrUnmappedRef) {
 		t.Errorf("a parents element naming nothing the session holds: %v, want ErrUnmappedRef", err)
 	}
-	if _, err := Redact(p, s2, nil, WithAlongside(Alongside{Sessions: along.Sessions})); !errors.Is(err, ErrUnmappedRef) {
-		t.Errorf("a session alongside whose counterparts were not given: %v, want ErrUnmappedRef", err)
+	alone, err := Redact(p, s2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := alone.Session.Header(); h.ParentSession != r1.Session.ID() {
+		t.Errorf("without counterparts, parent_session %q, want the derived %s", h.ParentSession, r1.Session.ID())
+	}
+	var kinds []string
+	for _, f := range alone.Findings {
+		kinds = append(kinds, string(f.Kind)+" "+f.At)
+	}
+	if want := "foreign-reference /parents/0/entry,foreign-reference /parents/0/entry"; strings.Join(kinds, ",") != want {
+		t.Errorf("without counterparts, findings %v, want %s", kinds, want)
+	}
+	if file := fileOf(t, alone.Session); bytes.Contains(file, []byte(s1.ID())) {
+		t.Error("without counterparts, the redaction names the original session")
 	}
 }
 

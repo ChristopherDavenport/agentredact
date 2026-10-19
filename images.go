@@ -109,7 +109,7 @@ func (r images) RedactEntry(c *EntryContext, e agentsession.Entry) (agentsession
 				}
 				return url
 			case strings.HasPrefix(x, "sidecar:"):
-				c.Report(at, "sidecar media that is not an image left as it is: no redactor replaces it, and text in it is not found")
+				c.report(FindingSidecarMedia, at, "sidecar media that is not an image left as it is: no redactor replaces it, and text in it is not found")
 			}
 			return x
 		case []any:

@@ -85,11 +85,17 @@ func (c *EntryContext) Entry() agentsession.Entry {
 // not redact: at is an RFC 6901 pointer into the entry as the redactor
 // was given it, so built from rewritten member names, and message says
 // what and why, and must quote neither the value nor an original hash.
+// Its kind is [FindingRedactor].
 func (c *EntryContext) Report(at, message string) {
+	c.report(FindingRedactor, at, message)
+}
+
+// report records a finding of a kind a built-in redactor knows.
+func (c *EntryContext) report(kind FindingKind, at, message string) {
 	if c.findings == nil {
 		return
 	}
-	*c.findings = append(*c.findings, Finding{Position: c.Position, At: at, Redactor: c.redactor, Message: message})
+	*c.findings = append(*c.findings, Finding{Kind: kind, Position: c.Position, At: at, Redactor: c.redactor, Message: message})
 }
 
 // AddBlob records data as a blob the redacted session needs, such as
@@ -121,11 +127,14 @@ func (c *EntryContext) AddBlob(data []byte) string {
 // hash of the original. It is not part of the redacted session and is
 // never published with it.
 type Finding struct {
+	// Kind says what was found, as one of a fixed set of names a later
+	// stage can gate on: see [FindingKind].
+	Kind FindingKind
 	// Position is the entry's position in the original's file order,
-	// counting from 1, or 0 for the redacted session's header.
+	// counting from 1.
 	Position int
-	// At is an RFC 6901 pointer into the redacted entry, or the header,
-	// built from its rewritten member names, "" for the whole entry.
+	// At is an RFC 6901 pointer into the redacted entry, built from its
+	// rewritten member names, "" for the whole entry.
 	At string
 	// Redactor names what reported it: an entry redactor's name, or
 	// "redact" for Redact itself.
@@ -142,3 +151,35 @@ func redactorName(r EntryRedactor) string {
 	}
 	return "entry"
 }
+
+// FindingKind names what a [Finding] is about. The names are stable: a
+// publisher gates on them, never on a finding's message.
+type FindingKind string
+
+const (
+	// FindingSidecarMedia: sidecar media that is not an image, such as a
+	// file, kept as the original's blob.
+	FindingSidecarMedia FindingKind = "sidecar-media"
+	// FindingInlineMedia: inline media that is not an image, kept.
+	FindingInlineMedia FindingKind = "inline-media"
+	// FindingEmbeddedImage: an image data URL inside a longer string,
+	// kept.
+	FindingEmbeddedImage FindingKind = "embedded-image"
+	// FindingOriginalHash: an instruction part that keeps the original's
+	// hash, which can confirm a guessed text.
+	FindingOriginalHash FindingKind = "original-hash"
+	// FindingForeignReference: a parents element naming an entry of a
+	// session not redacted alongside, whose entry it names as the
+	// original wrote it.
+	FindingForeignReference FindingKind = "foreign-reference"
+	// FindingExtension: an extension entry, whose own members may still
+	// name an entry of the original.
+	FindingExtension FindingKind = "extension-entry"
+	// FindingRestates: what restates entries left out without naming
+	// them: a branch or compaction summary, a converging entry, a pinned
+	// item, a trigger copied from a queued input left out.
+	FindingRestates FindingKind = "restates-left-out"
+	// FindingRedactor: what a profile's own redactor reported through
+	// [EntryContext.Report].
+	FindingRedactor FindingKind = "redactor"
+)

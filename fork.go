@@ -61,12 +61,10 @@ type Origin struct {
 // base, or Redact refuses with [ErrNotThisRedaction]. So a redaction
 // keeps the mode it was first written in, and resumes in it.
 //
-// The origin counts as redacted alongside: a reference to it names
-// o.Redaction, and a parents element naming one of its entries is
-// re-pointed through the [Alongside] entries given for it, and refused
-// with [ErrUnmappedRef] when none are. The Alongside given with the
-// origin must tell what it told when o.Redaction was written, since the
-// replay rebuilds its entries.
+// A parents element naming an entry of the origin goes through the
+// [Alongside] entries given for it, as for any other session. The
+// Alongside given with the origin must tell what it told when
+// o.Redaction was written, since the replay rebuilds its entries.
 func WithOrigin(o *Origin) Option {
 	return func(opts *options) { opts.origin = o }
 }
@@ -107,10 +105,10 @@ func (r *redaction) forkFrom(o *Origin) error {
 		}
 		pl := state[id]
 		if pl == nil {
-			return fmt.Errorf("agentredact: %s: prefix entry %s is not one the origin's redaction decided", r.origID, id)
+			return fmt.Errorf("agentredact: %s: prefix entry %d is not one the origin's redaction decided", r.origID, i+1)
 		}
 		if pl.fate == dropped {
-			return fmt.Errorf("%w: prefix entry %s is on a branch the origin's session redactors left out", ErrBaseLeftOut, id)
+			return fmt.Errorf("%w: prefix entry %d is on a branch the origin's session redactors left out", ErrBaseLeftOut, i+1)
 		}
 		// The fate is the origin's; the position is this file's, which a
 		// placeholder of this redaction's own names.
@@ -121,14 +119,14 @@ func (r *redaction) forkFrom(o *Origin) error {
 		r.prefixLen = i + 1
 	}
 	if r.prefixLen == 0 || r.order[r.prefixLen-1].Base().ID != h.Base {
-		return fmt.Errorf("agentredact: %s: its prefix does not end at its base %s", r.origID, h.Base)
+		return fmt.Errorf("agentredact: %s: its prefix does not end at its base", r.origID)
 	}
 	base, ok := r.place(h.Base)
 	if !ok || base == "" {
 		return fmt.Errorf("%w: every entry from the base up was left out with nothing in its place", ErrBaseLeftOut)
 	}
 	r.fork, r.base = true, base
-	r.originID, r.originRedID = o.Original.ID(), o.Redaction.ID()
+	r.originRedID = o.Redaction.ID()
 	return nil
 }
 
@@ -150,7 +148,7 @@ func originState(p Profile, o *Origin, base string, along Alongside) (map[string
 		}
 	}
 	if pos == 0 {
-		return nil, fmt.Errorf("%w: the origin %s does not hold the base %s", agentsession.ErrNoEntry, r.origID, base)
+		return nil, fmt.Errorf("%w: the origin %s does not hold the fork's base", agentsession.ErrNoEntry, r.origID)
 	}
 	if err := r.resume(o.Redaction); err != nil {
 		return nil, err

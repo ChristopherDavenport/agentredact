@@ -387,17 +387,12 @@ func TestRedact(t *testing.T) {
 			p := testProfile()
 			res := redact(t, p, orig, nil)
 			checkRedaction(t, p, orig, res)
-			var want []Finding
-			if orig.Header().ParentSession != "" {
-				// A fork redacted alone keeps its origin's ID, and says so.
-				want = []Finding{{At: "/parent_session", Redactor: "redact"}}
+			if len(res.Findings) != 0 {
+				t.Errorf("findings %+v", res.Findings)
 			}
-			if len(res.Findings) != len(want) {
-				t.Fatalf("findings %+v, want %+v", res.Findings, want)
-			}
-			for i, f := range res.Findings {
-				if f.Position != want[i].Position || f.At != want[i].At || f.Redactor != want[i].Redactor {
-					t.Errorf("finding %+v, want %+v", f, want[i])
+			if ps := orig.Header().ParentSession; ps != "" {
+				if got := res.Session.Header().ParentSession; got != agentsession.RedactedSessionID(ps, p.Name) {
+					t.Errorf("parent_session %q, want the derived redaction of %s", got, ps)
 				}
 			}
 		})
@@ -691,7 +686,8 @@ func TestImagesPlaceholder(t *testing.T) {
 }
 
 // TestRedactWrapsAgentsessionErrors: a refusal from agentsession names
-// the entry that failed and is found by errors.Is.
+// the entry that failed by its position, never its hash, and is found
+// by errors.Is.
 func TestRedactWrapsAgentsessionErrors(t *testing.T) {
 	c := &clock{}
 	s := newOriginal("orig-collide")
@@ -707,8 +703,8 @@ func TestRedactWrapsAgentsessionErrors(t *testing.T) {
 	if !errors.Is(err, agentsession.ErrKeyCollision) {
 		t.Fatalf("err %v, want ErrKeyCollision", err)
 	}
-	if !strings.Contains(err.Error(), "entry 2") || !strings.Contains(err.Error(), id) {
-		t.Errorf("%v does not name entry 2 (%s)", err, id)
+	if !strings.Contains(err.Error(), "entry 2") || strings.Contains(err.Error(), id) || hashRef.MatchString(err.Error()) {
+		t.Errorf("%v does not name entry 2 by its position alone", err)
 	}
 }
 
