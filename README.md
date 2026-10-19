@@ -136,6 +136,44 @@ holds and refuses, with `ErrResumeDiverged` and before writing, one
 that differs: a profile name reused for changed rules, or
 `KeepLeafPath` after the leaf moved to another branch. Redact afresh.
 
+## Redacting a store
+
+```go
+rep, err := agentredact.RedactStore(ctx, store, p, agentredact.StoreOptions{})
+```
+
+`RedactStore` keeps one redaction per original under the profile, in
+the same store: it creates the missing ones and appends to the others
+what their originals appended since, and a rerun with nothing new writes
+nothing. Sessions that are themselves redacted are skipped. A session
+goes after those its entries hash over, its fork's origin and any
+session a `parents` element names; `StoreOptions.Select` narrows the
+originals, and takes their dependencies with them.
+
+- **Forks.** A fork whose origin is in the store is redacted as a fork
+  of the origin's redaction (`WithOrigin` on `Redact`): its base is the
+  entry standing for the original's base, its prefix the origin
+  redaction's entries, stored once, and its own entries count positions
+  in the fork's file order, prefix included, as RFC 0001 has it. A fork
+  whose base the origin's redaction left out on a dropped branch is
+  redacted without a base.
+- **References** into another original the store holds, `parent_session`,
+  a link's `session` and a `parents` element, point at its redaction;
+  a reference to a session the store does not hold stays as written and
+  is reported. `Redact` takes the same as `WithAlongside`, and
+  `Result.Counterparts` is what another session's references go through.
+- **Writing.** A new redaction is imported whole (`agentsession.Importer`,
+  as the store's record); new entries are appended with `Store.Append`.
+  Blobs a redaction made go first, through the store's `PutBlob`
+  (`BlobWriter`): the cas store has one, the memory and jsonl stores
+  do not, and a redaction naming a blob is then not written
+  (`ErrNoBlobWriter`).
+- **The report** gives, per original, the entries and blobs written,
+  whether it was up to date, its findings, and how many native entries
+  its redaction holds: one someone resumed is not publishable to a
+  redacted-only store until those entries are redacted. A session that
+  fails stops those that depend on it (`ErrDependency`) and no other.
+
 ### What is not found
 
 The string redactors match text as it is written. They do not find:
@@ -182,11 +220,11 @@ profile's redactors never see them:
   and `parents` beyond its entry and session references;
 - `call_id`s, a run's pending call IDs and the header's `spawned_by`,
   which pair calls with their outputs and derive subsession IDs;
-- the header's `created_at`, `payload`, `records`, `media` and
-  `parent_session`;
-- references into other sessions, `parent_session`, a `parents` element
-  or a link naming one, which hold that session's original IDs until
-  the store pass re-points them; each is reported in `Result.Findings`;
+- the header's `created_at`, `payload`, `records` and `media`;
+- references into sessions not redacted alongside, `parent_session`, a
+  `parents` element or a link naming one, which hold that session's
+  original IDs; the store pass re-points those into sessions the store
+  holds. Each kept is reported in `Result.Findings`;
 - an env entry's file hashes, when the profile has no `Environment`;
 - a sidecar reference, when the profile has no `Images`; with it, a
   sidecar image is replaced, and other sidecar media, such as a file,
@@ -209,8 +247,9 @@ backstop for what the redactors miss, not a guarantee.
 Profiles, the string redactors (`Secrets`, `HomePaths`, `Patterns`,
 `ParseRules`), the entry redactors `Environment` and `Images`, the
 structural redactors `LeaveOut` and `BlockOut`, the session redactors
-`KeepLeafPath` and `DropBranches`, and `Redact`, which applies a
-profile to one session, are here. The design is [docs/plans/agentredact.md](docs/plans/agentredact.md);
+`KeepLeafPath` and `DropBranches`, `Redact`, which applies a profile
+to one session, and `RedactStore`, which keeps a store's redactions
+current, are here. The design is [docs/plans/agentredact.md](docs/plans/agentredact.md);
 the work is tracked in issues
 [#2](https://github.com/ChristopherDavenport/agentredact/issues/2) (redactors),
 [#3](https://github.com/ChristopherDavenport/agentredact/issues/3) (the store pass),

@@ -209,8 +209,11 @@ the same store, and append to it as its original grows.
   3. `SetRedacted(e, spans)` with the positions it was made from;
   4. on a response, `Session.SetRequestHash(resp)`, after clearing
      `RequestHash` when the original's did not verify;
-  5. clear the ID and commit: `Append`, or, the first time, build the
-     session in memory and `Import` it whole.
+  5. commit it in memory; the pass then writes the session whole
+     through the store's `Importer` the first time (as its record, so a
+     cas store does not hold it as a mirror), and after that `Append`s
+     the new entries with their IDs set, which every store checks
+     against the hash it computes.
 
   The header goes through `RemapHeaderRefs` (`parent_session`, `base`)
   and the redactors, and gains `redacted`, `redacted_from` and the
@@ -218,17 +221,44 @@ the same store, and append to it as its original grows.
 - **Order.** A session goes after every session its entries hash over:
   a fork's origin, and any session its `parents` reach into. Session
   IDs need no order, since every redaction's ID is derived and known up
-  front. A fork's redaction is a fork of its origin's redaction,
+  front. Ready sessions are taken by ID, so the order is the same on
+  every run. A selection of originals takes its dependencies with it.
+- **Forks.** A fork's redaction is a fork of its origin's redaction,
   sharing its prefix, whose positions count in the origin, as RFC 0001
-  says.
+  says. What the origin's redaction made of each prefix entry is found
+  by replaying the origin's redaction up to the base: so it depends on
+  the origin up to the base alone and stays as both grow. The base is
+  the entry standing for the original's base there. A prefix run
+  folded into a block that none of the origin's own entries up to the
+  base closed gets a placeholder of the fork's own, marked with the
+  run's positions in the fork's file order, which is where the fork's
+  own entries count. A base on a branch the origin's session redactors
+  dropped has nothing standing for it, and that fork is redacted
+  without a base, as it is when its origin is not in the store. A
+  redaction resumes in the mode it was written in.
 - **References** into sessions the store holds point at their
-  redactions under the same profile; references to sessions it does not
-  hold stay as written. `RemapRefs` reports both: an unmapped reference
-  to a session the store holds fails the pass. An extension entry comes
-  back `Opaque`, its own members unread; its strings still go through
-  the `Rewriter`.
+  redactions under the same profile, whether or not the selection
+  holds them, so a selection changes nothing that is written;
+  references to sessions it does not hold stay as written and are
+  reported. A `parents` element into another session goes through that
+  session's counterparts (each original entry to the redacted entry
+  standing for it, or none when it was left out, a fate that never
+  changes); one naming an entry left out there is removed and reported,
+  as one naming an entry left out here is, and one naming nothing that
+  session holds fails the session. An extension entry comes back
+  `Opaque`, its own members unread; its strings still go through the
+  `Rewriter`.
 - **Blobs.** A replaced sidecar blob is written to the store under the
-  replacement's hash; a kept blob is shared with the original.
+  replacement's hash, through its `PutBlob`, before the entries naming
+  it; a kept blob is shared with the original. The cas store has
+  `PutBlob`, beside its `Import`, which takes no blobs
+  (agentsession#245); the memory and jsonl stores have no blob write
+  path, and there a redaction that made blobs is not written.
+- **Failures.** A session that fails is reported, and the sessions that
+  depend on it, through any chain, are not redacted; every other
+  session is. An append that fails part way leaves a redaction that the
+  next run resumes, a block placeholder written without the entry that
+  closes its run included.
 - **A rerun** with the same profile finds every redacted session up to
   date and writes nothing.
 - **A resumed redacted session** holds native entries, which a

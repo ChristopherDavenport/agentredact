@@ -98,3 +98,36 @@ versions may break the API.
   the redacted session needs in `Result.Blobs`, keyed by hash, through
   the new `EntryContext.AddBlob`. Sidecar media that is not an image is
   kept and reported.
+- Added: `RedactStore`, the store-wide pass (#3). It keeps one
+  redaction per original under a profile in the same store, creating
+  the missing ones through the store's `agentsession.Importer` and
+  appending what originals added since with `Store.Append`; a rerun
+  with nothing new writes nothing. Redacted sessions are skipped. Each
+  original is redacted after the sessions it hashes over (its fork's
+  origin, those its `parents` name), and `StoreOptions.Select` narrows
+  the originals, taking their dependencies along. Blobs a redaction
+  made are written first through the store's `PutBlob` (`BlobWriter`,
+  which the cas store has); in a store without one such a redaction is
+  not written (`ErrNoBlobWriter`). `StoreReport` gives per session the
+  entries and blobs written, whether it was up to date, its findings
+  and the native entries its redaction holds (`Publishable`). A
+  session that fails stops its dependents (`ErrDependency`) and no
+  other; sessions in a cycle report `ErrCycle`.
+- Added: `WithOrigin` and `Origin`: `Redact` writes a fork as a fork of
+  its origin's redaction, at the entry standing for its base, sharing
+  its prefix, with its own entries counting positions in the fork's
+  file order. The prefix's fates come from replaying the origin's
+  redaction up to the base (`ErrOriginBehind` when it does not reach
+  it); a base the origin's redaction dropped is `ErrBaseLeftOut`. A
+  redaction resumes in the mode it was written in.
+- Added: `WithAlongside` and `Alongside`: references into sessions
+  redacted alongside, `parent_session`, a link's `session` and a
+  `parents` element, are re-pointed to their redactions, through the
+  new `Result.Counterparts`; a `parents` element naming an entry left
+  out there is removed and reported, and one that cannot be re-pointed
+  is `ErrUnmappedRef`.
+- Changed: a `parent_session` kept as written is reported as a finding
+  at position 0, the header, as the documentation already said.
+- Changed: a redaction whose append stopped between a block placeholder
+  and the kept entry closing its run resumes, rather than reading as
+  diverged.
