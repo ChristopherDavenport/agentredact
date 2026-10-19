@@ -62,7 +62,9 @@ versions may break the API.
 - Added: session redactors, in the new `Profile.Sessions`:
   `SessionRedactor`, `KeepLeafPath` and `DropBranches`. They leave out
   whole branches before any entry is redacted, held to the group rules
-  before anything is written.
+  before anything is written. `KeepLeafPath` keeps the path's own
+  records that sit off it, such as a call's dispatch on a branch a retry
+  rewound past, where they sit, and refuses one it cannot keep in place.
 - Added: what is left out stays valid. A call leaves with its output,
   dispatches, decisions and links, a queued input with the items drained
   from it, a response with all its items, a run's end with its start. A

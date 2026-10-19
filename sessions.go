@@ -33,10 +33,20 @@ type SessionRedactor interface {
 	LeaveOut(original *agentsession.Session, order []agentsession.Entry) ([]bool, error)
 }
 
-// KeepLeafPath keeps only the entries on the path to the original's
-// leaf ([agentsession.Session.Leaf]: in a store its head, in a file what
-// the file's rules give), prefix included, and leaves out every other
-// branch. The redaction then grows with the original as long as the
+// KeepLeafPath keeps the entries on the path to the original's leaf
+// ([agentsession.Session.Leaf]: in a store its head, in a file what the
+// file's rules give), prefix included, and leaves out every other
+// branch, except the records of the path's own groups that sit off it:
+// a dispatch, output, decision, subsession or peer link or cancel notice
+// of a call on the path, the end of a run started on it, the response
+// enveloping items on it, and an item drained from a queued input on
+// it. Such an entry is kept where it sits, under its parent, when that
+// parent is kept, as after a retry that rewound to before a call's
+// dispatch; nothing else of the abandoned branch is. One whose parent
+// is part of the abandoned conversation, such as a run's end after a
+// rewind inside the run, cannot be kept in place, and the redaction is
+// refused with the group's sentinel ([ErrSplitsCall], [ErrSplitsRun] and
+// the others) before anything is written. The redaction then grows with the original as long as the
 // leaf moves along its branch; once the leaf moves to another branch,
 // entries already redacted are off the new path, and resuming is
 // refused with [ErrResumeDiverged].
@@ -45,9 +55,7 @@ type SessionRedactor interface {
 // reported as a [Finding]: a branch summary of an abandoned branch, a
 // compaction folding what came before, an entry converging a worker
 // branch's result. A label or an outcome naming an entry off the path
-// is left out with it. A session whose path relies on another branch,
-// such as a call answered on the path whose dispatch is on a branch off
-// it, is refused rather than redacted.
+// is left out with it.
 func KeepLeafPath() SessionRedactor { return keepLeafPath{} }
 
 type keepLeafPath struct{}
@@ -55,15 +63,26 @@ type keepLeafPath struct{}
 func (keepLeafPath) Name() string { return "keep-leaf-path" }
 
 func (keepLeafPath) LeaveOut(original *agentsession.Session, order []agentsession.Entry) ([]bool, error) {
-	on := map[string]bool{}
+	keep := map[string]bool{}
 	if leaf := original.Leaf(); leaf != "" {
 		for _, e := range original.Path(leaf) {
-			on[e.Base().ID] = true
+			keep[e.Base().ID] = true
 		}
 	}
+	// An entry off the path is kept when it is a member of a group whose
+	// head is kept and its parent is kept: the path's own call's
+	// records, where they sit. File order puts the parent and the head
+	// first. A member whose parent is not kept is left out, and Redact
+	// refuses that with the group's sentinel before writing.
+	groups := &redaction{original: original, order: order}
+	kept := func(id string) bool { return keep[id] }
 	out := make([]bool, len(order))
 	for i, e := range order {
-		out[i] = !on[e.Base().ID]
+		b := e.Base()
+		if !keep[b.ID] && b.Parent != "" && keep[b.Parent] && groups.splits(e, kept) != nil {
+			keep[b.ID] = true
+		}
+		out[i] = !keep[b.ID]
 	}
 	return out, nil
 }

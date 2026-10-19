@@ -265,46 +265,99 @@ func TestOmitCarried(t *testing.T) {
 	}
 }
 
-// dispatchOffPathOriginal: a call whose dispatch is on a branch off the
-// leaf path, answered on it.
+// retryAfterRewind grows s, holding a call (2) and its response (3),
+// with a retry: the call is dispatched on a branch the user abandons,
+// then answered on the leaf's branch, rewound to the response.
 //
-//	1 user  2 call c (resp-1)  3 resp-1  4 dispatch (branch)
-//	5 answer (3)  6 output  7 msg  8 resp-2
-func dispatchOffPath(t *testing.T, s *agentsession.Session, c *clock) {
+//	4 dispatch (3)  5 user (4)  6 msg  7 resp-x  [abandoned]
+//	8 answer (3)  9 output  10 msg  11 resp-2  [leaf]
+//
+// With side set, the dispatch hangs from an abandoned user message
+// instead: 4 user (3), 5 dispatch (4).
+func retryAfterRewind(t *testing.T, s *agentsession.Session, c *clock, side bool) {
 	t.Helper()
 	order := agentsession.FileOrder(s)
 	callID, resp := order[1].Base().ID, order[2].Base().ID
+	if side {
+		appendAt(t, s, c, user("abandoned side note"))
+	}
 	appendAt(t, s, c, agentsession.NewDispatch("call-off", callID))
+	if !side {
+		appendAt(t, s, c, user("abandoned branch text"))
+		respond(t, s, c, "resp-x", agentsession.NewItemEntry(openresponses.AssistantText("abandoned reply")))
+	}
 	if err := s.Branch(resp); err != nil {
 		t.Fatal(err)
 	}
 	appendAt(t, s, c, agentsession.NewDecision("call-off", callID, agentsession.VerdictAnswer, agentsession.ByHuman))
 	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.NewFunctionCallOutput("call-off", "answered")))
 	respond(t, s, c, "resp-2", agentsession.NewItemEntry(openresponses.AssistantText("ok")))
+	if err := s.VerifyRecords(s.Leaf()); err != nil {
+		t.Fatalf("the fixture's records do not verify: %v", err)
+	}
+}
+
+func callBase(t *testing.T, c *clock) *agentsession.Session {
+	t.Helper()
+	s := recordsOriginal("orig-off-path")
+	appendAt(t, s, c, user("go"))
+	respond(t, s, c, "resp-1", call("call-off"))
+	return s
+}
+
+// TestKeepLeafPathKeepsGroups: KeepLeafPath keeps the records of the
+// path's own call that sit off it, where they sit, and nothing else of
+// the abandoned branch; resuming after growth equals a fresh redaction.
+func TestKeepLeafPathKeepsGroups(t *testing.T) {
+	c := &clock{}
+	s := callBase(t, c)
+	p := structProfile("test.leaf@1", nil, KeepLeafPath())
+	red := redact(t, p, s, nil).Session
+	retryAfterRewind(t, s, c, false)
+	res := redact(t, p, s, nil)
+	checkStructural(t, p, s, res, []string{"1", "2", "3", "4", "8", "9", "10", "11"})
+	absent(t, res, "abandoned")
+	order := agentsession.FileOrder(res.Session)
+	if d, ok := order[3].(*agentsession.DispatchEntry); !ok || d.Parent != order[2].Base().ID || d.Target != order[1].Base().ID {
+		t.Errorf("the off-path dispatch is not kept under resp-1, naming the call: %+v", order[3])
+	}
+	red = resumeEqualsFresh(t, p, s, red)
+	appendAt(t, s, c, user("more on the leaf"))
+	resumeEqualsFresh(t, p, s, red)
 }
 
 // TestSessionGroupRules: what a session redactor leaves out is held to
 // the group rules before anything is written, fresh and on resume.
 func TestSessionGroupRules(t *testing.T) {
+	// KeepLeafPath cannot keep a dispatch whose parent is the abandoned
+	// conversation.
 	c := &clock{}
-	s := recordsOriginal("orig-off-path")
-	appendAt(t, s, c, user("go"))
-	respond(t, s, c, "resp-1", call("call-off"))
+	s := callBase(t, c)
 	p := structProfile("test.leaf@1", nil, KeepLeafPath())
 	red := redact(t, p, s, nil).Session
 	before := fileOf(t, red)
-	dispatchOffPath(t, s, c)
-	if err := s.VerifyRecords(s.Leaf()); err != nil {
-		t.Fatalf("the fixture's records do not verify: %v", err)
-	}
-	if _, err := Redact(p, s, nil); !errors.Is(err, ErrSplitsCall) || !strings.Contains(err.Error(), "entry 4 ") {
-		t.Errorf("fresh: %v, want ErrSplitsCall at entry 4", err)
+	retryAfterRewind(t, s, c, true)
+	if _, err := Redact(p, s, nil); !errors.Is(err, ErrSplitsCall) || !strings.Contains(err.Error(), "entry 5 ") {
+		t.Errorf("fresh: %v, want ErrSplitsCall at entry 5", err)
 	}
 	if _, err := Redact(p, s, red); !errors.Is(err, ErrSplitsCall) {
 		t.Errorf("resumed: %v, want ErrSplitsCall", err)
 	}
 	if !bytes.Equal(fileOf(t, red), before) {
 		t.Error("the refused resume wrote to the existing redaction")
+	}
+
+	// DropBranches has no such widening: the same retry, with the
+	// abandoned branch dropped, is refused.
+	c = &clock{}
+	s = callBase(t, c)
+	retryAfterRewind(t, s, c, false)
+	drop := structProfile("test.drop@1", nil, DropBranches(func(c *EntryContext) bool {
+		_, ok := c.Entry().(*agentsession.DispatchEntry)
+		return ok
+	}))
+	if _, err := Redact(drop, s, nil); !errors.Is(err, ErrSplitsCall) || !strings.Contains(err.Error(), "entry 4 ") {
+		t.Errorf("DropBranches: %v, want ErrSplitsCall at entry 4", err)
 	}
 
 	// Everything after a time: the cut falls inside a response.

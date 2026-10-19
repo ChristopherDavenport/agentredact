@@ -99,9 +99,13 @@ refused with an error naming the position (`ErrSplitsCall`,
 `ErrSplitsQueued`, `ErrSplitsResponse`, `ErrSplitsRun`,
 `ErrLeavesOutConfig`, `ErrLeavesOutCompaction`, `ErrFirstKept`,
 `ErrNoPlace`, `ErrGroupHead`, `ErrBreaksRecords`). Session redactors are
-held to the same group rules before anything is written, so
-`KeepLeafPath` refuses a session whose path relies on another branch,
-such as a call answered on the path whose dispatch is off it.
+held to the same group rules before anything is written.
+`KeepLeafPath` widens its own choice instead: it keeps the path's own
+records that sit off it, where they sit, such as the dispatch of a call
+on the path made on a branch a retry rewound past, or a run's end, and
+nothing else of the abandoned branch. One whose parent belongs to the
+abandoned conversation, such as a run's end after a rewind inside the
+run, cannot be kept in place, and the redaction is refused.
 
 Where leaving out changes a kept entry, `Redact` carries it through. A
 reference names the entry's block placeholder; with none, a label or
