@@ -156,7 +156,9 @@ versions may break the API.
   the values by name and finds each in every spelling a JSON encoder
   writes it in (Go's with and without HTML escaping, `\/`, Python's and
   PHP's ASCII forms, JavaScript's); `Redact`, `String` and `Reader`
-  (a line at a time, a long line in pieces that never split a value)
+  (a line at a time, a long line in pieces split where no spelling
+  reaches across, following a value whose end begins another back past
+  both, so the reader's output is the whole line's)
   replace them with `[REDACTED NAME]`, and a callback hears each by
   name; `Exact` and `WithPlaceholder` change what is matched and
   written. It is dax's box host's redactor, moved here so agentworkspace

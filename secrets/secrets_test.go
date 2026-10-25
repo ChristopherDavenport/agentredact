@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"go/build"
 	"io"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"testing"
@@ -155,6 +156,76 @@ func TestReaderLongLines(t *testing.T) {
 		if strings.Contains(string(got), v) || n != 42 {
 			t.Errorf("%s: the value is left, or %d found, want 42", name, n)
 		}
+	}
+}
+
+// A long line's split never lands inside a value whose end is another
+// value's start: the split moves back past both, and the reader's output
+// is the whole line's, whatever the reads' sizes.
+func TestReaderSplitsNoChainedValue(t *testing.T) {
+	old := lineMax
+	lineMax = 64
+	defer func() { lineMax = old }()
+	const x, y = "xsecret-long-ab", "abZZ"
+	r := New(map[string]string{"X": x, "Y": y})
+	for pad := range 80 {
+		line := strings.Repeat("-", pad) + x + "ZZ" + strings.Repeat("-", 100) + "\n"
+		want := r.String(line)
+		for name, src := range readers(line) {
+			got, err := io.ReadAll(r.Reader(src, nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != want {
+				t.Errorf("pad %d, %s:\n got %q\nwant %q", pad, name, got, want)
+			}
+			if strings.Contains(string(got), "xsecret") {
+				t.Errorf("pad %d, %s: part of X is left: %q", pad, name, got)
+			}
+		}
+	}
+}
+
+// For values that overlap one another in every way, a long line read
+// through the reader comes out as the whole line redacted at once, for
+// each size of read.
+func TestReaderMatchesString(t *testing.T) {
+	old := lineMax
+	lineMax = 48
+	defer func() { lineMax = old }()
+	values := map[string]string{"A": "abcab", "B": "cabca", "C": "bcabc-long", "D": "aaaa", "E": "ab"}
+	r := New(values)
+	rng := rand.New(rand.NewPCG(1, 2))
+	parts := []string{"abcab", "cabca", "bcabc-long", "aaaa", "ab", "a", "b", "c", "-", "x"}
+	for i := range 200 {
+		var line strings.Builder
+		for line.Len() < 400 {
+			line.WriteString(parts[rng.IntN(len(parts))])
+		}
+		in := line.String()
+		if i%2 == 0 {
+			in += "\n"
+		}
+		want := r.String(in)
+		for name, src := range readers(in) {
+			got, err := io.ReadAll(r.Reader(src, nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != want {
+				t.Fatalf("line %d, %s:\n  in %q\n got %q\nwant %q", i, name, in, got, want)
+			}
+		}
+	}
+}
+
+// readers are s read a byte at a time, half a read at a time, and all
+// at once.
+func readers(s string) map[string]io.Reader {
+	return map[string]io.Reader{
+		"a byte at a time": iotest.OneByteReader(strings.NewReader(s)),
+		"half at a time":   iotest.HalfReader(strings.NewReader(s)),
+		"all at once":      strings.NewReader(s),
 	}
 }
 

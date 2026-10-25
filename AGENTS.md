@@ -23,6 +23,12 @@ before writing code. Issues #2–#6 track the parts.
   the rest of this module. The root's `Secrets` is built on it, and the
   root requires it at exactly the version the repository is released
   at, through `replace ... => ./secrets` (`make replaces` checks it).
+  That replace means `go install` and `go run` of a package in the root
+  module, at a version, are refused ("contains one or more replace
+  directives"); `go get` is not affected. So `cmd/agentredact`, meant
+  for `go install`, is a nested module of its own (`cmd/agentredact`,
+  requiring the root at the released version, with no replace of its
+  own in a release) rather than a package of the root.
 - The root imports the standard library, its `secrets` module,
   `agentsession`, `openresponses` and `agentpolicy` alone. At any depth
   the build may reach only those and the two modules `agentpolicy`

@@ -4,9 +4,11 @@ go 1.25.0
 
 // The secrets requirement names the version this module is released
 // at, and the replace below points at the tree so the release commit
-// can name a version the proxy does not serve yet. Consumers ignore the
-// replace and get the require; make extracted builds the module with
-// it dropped, the way a consumer does.
+// can name a version the proxy does not serve yet. A consumer's go get
+// ignores the replace and gets the require; make extracted builds the
+// module with it dropped, the way a consumer does. go install and go
+// run pkg@version refuse a module carrying any replace, so a command
+// meant for go install lives in a module of its own (AGENTS.md).
 require (
 	github.com/ChristopherDavenport/agentpolicy v0.0.17
 	github.com/ChristopherDavenport/agentredact/secrets v0.0.1
