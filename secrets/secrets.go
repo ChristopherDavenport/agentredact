@@ -185,7 +185,10 @@ func scriptJSON(v string, ascii bool) string {
 }
 
 // Redact is b with every spelling replaced, and how often each secret
-// was, by name. b may be changed in place.
+// was, by name. b may be changed in place. A shorter spelling is matched
+// in what the longer ones wrote too, a placeholder among it: with the
+// values "REDACTED" and "ACT" and a fixed placeholder "[REDACTED]",
+// "REDACTED" becomes "[RED[REDACTED]ED]" and both are counted.
 func (r *Redactor) Redact(b []byte) ([]byte, map[string]int) {
 	if r.Empty() {
 		return b, nil
@@ -218,9 +221,12 @@ func (r *Redactor) String(s string) string {
 }
 
 // Reader is src as r redacts it: a line at a time, newline included, or,
-// for a line longer than a megabyte, in pieces that hold back whatever
-// might begin a spelling the next piece ends. found, when not nil, is
-// told of the replacements in each piece, by name in sorted order.
+// for a line longer than a megabyte, in pieces split where no spelling
+// reaches across, so the output is the whole line's whatever sizes src
+// reads in. Spellings that reach across one another in a chain longer
+// than the split will follow are held whole until the line ends. found,
+// when not nil, is told of the replacements in each piece, by name in
+// sorted order.
 func (r *Redactor) Reader(src io.Reader, found func(name string, n int)) io.Reader {
 	if r.Empty() {
 		return src
@@ -289,22 +295,46 @@ func (rr *reader) emit(b []byte) {
 
 // cut is where to split b, a piece of a long line, so that no spelling
 // is cut in two: the last longest-1 bytes are held back, and further
-// still if a spelling starts before them and reaches into them.
+// still to the start of a spelling that reaches across the split, again
+// and again, since a spelling that starts earlier may reach across the
+// new split (one value's end the start of another's). It returns 0, read
+// on, when the spellings run back to the start of b or past cutSteps
+// moves; a chain that long is held whole until the line ends.
 func (r *Redactor) cut(b []byte) int {
 	cut := len(b) - (r.longest - 1)
 	if cut <= 0 {
 		return len(b)
 	}
-	for e := max(0, cut-(r.longest-1)); e < cut; e++ {
+	for range cutSteps {
+		s, ok := r.crossing(b, cut)
+		if !ok {
+			return cut
+		}
+		if s == 0 {
+			return 0
+		}
+		cut = s
+	}
+	return 0
+}
+
+// cutSteps bounds how far cut follows spellings that reach across one
+// another back from the end of a piece.
+const cutSteps = 64
+
+// crossing returns the first position before at in b where a spelling
+// starts and reaches past at: one whole in b, or one b ends inside.
+func (r *Redactor) crossing(b []byte, at int) (int, bool) {
+	for e := max(0, at-(r.longest-1)); e < at; e++ {
 		for _, s := range r.spellings {
 			end := e + len(s.text)
-			if end <= cut {
+			if end <= at {
 				continue
 			}
 			if bytes.HasPrefix(s.text, b[e:min(end, len(b))]) {
-				return e
+				return e, true
 			}
 		}
 	}
-	return cut
+	return 0, false
 }
