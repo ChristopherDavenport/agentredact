@@ -3,10 +3,10 @@ package agentredact
 import (
 	"path"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/ChristopherDavenport/agentpolicy/guard"
+	"github.com/ChristopherDavenport/agentredact/secrets"
 )
 
 // SecretReplacement is what [Secrets] writes in place of each value.
@@ -17,38 +17,17 @@ const SecretReplacement = "[REDACTED]"
 // replaced first, so a value holding another is not left half
 // redacted; values of one length go in byte order, so the order the
 // caller lists them in does not change the output. Each value is
-// replaced in what the longer ones left.
+// replaced in what the longer ones left. Values are matched as
+// written: a session's strings reach a redactor decoded, so their JSON
+// spellings are not looked for here. It is the secrets package's
+// Redactor, exact and with one placeholder for every value, which the
+// programs that redact a stream, a JSON one among them, use directly.
 func Secrets(values ...string) StringRedactor {
-	var secrets []string
+	byValue := make(map[string]string, len(values))
 	for _, v := range values {
-		if v != "" {
-			secrets = append(secrets, v)
-		}
+		byValue[v] = v
 	}
-	sort.Slice(secrets, func(i, j int) bool {
-		if len(secrets[i]) != len(secrets[j]) {
-			return len(secrets[i]) > len(secrets[j])
-		}
-		return secrets[i] < secrets[j]
-	})
-	secrets = compactSorted(secrets)
-	return func(s string) string {
-		for _, secret := range secrets {
-			s = strings.ReplaceAll(s, secret, SecretReplacement)
-		}
-		return s
-	}
-}
-
-// compactSorted drops adjacent duplicates.
-func compactSorted(s []string) []string {
-	out := s[:0]
-	for i, v := range s {
-		if i == 0 || v != s[i-1] {
-			out = append(out, v)
-		}
-	}
-	return out
+	return secrets.New(byValue, secrets.Exact(), secrets.WithPlaceholder(func(string) string { return SecretReplacement })).String
 }
 
 // HomePaths shortens paths under the home directory home: home followed

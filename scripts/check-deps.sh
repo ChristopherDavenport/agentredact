@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Holds the module to its dependency rule. Every package imports the
-# standard library, this module, agentsession, openresponses and
-# agentpolicy alone. At any depth the build may reach only those
+# standard library, this module, its own nested secrets module (which
+# imports the standard library alone; make deps checks that apart),
+# agentsession, openresponses and agentpolicy alone. At any depth the build may reach only those
 # modules and the two agentpolicy brings in from the same family,
 # agentturn and agenttool (agentpolicy/guard imports both): no
 # third-party module, and not agentsession's nested modules
@@ -26,7 +27,7 @@ family=github.com/ChristopherDavenport
 # the build may reach at any depth. Matched against module paths, not
 # import paths, so a nested module such as agentsession/sqlite is its
 # own module and refused.
-direct=" $module $family/agentsession $family/openresponses $family/agentpolicy "
+direct=" $module $module/secrets $family/agentsession $family/openresponses $family/agentpolicy "
 reach="$direct$family/agentturn $family/agenttool "
 
 # Every package the build reaches outside the standard library, with

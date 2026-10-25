@@ -49,8 +49,11 @@ regenerated with `go test ./... -update`; review the diff.
 
 ## Releases
 
-This repository is a single module, tagged `vX.Y.Z`. With the
-changelog's *Unreleased* section written:
+This repository releases two modules at one version from one commit,
+the root and `secrets`, tagged `vX.Y.Z` and `secrets/vX.Y.Z`. The root
+requires secrets at exactly that version through an in-tree replace,
+and `secrets` imports the standard library alone. With the changelog's
+*Unreleased* section written:
 
 ```sh
 make release VERSION=v0.1.0
