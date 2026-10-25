@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.1 - 2026-10-25
 
 - Added: the repository scaffold. `docs/plans/agentredact.md` is the
   design, written against agentsession v0.0.28 (format 0.13): the
