@@ -24,8 +24,10 @@ jobs:
           go-version: ${{ matrix.go }}
       - name: Build
         run: make build
-      - name: Module depends on agentsession, openresponses, agentpolicy and the standard library only
+      - name: Root depends on agentsession, openresponses, agentpolicy, its secrets module and the standard library only; secrets on the standard library only
         run: make deps
+      - name: Every first-party require is replaced in the tree
+        run: make replaces
       - name: Vet
         run: make vet
       - name: Test
@@ -53,13 +55,31 @@ jobs:
         run: make lint
       - name: govulncheck
         run: make vuln
+      - name: Release guard tests
+        run: make guard-test
+
+  extracted:
+    name: Modules build extracted
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The tags, so it can tell whether the tree is still the release
+          # a require names; see scripts/check-extracted.sh.
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: "**/go.sum"
+      - name: Every module builds against the versions it requires
+        run: make extracted
 
   # Single required status check for branch protection; it fails if any job
   # above failed, was cancelled or was skipped.
   checks:
     name: Checks
     if: always()
-    needs: [test, lint]
+    needs: [test, lint, extracted]
     runs-on: ubuntu-latest
     steps:
       - name: Verify every job succeeded

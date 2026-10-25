@@ -13,12 +13,20 @@ before writing code. Issues #2–#6 track the parts.
 - Go 1.25 is the floor.
 - Packages: `agentredact` at the root (the redactors, profiles and the
   store-wide pass); `scan`, `review` and `publish` as their issues land;
-  `cmd/agentredact`, the command. At the scaffold only the root
-  package exists.
-- The module imports the standard library, `agentsession`,
-  `openresponses` and `agentpolicy` alone. At any depth the build may
-  reach only those and the two modules `agentpolicy` brings in,
-  `agentturn` and `agenttool`: no third-party module, and not
+  `cmd/agentredact`, the command.
+- A nested module, `github.com/ChristopherDavenport/agentredact/secrets`
+  (directory `secrets`): the streaming secret redactor, every JSON
+  spelling of a value, a line-bounded reader. It imports the standard
+  library alone, enforced by `make deps` and `TestImportBoundary`, so
+  the programs between a secret-holding process and an agent
+  (agentworkspace's offered servers, dax's box host) import it without
+  the rest of this module. The root's `Secrets` is built on it, and the
+  root requires it at exactly the version the repository is released
+  at, through `replace ... => ./secrets` (`make replaces` checks it).
+- The root imports the standard library, its `secrets` module,
+  `agentsession`, `openresponses` and `agentpolicy` alone. At any depth
+  the build may reach only those and the two modules `agentpolicy`
+  brings in, `agentturn` and `agenttool`: no third-party module, and not
   agentsession's nested modules (`agentsession/sqlite`,
   `agentsession/otel`). Every dependency is code that sees unredacted
   sessions. TruffleHog runs as the `trufflehog` binary through
@@ -79,23 +87,32 @@ keep the version forever, and deleting the tag only makes it
 unverifiable. A bad version is superseded and `retract`ed, never
 deleted.
 
-This repository is a single module, tagged `vX.Y.Z`. With the
-changelog's *Unreleased* section written:
+This repository releases two modules at one version from one commit,
+tagged `vX.Y.Z` and `secrets/vX.Y.Z`. With the changelog's
+*Unreleased* section written:
 
 ```sh
 make release VERSION=v0.1.0
 ```
 
-That dates the changelog, tidies, runs `make check`, commits, runs
-`scripts/release-guard.sh` (clean tree, tag new locally and on origin,
-version above the published floor, read from origin and failing closed),
-writes an annotated tag whose message is the changelog section
-(`scripts/release-notes.sh`), and pushes the branch and the tag with
-`git push origin --atomic`. The release workflow publishes the tag
-message as the GitHub release notes. Nothing is public until the push:
-if the guard refuses, `git reset --hard HEAD~1`. To check a tag alone,
-`make release-guard TAG=v0.1.0`. The user runs releases; prepare the
-changelog and hand over the command.
+That points every first-party require at the version
+(`scripts/versions.sh`), dates the changelog, tidies, runs `make
+check`, commits, runs `scripts/release-guard.sh` on the root tag (clean
+tree, tag new locally and on origin, version above the published floor,
+read from origin and failing closed, the root requiring secrets at that
+version), writes it as an annotated tag whose message is the changelog
+section (`scripts/release-notes.sh`), guards and writes `secrets/vX.Y.Z`
+the same way (the root tag of that version naming this commit), and
+pushes the branch and both tags with `git push origin --atomic`.
+`make extracted`, in CI, builds each module against the versions it
+requires, the way a consumer gets it; a module whose first-party
+dependency has never been released is skipped until it is. The release
+workflow publishes each tag's message as its GitHub release notes.
+Nothing is public until the push: if the guard refuses,
+`git reset --hard HEAD~1` and `git tag -d` the tags written. To check a
+tag alone, `make release-guard TAG=v0.1.0` (or `TAG=secrets/v0.1.0`).
+The user runs releases; prepare the changelog and hand over the
+command.
 
 ## Siblings
 

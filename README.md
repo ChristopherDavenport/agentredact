@@ -270,13 +270,25 @@ the work is tracked in issues
 [#6](https://github.com/ChristopherDavenport/agentredact/issues/6) (manifest and publish).
 There is no command yet.
 
+`agentredact/secrets` is a module of its own, standard library only:
+the streaming secret redactor, every JSON spelling of each value
+replaced with `[REDACTED NAME]`, for a program between a process that
+holds secrets and an agent, such as a workspace's MCP server whose
+output must not quote its token. `Secrets` above is built on it.
+
+```go
+r := secrets.New(map[string]string{"GITHUB_TOKEN": token})
+out := r.Reader(server.Stdout(), func(name string, n int) { log.Printf("redacted %s ×%d", name, n) })
+```
+
 ## Development
 
 Go 1.25 or later.
 
 ```sh
 make build
-make check        # gofmt, tidy, vet, deps, staticcheck, govulncheck, race tests
+make check        # gofmt, tidy, vet, deps, replaces, staticcheck, govulncheck, race tests, guard tests
+make extracted    # each module built against the versions it requires, as a consumer gets it
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).

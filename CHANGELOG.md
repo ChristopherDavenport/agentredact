@@ -150,3 +150,22 @@ versions may break the API.
 - Changed: a redaction whose append stopped between a block placeholder
   and the kept entry closing its run resumes, rather than reading as
   diverged.
+- Added: the nested module `agentredact/secrets`, standard library
+  only (`make deps` and a test hold it there): a streaming secret
+  redactor for what a process holding secrets writes back. `New` takes
+  the values by name and finds each in every spelling a JSON encoder
+  writes it in (Go's with and without HTML escaping, `\/`, Python's and
+  PHP's ASCII forms, JavaScript's); `Redact`, `String` and `Reader`
+  (a line at a time, a long line in pieces that never split a value)
+  replace them with `[REDACTED NAME]`, and a callback hears each by
+  name; `Exact` and `WithPlaceholder` change what is matched and
+  written. It is dax's box host's redactor, moved here so agentworkspace
+  and the box host share one (#14). A backstop: a value encoded
+  otherwise is not found.
+- Changed: `Secrets` is built on `agentredact/secrets` (exact, one
+  placeholder); its output is unchanged.
+- Changed: the repository releases two modules at one version from one
+  commit, `vX.Y.Z` and `secrets/vX.Y.Z`; the root requires secrets at
+  exactly that version. `make release` bumps, guards and tags both,
+  `make extracted` builds each module the way a consumer gets it, and
+  `make replaces` and `make guard-test` join `make check`.
