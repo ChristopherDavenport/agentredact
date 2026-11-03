@@ -29,12 +29,44 @@ import "strconv"
 // goroutine's.
 type Placeholders struct {
 	n map[string]map[string]int
+	// counts are the replacements made, by kind.
+	counts map[string]int
 }
 
 // NewPlaceholders returns an empty numbering, for a [StringRedactor]
 // used on its own over strings that belong together.
 func NewPlaceholders() *Placeholders {
-	return &Placeholders{n: map[string]map[string]int{}}
+	return &Placeholders{n: map[string]map[string]int{}, counts: map[string]int{}}
+}
+
+// Count records n replacements a redactor made of kind that write no
+// placeholder of their own, such as [HomePaths]' "~" ("home") or a
+// rules file's replacements ("rules"). [Placeholders.For] counts its
+// own. Counts are what a report says a redaction replaced, by kind,
+// never what; on a nil Placeholders it does nothing.
+func (p *Placeholders) Count(kind string, n int) {
+	if p == nil || n <= 0 {
+		return
+	}
+	p.counts[countKind(kind)] += n
+}
+
+// countKind is the name a count goes under: a kind, or "secret" for
+// the values [Secrets] replaces, whose placeholders name no kind.
+func countKind(kind string) string {
+	if kind == "" {
+		return "secret"
+	}
+	return kind
+}
+
+// snapshot is a copy of the counts so far.
+func (p *Placeholders) snapshot() map[string]int {
+	out := make(map[string]int, len(p.counts))
+	for k, v := range p.counts {
+		out[k] = v
+	}
+	return out
 }
 
 // For returns the placeholder of value as kind replaces it: "[REDACTED
@@ -54,6 +86,7 @@ func (p *Placeholders) For(kind, value string) string {
 		byValue = map[string]int{}
 		p.n[kind] = byValue
 	}
+	p.counts[countKind(kind)]++
 	n, ok := byValue[value]
 	if !ok {
 		n = len(byValue) + 1
@@ -72,6 +105,9 @@ func (p *Placeholders) clone() *Placeholders {
 			m[v] = n
 		}
 		c.n[kind] = m
+	}
+	for k, v := range p.counts {
+		c.counts[k] = v
 	}
 	return c
 }

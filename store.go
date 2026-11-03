@@ -100,6 +100,11 @@ type SessionReport struct {
 	// on every run, so the latest report says it all: see [Finding].
 	// They hold no values.
 	Findings []Finding
+	// Counts are the replacements the string redactors made in the whole
+	// redaction, by kind ([Result.Counts]), recounted on every run: a
+	// count, never a value. A manifest or a dataset card says from them
+	// how the data was cleaned.
+	Counts map[string]int
 	// Warnings are what went wrong after the redaction was written,
 	// which does not undo the write: a Release that failed, or a head
 	// that could not be set.
@@ -567,6 +572,7 @@ func (ps *pass) one(ctx context.Context, id string) SessionReport {
 	red := res.Session
 	rp.Fork = red.Header().Base != ""
 	rp.Findings = res.Findings
+	rp.Counts = res.Counts
 	for _, e := range red.Entries() {
 		if _, marked := agentsession.RedactedOf(e); !marked && !red.Prefix(e.Base().ID) {
 			rp.Native++

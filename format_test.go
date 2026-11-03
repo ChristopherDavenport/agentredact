@@ -465,3 +465,41 @@ func TestIdentityNamedLate(t *testing.T) {
 		t.Error("the declaring member kept the value")
 	}
 }
+
+// TestReplacementCounts: a redaction counts what each kind of string
+// redactor replaced in what it wrote, a count and never a value, and a
+// store pass reports the counts on every run; what no rule matches, a
+// Bearer header here, is counted nowhere (#18).
+func TestReplacementCounts(t *testing.T) {
+	c := &clock{}
+	s := newOriginal("orig-counts")
+	appendAt(t, s, c, user("in "+fakeHome+"/project, my password is "+fakePassword))
+	out := "mail fake.person@example.test, fetch https://fakeuser:fakepass@host.example.invalid/x with Authorization: Bearer fake-bearer-0000, private 10.0.0.8 and 127.0.0.1, key " + fakeKey + " and " + fakeKey
+	respond(t, s, c, "resp-1", call("call-1"))
+	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.NewFunctionCallOutput("call-1", out)))
+	turn(t, s, c, "resp-2", "done")
+	p := testProfile()
+	p.Name = "test.counts@1"
+	p.Strings = append(p.Strings, PII())
+	res := redact(t, p, s, nil)
+	// The header's cwd and note, the user's path, and the call's argument
+	// hold the home.
+	// The URL's credentials read as an email address, password and host.
+	want := map[string]int{"secret": 1, "home": 4, "openai_key": 2, "email": 2}
+	if !reflect.DeepEqual(res.Counts, want) {
+		t.Errorf("counts %v, want %v", res.Counts, want)
+	}
+	file := fileOf(t, res.Session)
+	for _, kept := range []string{"10.0.0.8", "127.0.0.1", "Bearer fake-bearer-0000"} {
+		if !bytes.Contains(file, []byte(kept)) {
+			t.Errorf("%s was replaced", kept)
+		}
+	}
+	st := agentsession.NewMemoryStore()
+	load(t, st, s)
+	for run := range 2 {
+		if r := bySession(redactStore(t, st, p, StoreOptions{}))[s.ID()]; !reflect.DeepEqual(r.Counts, want) {
+			t.Errorf("run %d: counts %v, want %v", run, r.Counts, want)
+		}
+	}
+}

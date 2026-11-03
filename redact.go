@@ -49,6 +49,13 @@ type Result struct {
 	// It is what another session redacted alongside re-points a
 	// reference into this one through: see [Alongside].
 	Counterparts map[string]string
+	// Counts are the replacements the string redactors made in what the
+	// redacted session holds of its own, header and every entry it
+	// wrote or replayed, by kind: "secret" for [Secrets], a pattern's
+	// name for [Patterns] and [PII], "identity", "home" for [HomePaths]
+	// and "rules" for a rules file. They hold no value. Like Findings
+	// they cover the whole redaction on every call.
+	Counts map[string]int
 }
 
 // Option changes what [Redact] does.
@@ -368,10 +375,12 @@ func redactSession(p Profile, key Key, original, existing *agentsession.Session,
 	}
 	// The header goes through the string redactors on a resume too, so
 	// the placeholders are numbered as a fresh redaction numbers them.
+	before := r.ph.snapshot()
 	h, headerFindings, err := r.header()
 	if err != nil {
 		return nil, err
 	}
+	headerCounts := deltaCounts(nil, before, r.ph.snapshot())
 	if existing == nil {
 		if r.red, err = r.newSession(h, o.origin); err != nil {
 			return nil, err
@@ -382,7 +391,7 @@ func redactSession(p Profile, key Key, original, existing *agentsession.Session,
 		}
 		r.red = existing
 	}
-	r.res = &Result{Session: r.red, Blobs: map[string]Blob{}}
+	r.res = &Result{Session: r.red, Blobs: map[string]Blob{}, Counts: headerCounts}
 	if r.out, err = r.sessions(); err != nil {
 		return nil, err
 	}
@@ -513,6 +522,10 @@ func (r *redaction) walk(upto int, check bool) error {
 			}
 		}
 		met := len(r.rw.Unmet())
+		var before map[string]int
+		if r.res != nil {
+			before = r.ph.snapshot()
+		}
 		body, err := r.rw.Rewrite(e)
 		if err != nil {
 			return entryErr(r.origID, pos, e, quietRewriteErr(err))
@@ -539,9 +552,25 @@ func (r *redaction) walk(upto int, check bool) error {
 		}
 		if !r.isKept(e.Base().ID) {
 			r.rw.LeftOut(e)
+		} else if before != nil {
+			r.res.Counts = deltaCounts(r.res.Counts, before, r.ph.snapshot())
 		}
 	}
 	return nil
+}
+
+// deltaCounts adds to dst what after counts beyond before, and returns
+// it.
+func deltaCounts(dst, before, after map[string]int) map[string]int {
+	for k, v := range after {
+		if d := v - before[k]; d > 0 {
+			if dst == nil {
+				dst = map[string]int{}
+			}
+			dst[k] += d
+		}
+	}
+	return dst
 }
 
 // UnmetPartText is the text an instruction part is written with when

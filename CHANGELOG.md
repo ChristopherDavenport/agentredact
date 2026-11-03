@@ -121,6 +121,15 @@ versions may break the API.
   session is then searched for every value the whole original names,
   and what it still holds is reported as `FindingIdentity`
   (`identity-value`), by pointer, with no value.
+- **Added: `PII` and replacement counts (#18).** `PII()` is an opt-in
+  string redactor for third parties' email addresses, public IPv4 and
+  IPv6 addresses (loopback, private, link-local, multicast and
+  documentation ranges kept) and separated phone numbers, each written
+  `[REDACTED <name>#<n>]`. `Result.Counts` and `SessionReport.Counts`
+  count, by kind and with no value, the replacements the string
+  redactors made in the whole redaction, recounted on every run
+  (`Placeholders.Count` for a redactor writing fixed text, as
+  `HomePaths` and a rules file do).
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

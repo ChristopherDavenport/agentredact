@@ -117,6 +117,22 @@ version, or two redactions end up mixed in one session.
   `identity-value` finding with no value, which blocks `Publishable`.
   Values shorter than three bytes are not harvested.
 
+### Third parties' addresses, and what was replaced
+
+`DefaultPatterns` is secret shapes alone. `PII()` is an opt-in set for
+the personal data of others that sessions carry: email addresses, IPv4
+and IPv6 addresses outside the loopback, private, link-local,
+multicast and documentation ranges, and phone numbers written with
+separators, each written `[REDACTED email#1]` and so on. Adding it
+changes what a profile writes, so it takes a new version.
+
+`Result.Counts` and `SessionReport.Counts` say how many replacements
+each kind of string redactor made in the whole redaction, recounted on
+every run: `secret`, each pattern's name, `email`, `ipv4`, `ipv6`,
+`phone`, `identity`, `home`, `rules`. A count, never a value: what a
+dataset card needs to say how the data was cleaned. A redactor of your
+own counts through `Placeholders.For` or `Placeholders.Count`.
+
 ### Placeholders
 
 In a redaction, `Secrets` and `Patterns` number what they replace:

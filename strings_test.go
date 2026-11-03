@@ -197,3 +197,23 @@ func TestDefaultSecretPatternsPinned(t *testing.T) {
 		t.Error("DefaultSecretPatterns shares its list")
 	}
 }
+
+// TestPII: email, public IPv4 and IPv6, and separated phone numbers are
+// replaced; loopback, private and documentation addresses, versions and
+// times are kept (#18).
+func TestPII(t *testing.T) {
+	r := PII()
+	for _, tt := range []struct{ in, want string }{
+		{"mail fake.person@example.test now", "mail [REDACTED email] now"},
+		{"host 100.200.30.40 up", "host [REDACTED ipv4] up"},
+		{"loopback 127.0.0.1, private 10.1.2.3 and 192.168.0.9, doc 192.0.2.7", "loopback 127.0.0.1, private 10.1.2.3 and 192.168.0.9, doc 192.0.2.7"},
+		{"v6 2a01:db9::1 and ::1 and fe80::1 and 2001:db8::5", "v6 [REDACTED ipv6] and ::1 and fe80::1 and 2001:db8::5"},
+		{"version 1.2.3.4.5 at 12:30:45", "version 1.2.3.4.5 at 12:30:45"},
+		{"call +44 20 7946 0958 or (555) 555-0100 or 555-555-0100", "call [REDACTED phone] or [REDACTED phone] or [REDACTED phone]"},
+		{"std::vector and a::b", "std::vector and a::b"},
+	} {
+		if got := r(tt.in, nil); got != tt.want {
+			t.Errorf("PII(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}

@@ -115,38 +115,45 @@ func HomePaths(home string) StringRedactor {
 		return func(s string, _ *Placeholders) string { return s }
 	}
 	encoded := dashEncoded(home)
-	return func(s string, _ *Placeholders) string {
-		s = replaceHome(s, re.FindAllStringIndex(s, -1), "~", func(c byte) bool {
+	return func(s string, ph *Placeholders) string {
+		s, n := replaceHome(s, re.FindAllStringIndex(s, -1), "~", func(c byte) bool {
 			return c == '/' || c == '\\' || !continuesSegment(c)
 		})
+		defer func() { ph.Count("home", n) }()
 		if encoded == "" || !strings.Contains(s, encoded[1:]) {
 			return s
 		}
 		dashAfter := func(c byte) bool { return c == '-' || c == '/' || c == '\\' || !continuesSegment(c) }
+		var k int
 		if encoded[0] == '-' {
-			s = replaceHome(s, indexAll(s, encoded), "-~", dashAfter)
+			s, k = replaceHome(s, indexAll(s, encoded), "-~", dashAfter)
+			n += k
 			// The form without the leading dash, after a separator alone.
-			var after []([]int)
+			var after [][]int
 			for _, m := range indexAll(s, encoded[1:]) {
 				if m[0] > 0 && (s[m[0]-1] == '/' || s[m[0]-1] == '\\') {
 					after = append(after, m)
 				}
 			}
-			return replaceHome(s, after, "~", dashAfter)
+			s, k = replaceHome(s, after, "~", dashAfter)
+			n += k
+			return s
 		}
-		return replaceHome(s, indexAll(s, encoded), "~", dashAfter)
+		s, k = replaceHome(s, indexAll(s, encoded), "~", dashAfter)
+		n += k
+		return s
 	}
 }
 
 // replaceHome writes with in place of each match of s, [from, to), that
 // stands on its own: what precedes it is no part of a path segment, or
 // is an escape, and endsHome accepts the byte following it, if any.
-func replaceHome(s string, matches [][]int, with string, endsHome func(c byte) bool) string {
+func replaceHome(s string, matches [][]int, with string, endsHome func(c byte) bool) (string, int) {
 	if matches == nil {
-		return s
+		return s, 0
 	}
 	var b strings.Builder
-	last := 0
+	last, n := 0, 0
 	for _, m := range matches {
 		if m[0] < last {
 			continue
@@ -159,12 +166,13 @@ func replaceHome(s string, matches [][]int, with string, endsHome func(c byte) b
 		b.WriteString(s[last:m[0]])
 		b.WriteString(with)
 		last = m[1]
+		n++
 	}
-	if last == 0 {
-		return s
+	if n == 0 {
+		return s, 0
 	}
 	b.WriteString(s[last:])
-	return b.String()
+	return b.String(), n
 }
 
 // escapeBefore reports whether s holds, just before i, a backslash and
