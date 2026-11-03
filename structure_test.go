@@ -191,7 +191,7 @@ func checkStructural(t *testing.T, p Profile, orig *agentsession.Session, res *R
 		}
 	}
 	h := red.Header()
-	if !h.Redacted || h.RedactedFrom == nil || h.RedactedFrom.Profile != p.Name || h.ID != agentsession.RedactedSessionID(orig.ID(), p.Name) {
+	if !h.Redacted || h.RedactedFrom == nil || h.RedactedFrom.Profile != p.Name || h.ID != redIDOf(orig.ID(), p.Name) {
 		t.Errorf("header %+v", h)
 	}
 	if got := marks(t, red); strings.Join(got, " ") != strings.Join(want, " ") {
@@ -550,7 +550,7 @@ func TestKeepLeafPath(t *testing.T) {
 	}
 	appendAt(t, s, c, user("branch C"))
 	before := fileOf(t, red)
-	if _, err := Redact(p, s, red); !errors.Is(err, ErrResumeDiverged) {
+	if _, err := Redact(p, testKey, s, red); !errors.Is(err, ErrResumeDiverged) {
 		t.Errorf("resuming after the leaf moved: %v, want ErrResumeDiverged", err)
 	}
 	if !bytes.Equal(fileOf(t, red), before) {
@@ -751,7 +751,7 @@ func TestRefusals(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			orig := tt.build(t, &clock{})
 			p := structProfile("test.refuse@1", tt.entries, tt.sessions...)
-			_, err := Redact(p, orig, nil)
+			_, err := Redact(p, testKey, orig, nil)
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("%v, want %v", err, tt.want)
 			}

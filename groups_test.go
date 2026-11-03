@@ -53,7 +53,7 @@ func TestQueuedGroup(t *testing.T) {
 	// queued entry: refused.
 	orig := queuedOriginal(t, &clock{})
 	p := structProfile("test.queued@1", []EntryRedactor{LeaveOut(userWith("diagnosis"))})
-	if _, err := Redact(p, orig, nil); !errors.Is(err, ErrSplitsQueued) || !strings.Contains(err.Error(), "entry 3 ") {
+	if _, err := Redact(p, testKey, orig, nil); !errors.Is(err, ErrSplitsQueued) || !strings.Contains(err.Error(), "entry 3 ") {
 		t.Errorf("leaving out the drained item alone: %v, want ErrSplitsQueued at entry 3", err)
 	}
 
@@ -211,7 +211,7 @@ func TestLinkGroup(t *testing.T) {
 		at   int
 	}{{"a link alone", 4}, {"a cancel notice alone", 5}} {
 		p := structProfile("test.link@1", []EntryRedactor{LeaveOut(atPositions(tt.at))})
-		if _, err := Redact(p, orig, nil); !errors.Is(err, ErrSplitsCall) {
+		if _, err := Redact(p, testKey, orig, nil); !errors.Is(err, ErrSplitsCall) {
 			t.Errorf("%s: %v, want ErrSplitsCall", tt.name, err)
 		}
 	}
@@ -260,7 +260,7 @@ func TestOmitCarried(t *testing.T) {
 	}
 	appendAt(t, s, c, &agentsession.ConfigEntry{InstructionsOmitted: []agentsession.OmittedPart{{Keep: 1, Of: x}}})
 	p = structProfile("test.omit@1", nil, DropBranches(func(c *EntryContext) bool { return userWith("branch A")(c, nil) }))
-	if _, err := Redact(p, s, nil); !errors.Is(err, ErrNoPlace) || !strings.Contains(err.Error(), "entry 4 ") {
+	if _, err := Redact(p, testKey, s, nil); !errors.Is(err, ErrNoPlace) || !strings.Contains(err.Error(), "entry 4 ") {
 		t.Errorf("a keep over a config left out: %v, want ErrNoPlace at entry 4", err)
 	}
 }
@@ -337,10 +337,10 @@ func TestSessionGroupRules(t *testing.T) {
 	red := redact(t, p, s, nil).Session
 	before := fileOf(t, red)
 	retryAfterRewind(t, s, c, true)
-	if _, err := Redact(p, s, nil); !errors.Is(err, ErrSplitsCall) || !strings.Contains(err.Error(), "entry 5 ") {
+	if _, err := Redact(p, testKey, s, nil); !errors.Is(err, ErrSplitsCall) || !strings.Contains(err.Error(), "entry 5 ") {
 		t.Errorf("fresh: %v, want ErrSplitsCall at entry 5", err)
 	}
-	if _, err := Redact(p, s, red); !errors.Is(err, ErrSplitsCall) {
+	if _, err := Redact(p, testKey, s, red); !errors.Is(err, ErrSplitsCall) {
 		t.Errorf("resumed: %v, want ErrSplitsCall", err)
 	}
 	if !bytes.Equal(fileOf(t, red), before) {
@@ -356,7 +356,7 @@ func TestSessionGroupRules(t *testing.T) {
 		_, ok := c.Entry().(*agentsession.DispatchEntry)
 		return ok
 	}))
-	if _, err := Redact(drop, s, nil); !errors.Is(err, ErrSplitsCall) || !strings.Contains(err.Error(), "entry 4 ") {
+	if _, err := Redact(drop, testKey, s, nil); !errors.Is(err, ErrSplitsCall) || !strings.Contains(err.Error(), "entry 4 ") {
 		t.Errorf("DropBranches: %v, want ErrSplitsCall at entry 4", err)
 	}
 
@@ -366,7 +366,7 @@ func TestSessionGroupRules(t *testing.T) {
 	after := structProfile("test.after@1", nil, DropBranches(func(c *EntryContext) bool {
 		return !c.Entry().Base().Timestamp.Before(cut)
 	}))
-	if _, err := Redact(after, orig, nil); !errors.Is(err, ErrSplitsResponse) || !strings.Contains(err.Error(), "entry 6 ") {
+	if _, err := Redact(after, testKey, orig, nil); !errors.Is(err, ErrSplitsResponse) || !strings.Contains(err.Error(), "entry 6 ") {
 		t.Errorf("after a time: %v, want ErrSplitsResponse at entry 6", err)
 	}
 }
@@ -406,7 +406,7 @@ func TestEmptyResumeSegment(t *testing.T) {
 		{BlockOut(ofType(openresponses.ItemTypeFunctionCall)), []string{"1", "2", "3-4", "5", "6", "9"}},
 	} {
 		p := structProfile("test.runs@1", []EntryRedactor{tt.red})
-		res, err := Redact(p, orig, nil)
+		res, err := Redact(p, testKey, orig, nil)
 		if err != nil {
 			t.Fatalf("%s: %v", redactorName(tt.red), err)
 		}
@@ -488,7 +488,7 @@ func TestReplayComparesContent(t *testing.T) {
 		{"content", Profile{Name: "test.drift@1", Strings: []StringRedactor{Secrets("fake-name-0001")}}},
 		{"an entry missing", Profile{Name: "test.drift@1", Entries: []EntryRedactor{LeaveOut(atPositions(1))}}},
 	} {
-		if _, err := Redact(tt.p, s, red); !errors.Is(err, ErrResumeDiverged) {
+		if _, err := Redact(tt.p, testKey, s, red); !errors.Is(err, ErrResumeDiverged) {
 			t.Errorf("%s: %v, want ErrResumeDiverged", tt.name, err)
 		}
 		if !bytes.Equal(fileOf(t, red), before) {
@@ -498,7 +498,7 @@ func TestReplayComparesContent(t *testing.T) {
 	// The other way: an entry a fresh redaction does not write.
 	left := Profile{Name: "test.drift@2", Entries: []EntryRedactor{LeaveOut(atPositions(4))}}
 	red2 := redact(t, Profile{Name: "test.drift@2"}, s, nil).Session
-	if _, err := Redact(left, s, red2); !errors.Is(err, ErrResumeDiverged) {
+	if _, err := Redact(left, testKey, s, red2); !errors.Is(err, ErrResumeDiverged) {
 		t.Errorf("an entry held that fresh does not write: %v, want ErrResumeDiverged", err)
 	}
 }
@@ -614,8 +614,8 @@ func TestSidecarResumeBlobs(t *testing.T) {
 	}
 	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.UserMessage(&openresponses.InputImage{ImageURL: "sidecar:" + agentsession.HashText("FAKE-IMAGE-BLOB-0003")})))
 	grown := redact(t, p, s, red.Session)
-	blob, _ := placeholderBytes(DefaultImagePlaceholder)
-	if len(grown.Blobs) != 1 || !bytes.Equal(grown.Blobs[agentsession.HashBytes(blob)], blob) {
+	blob, _, _ := placeholderBytes(DefaultImagePlaceholder)
+	if len(grown.Blobs) != 1 || !bytes.Equal(grown.Blobs[agentsession.HashBytes(blob)].Data, blob) {
 		t.Errorf("blobs %v, want the placeholder's alone", grown.Blobs)
 	}
 	appendAt(t, s, c, user("no image"))

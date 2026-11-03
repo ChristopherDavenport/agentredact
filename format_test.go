@@ -1,0 +1,242 @@
+package agentredact
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/ChristopherDavenport/agentsession"
+	"github.com/ChristopherDavenport/openresponses"
+)
+
+// The rules agentsession's formats 0.14 to 0.19 gave redactors, each
+// held by a synthetic case.
+
+// TestCustomEntryLeavesWithCall: a custom entry carrying a call's
+// call_id leaves with the call, as its dispatches and outputs do (RFC
+// 0001 0.15, Leaving entries out).
+//
+//	1 user  2 call c (resp-1)  3 resp-1  4 custom call_id c  5 output
+//	6 msg (resp-2)  7 resp-2
+func TestCustomEntryLeavesWithCall(t *testing.T) {
+	c := &clock{}
+	s := newOriginal("orig-custom-call")
+	appendAt(t, s, c, user("run the tool"))
+	respond(t, s, c, "resp-1", call("call-nested"))
+	appendAt(t, s, c, &agentsession.CustomEntry{NS: "fake:nested_call", CallID: "call-nested", Data: json.RawMessage(`{"note":"nested-call-record"}`)})
+	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.NewFunctionCallOutput("call-nested", "done")))
+	respond(t, s, c, "resp-2", agentsession.NewItemEntry(openresponses.AssistantText("ok")))
+	p := structProfile("test.custom-call@1", []EntryRedactor{LeaveOut(ofType(openresponses.ItemTypeFunctionCall))})
+	res := redact(t, p, s, nil)
+	checkStructural(t, p, s, res, []string{"1", "6", "7"})
+	absent(t, res, "call-nested", "nested-call-record")
+}
+
+// TestCompactionKeepsTrust: a compaction whose entries before first_kept
+// are left out keeps its trust as written, never narrowed to what the
+// kept entries carry (RFC 0001 0.15, Every redacted entry).
+func TestCompactionKeepsTrust(t *testing.T) {
+	c := &clock{}
+	s := newOriginal("orig-trust")
+	appendAt(t, s, c, user("secret-block: what an untrusted page said"))
+	turn(t, s, c, "resp-1", "read it")
+	kept := appendAt(t, s, c, user("second"))
+	turn(t, s, c, "resp-2", "ok")
+	comp, err := s.Compact(kept, openresponses.UserText("summary of an untrusted page"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	comp.Trust = &agentsession.Trust{Reads: []string{agentsession.TrustUntrusted}}
+	appendAt(t, s, c, comp)
+	appendAt(t, s, c, user("after the fold"))
+	turn(t, s, c, "resp-3", "fine")
+	p := structProfile("test.trust@1", []EntryRedactor{BlockOut(userWith("secret-block"))})
+	res := redact(t, p, s, nil)
+	var got *agentsession.CompactionEntry
+	for _, e := range readBack(t, res.Session).Entries() {
+		if v, ok := e.(*agentsession.CompactionEntry); ok {
+			got = v
+		}
+	}
+	if got == nil || got.Trust == nil || !reflect.DeepEqual(got.Trust.Reads, []string{agentsession.TrustUntrusted}) {
+		t.Fatalf("the compaction's trust %+v, want untrusted as written", got)
+	}
+	if !hasKind(res, FindingRestates) {
+		t.Errorf("findings %+v, want the compaction restating what was left out", res.Findings)
+	}
+}
+
+func hasKind(res *Result, kind FindingKind) bool {
+	return slices.ContainsFunc(res.Findings, func(f Finding) bool { return f.Kind == kind })
+}
+
+// promisedFork is a fork whose header promises dispatch records, whose
+// own entry answers a call of its prefix the origin never dispatched,
+// which a fork may do: its promise covers its own entries alone.
+//
+//	origin: 1 user  2 call c (resp-1)  3 resp-1
+//	fork:   4 answer c  5 output  6 msg (resp-2)  7 resp-2
+func promisedFork(t *testing.T, c *clock) (origin, f *agentsession.Session) {
+	t.Helper()
+	origin = newOriginal("orig-unpromised")
+	appendAt(t, origin, c, user("run it"))
+	ids := respond(t, origin, c, "resp-1", call("call-prefix"))
+	f, err := agentsession.Fork(origin, ids[1], agentsession.Header{ID: "orig-promised-fork", CreatedAt: t0, Records: []string{agentsession.TypeDispatch, agentsession.TypeDecision}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendAt(t, f, c, agentsession.NewDecision("call-prefix", ids[0], agentsession.VerdictAnswer, agentsession.ByPolicy).WithReason("answered on the fork"))
+	appendAt(t, f, c, agentsession.NewItemEntry(openresponses.NewFunctionCallOutput("call-prefix", "answered")))
+	respond(t, f, c, "resp-2", agentsession.NewItemEntry(openresponses.AssistantText("ok")))
+	if err := f.VerifyRecords(f.Leaf()); err != nil {
+		t.Fatalf("the original fork does not verify its records: %v", err)
+	}
+	return origin, f
+}
+
+// TestForkPrefixAnswered: a fork redacted without a base holds its
+// prefix as entries of its own, which the original's promise of records
+// never covered, so the redaction does not carry that promise and an
+// answer to a prefix call the origin never dispatched is written; as a
+// fork of the origin's redaction, it keeps the base and the promise.
+func TestForkPrefixAnswered(t *testing.T) {
+	c := &clock{}
+	origin, f := promisedFork(t, c)
+	p := testProfile()
+	alone, err := Redact(p, testKey, f, nil)
+	if err != nil {
+		t.Fatalf("redacted without a base: %v", err)
+	}
+	back := readBack(t, alone.Session)
+	if err := back.VerifyRecords(back.Leaf()); err != nil {
+		t.Errorf("redacted without a base, the records do not verify: %v", err)
+	}
+	ro := redact(t, p, origin, nil)
+	asFork := redactFork(t, p, f, nil, &Origin{Original: origin, Redaction: ro.Session})
+	if h := asFork.Session.Header(); h.Base == "" || !slices.Equal(h.Records, f.Header().Records) {
+		t.Errorf("as a fork: base %q, records %v, want the base and %v", h.Base, h.Records, f.Header().Records)
+	}
+}
+
+// TestKeyRequired: there is no default key, so Redact and RedactStore
+// refuse the zero Key and a short one.
+func TestKeyRequired(t *testing.T) {
+	orig := plainOriginal(t, &clock{})
+	if _, err := Redact(testProfile(), Key{}, orig, nil); !errors.Is(err, agentsession.ErrRedactionKey) {
+		t.Errorf("Redact with no key: %v, want ErrRedactionKey", err)
+	}
+	if _, err := NewKey([]byte("short")); !errors.Is(err, agentsession.ErrRedactionKey) {
+		t.Errorf("NewKey of 5 bytes: %v, want ErrRedactionKey", err)
+	}
+	if _, err := RedactStore(context.Background(), agentsession.NewMemoryStore(), testProfile(), Key{}, StoreOptions{}); !errors.Is(err, agentsession.ErrRedactionKey) {
+		t.Errorf("RedactStore with no key: %v, want ErrRedactionKey", err)
+	}
+}
+
+// TestPseudonymNames: a redaction names its original by the keyed
+// pseudonym (RFC 0001 0.19, The redacted session): its ID is the one
+// RedactedID derives, which a reader recomputes from its own header and
+// a holder of the original's ID cannot, since it is not the unkeyed
+// derivation over that ID; another key gives another session; and the
+// key is in no byte of the output and in no printing of it.
+func TestPseudonymNames(t *testing.T) {
+	orig := plainOriginal(t, &clock{})
+	p := testProfile()
+	res := redact(t, p, orig, nil)
+	h := res.Session.Header()
+	if h.ID != RedactedID(testKey, orig.ID(), p.Name) || h.RedactedFrom.Session != pseudonymOf(orig.ID(), p.Name) {
+		t.Errorf("id %s, redacted_from %+v", h.ID, h.RedactedFrom)
+	}
+	if err := agentsession.CheckRedactedID(h); err != nil {
+		t.Errorf("CheckRedactedID: %v", err)
+	}
+	if !agentsession.VerifiesAsRedacted(h) {
+		t.Error("the header does not verify as a redacted session's")
+	}
+	file := fileOf(t, res.Session)
+	if unkeyed := agentsession.RedactedSessionID(orig.ID(), p.Name); bytes.Contains(file, []byte(unkeyed)) || h.ID == unkeyed {
+		t.Error("the redaction holds the unkeyed derivation over the original's ID")
+	}
+	if bytes.Contains(file, []byte(orig.ID())) || bytes.Contains(file, testKey.b) || bytes.Contains(file, []byte(fmt.Sprintf("%x", testKey.b))) {
+		t.Error("the redaction holds the original's ID or the key")
+	}
+	other := redact(t, p, orig, nil)
+	k2 := mustKey("agentredact-another-test-key-not-secret")
+	again, err := Redact(p, k2, orig, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Session.ID() == other.Session.ID() {
+		t.Error("two keys derive one ID")
+	}
+	if _, err := Redact(p, k2, orig, res.Session); !errors.Is(err, ErrNotThisRedaction) {
+		t.Errorf("resuming under another key: %v, want ErrNotThisRedaction", err)
+	}
+	var logged bytes.Buffer
+	slog.New(slog.NewTextHandler(&logged, nil)).Info("redacting", "key", testKey)
+	for _, out := range []string{fmt.Sprint(testKey), fmt.Sprintf("%v %+v %#v %s %q %x", testKey, testKey, testKey, testKey, testKey, testKey), logged.String()} {
+		if strings.Contains(out, string(testKey.b)) || strings.Contains(out, fmt.Sprintf("%x", testKey.b)) {
+			t.Errorf("a printed key shows its bytes: %s", out)
+		}
+	}
+	if data, err := json.Marshal(struct{ K Key }{testKey}); err == nil {
+		t.Errorf("a key marshalled: %s", data)
+	}
+}
+
+// TestKeyFile: a key file is written once, owner-only, read back to the
+// same names, and refused when it is missing, open to others, or holds
+// no key.
+func TestKeyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "store.key")
+	k, err := GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteKeyFile(path, k); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteKeyFile(path, testKey); !errors.Is(err, ErrKeyFile) {
+		t.Errorf("overwriting a key file: %v, want ErrKeyFile", err)
+	}
+	back, err := ReadKeyFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if RedactedID(back, "orig", "p@1") != RedactedID(k, "orig", "p@1") {
+		t.Error("the key read back derives other names")
+	}
+	if _, err := ReadKeyFile(filepath.Join(dir, "missing.key")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a missing key file: %v, want ErrNotExist", err)
+	}
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+			t.Errorf("the key file's mode %v, %v; want 0600", info.Mode().Perm(), err)
+		}
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadKeyFile(path); !errors.Is(err, ErrKeyFile) {
+			t.Errorf("a key file others may read: %v, want ErrKeyFile", err)
+		}
+	}
+	bad := filepath.Join(dir, "bad.key")
+	if err := os.WriteFile(bad, []byte("not a key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadKeyFile(bad); !errors.Is(err, ErrKeyFile) {
+		t.Errorf("a file holding no key: %v, want ErrKeyFile", err)
+	}
+}

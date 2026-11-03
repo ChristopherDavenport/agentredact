@@ -5,6 +5,77 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- **Breaking: agentsession v0.0.36, format 0.19** (#19), with
+  agentpolicy v0.0.19, openresponses v0.0.18, agentturn v0.0.35 and
+  agenttool v0.0.29. Every redaction this version writes is a session
+  of format 0.19 and has a new ID (below), so a store pass writes each
+  redaction afresh beside the ones v0.0.1 wrote, which it skips and
+  never resumes. Profiles should take a new version with this release,
+  since what they write changes throughout (below and the entries
+  after this one).
+- **Breaking: sessions are named under a key (RFC 0001 0.19, The
+  redacted session).** `Redact(p, key, original, existing, ...)` and
+  `RedactStore(ctx, st, p, key, opts)` take a `Key`, at least 32 random
+  bytes held by whoever holds the originals, one per store of them, and
+  refuse the zero one with `agentsession.ErrRedactionKey`: there is no
+  default. `redacted_from.session` is the original's keyed pseudonym,
+  and the redacted session's ID and every reference into another
+  session derive from pseudonyms (`RedactedID`), so a native session ID
+  no longer leads to its published redaction. Added: `Key`, `NewKey`,
+  `GenerateKey`, `WriteKeyFile` (a new file, mode 0600, never
+  overwriting one), `ReadKeyFile` (refusing a file its group or others
+  may read, `ErrKeyFile`), `RedactedID`, `OriginalOf` and the option
+  `WithResolve`, through which a reference to a session that verifies as
+  a redaction keeps its ID; the store pass gives it the store. A `Key`
+  never prints or marshals its bytes. Losing the key means the
+  redactions made under it cannot be resumed: under a new key every
+  original gets a new redacted session.
+- **Breaking: replacement blobs are stored with their media type (RFC
+  0001 0.16, RFC 0002 Media).** `Result.Blobs` maps a hash to a `Blob`
+  (`Data`, `MediaType`), `EntryContext.AddBlob` takes the media type,
+  and `Images` gives its placeholder's. `RedactStore` writes them with
+  `PutTypedBlob` (`agentsession.TypedBlobWriter`, which every store of
+  agentsession v0.0.36 implements) and refuses, with `ErrNoBlobWriter`,
+  a store that takes no typed blobs; where the store holds types per
+  session it gives the redaction the types of the blobs it names.
+  Removed: `BlobWriter`.
+- **Breaking: an unmet instruction part is written as text (RFC 0001
+  0.14, Every redacted entry).** A part named by the hash of a text the
+  redaction cannot resolve on its path, which `Rewriter.Unmet` reports,
+  is written as `UnmetPartText` under its id rather than under the
+  original's hash, and a keep over parts the redaction does not hold is
+  refused (`ErrUnmetKeep`); entries left out are told to the Rewriter
+  (`LeftOut`). Removed: `FindingOriginalHash`, which reported the hash
+  kept.
+- **Breaking: member names reach the redactors (RFC 0001 0.14).** A
+  member name that is data is renamed through agentsession's Rewriter
+  and `RewriteHeaderStrings`, so an entry holding one is redacted rather
+  than refused. Removed: `ErrKeyNotRedacted`. A header member's own name
+  is the format's and is kept, reported as `FindingHeaderName`
+  (`header-member-name`, at position 0) when the string redactors would
+  change it. A collision's error no longer quotes the two names.
+- **Breaking: an entry of a session not redacted alongside is left out
+  (RFC 0001 0.19, Every redacted entry).** A parents element or a
+  copied item naming an entry of another session whose counterparts
+  `Redact` was not given loses the reference, which agentsession now
+  refuses to keep (`ErrUnmappedCopy`); `FindingForeignReference`
+  reports the removal.
+- **Breaking: a new root is appended.** agentsession v0.0.31 appends an
+  entry whose ID is set and whose parent is empty at the universal root,
+  so the store pass appends a redaction that grew one. Removed:
+  `ErrRootAppend`.
+- **Fixed: a fork redacted without a base no longer carries its
+  promise of records.** Its prefix became entries of its own, which the
+  original's promise never covered, so an answer to a prefix call the
+  origin never dispatched failed with `ErrAnswerNotDispatched` mid-build.
+  A fork redacted as a fork of its origin's redaction keeps the base and
+  the promise.
+- Tests: a custom entry carrying a call's `call_id` leaves with the call
+  (RFC 0001 0.15), and a compaction keeps its `trust` when its entries
+  are left out.
+
 ## v0.0.1 - 2026-10-25
 
 - Added: the repository scaffold. `docs/plans/agentredact.md` is the

@@ -18,9 +18,8 @@ type StringRedactor func(string) string
 
 // Profile is a named, versioned set of redactors. Its name is written
 // to a redacted session's redacted_from.profile and goes into the
-// session's ID ([agentsession.RedactedSessionID]), so one original
-// under one profile has one redacted session, which the profile
-// resumes. A profile names one set of rules: changing what a profile's
+// session's ID ([RedactedID]), so one original under one profile and
+// key has one redacted session, which the profile resumes. A profile names one set of rules: changing what a profile's
 // redactors write mixes two redactions in one session, so a changed
 // rule set takes a new version.
 type Profile struct {

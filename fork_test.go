@@ -36,7 +36,7 @@ func fork(t *testing.T, origin *agentsession.Session, at, id string) *agentsessi
 // redactFork redacts f as a fork of the origin's redaction.
 func redactFork(t *testing.T, p Profile, f, existing *agentsession.Session, o *Origin) *Result {
 	t.Helper()
-	res, err := Redact(p, f, existing, WithOrigin(o))
+	res, err := Redact(p, testKey, f, existing, WithOrigin(o))
 	if err != nil {
 		t.Fatalf("Redact as a fork: %v", err)
 	}
@@ -62,7 +62,7 @@ func checkFork(t *testing.T, p Profile, f *agentsession.Session, res *Result, o 
 	t.Helper()
 	red := res.Session
 	h := red.Header()
-	if h.ID != agentsession.RedactedSessionID(f.ID(), p.Name) || !h.Redacted || h.RedactedFrom == nil || h.RedactedFrom.Session != f.ID() {
+	if h.ID != redIDOf(f.ID(), p.Name) || !h.Redacted || h.RedactedFrom == nil || h.RedactedFrom.Session != pseudonymOf(f.ID(), p.Name) {
 		t.Errorf("header %+v", h)
 	}
 	if h.ParentSession != o.Redaction.ID() || h.Base == "" {
@@ -151,7 +151,7 @@ func checkOriginal(t *testing.T, originals, redactions []*agentsession.Session) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		orig, m, err := agentsession.Original(ctx, st, held)
+		orig, m, err := OriginalOf(ctx, st, testKey, held)
 		if err != nil {
 			t.Fatalf("Original of %s: %v", red.ID(), err)
 		}
@@ -347,7 +347,7 @@ func TestForkOfRedactionRefusals(t *testing.T) {
 
 	leaf := structProfile("test.leaf@1", nil, KeepLeafPath())
 	ro := redact(t, leaf, o, nil)
-	if _, err := Redact(leaf, f, nil, WithOrigin(&Origin{Original: o, Redaction: ro.Session})); !errors.Is(err, ErrBaseLeftOut) {
+	if _, err := Redact(leaf, testKey, f, nil, WithOrigin(&Origin{Original: o, Redaction: ro.Session})); !errors.Is(err, ErrBaseLeftOut) {
 		t.Errorf("a base on a branch the origin's redaction dropped: %v, want ErrBaseLeftOut", err)
 	}
 
@@ -356,20 +356,20 @@ func TestForkOfRedactionRefusals(t *testing.T) {
 	userAt(t, o, c, "", "origin later")
 	later := turn(t, o, c, "resp-3", "three")
 	g := fork(t, o, later, "orig-g")
-	if _, err := Redact(p, g, nil, WithOrigin(&Origin{Original: o, Redaction: ro.Session})); !errors.Is(err, ErrOriginBehind) {
+	if _, err := Redact(p, testKey, g, nil, WithOrigin(&Origin{Original: o, Redaction: ro.Session})); !errors.Is(err, ErrOriginBehind) {
 		t.Errorf("an origin's redaction behind the base: %v, want ErrOriginBehind", err)
 	}
 
 	ro = redact(t, p, o, nil)
 	alone := redact(t, p, f, nil)
-	if _, err := Redact(p, f, alone.Session, WithOrigin(&Origin{Original: o, Redaction: ro.Session})); !errors.Is(err, ErrNotThisRedaction) {
+	if _, err := Redact(p, testKey, f, alone.Session, WithOrigin(&Origin{Original: o, Redaction: ro.Session})); !errors.Is(err, ErrNotThisRedaction) {
 		t.Errorf("a redaction written without a base, resumed as a fork: %v, want ErrNotThisRedaction", err)
 	}
 	asFork := redactFork(t, p, f, nil, &Origin{Original: o, Redaction: ro.Session})
-	if _, err := Redact(p, f, asFork.Session); !errors.Is(err, ErrNotThisRedaction) {
+	if _, err := Redact(p, testKey, f, asFork.Session); !errors.Is(err, ErrNotThisRedaction) {
 		t.Errorf("a fork of a redaction resumed without its origin: %v, want ErrNotThisRedaction", err)
 	}
-	if _, err := Redact(p, o, nil, WithOrigin(&Origin{Original: o, Redaction: ro.Session})); err == nil {
+	if _, err := Redact(p, testKey, o, nil, WithOrigin(&Origin{Original: o, Redaction: ro.Session})); err == nil {
 		t.Error("an original that is not a fork redacted as one")
 	}
 }
@@ -379,7 +379,7 @@ func TestForkOfRedactionRefusals(t *testing.T) {
 // its derived redaction always; a parents element's entry to the one
 // standing for it there when its counterparts are given, removed when
 // that one was left out, refused when it names nothing that session
-// holds, and kept, reported, when the counterparts are not given.
+// holds, and removed, reported, when the counterparts are not given.
 func TestAlongside(t *testing.T) {
 	c := &clock{}
 	p := blockProfile("test.alongside@1")
@@ -407,7 +407,7 @@ func TestAlongside(t *testing.T) {
 	appendAt(t, s2, c, gone)
 	turn(t, s2, c, "resp-2", "two")
 
-	r2, err := Redact(p, s2, nil, WithAlongside(along))
+	r2, err := Redact(p, testKey, s2, nil, WithAlongside(along))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,10 +446,10 @@ func TestAlongside(t *testing.T) {
 	stray := user("merged a stranger")
 	stray.Parents = []agentsession.EntryRef{{Session: s1.ID(), Entry: agentsession.HashText("fake entry")}}
 	appendAt(t, s3, c, stray)
-	if _, err := Redact(p, s3, nil, WithAlongside(along)); !errors.Is(err, ErrUnmappedRef) {
+	if _, err := Redact(p, testKey, s3, nil, WithAlongside(along)); !errors.Is(err, ErrUnmappedRef) {
 		t.Errorf("a parents element naming nothing the session holds: %v, want ErrUnmappedRef", err)
 	}
-	alone, err := Redact(p, s2, nil)
+	alone, err := Redact(p, testKey, s2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,8 +463,8 @@ func TestAlongside(t *testing.T) {
 	if want := "foreign-reference /parents/0/entry,foreign-reference /parents/0/entry"; strings.Join(kinds, ",") != want {
 		t.Errorf("without counterparts, findings %v, want %s", kinds, want)
 	}
-	if file := fileOf(t, alone.Session); bytes.Contains(file, []byte(s1.ID())) {
-		t.Error("without counterparts, the redaction names the original session")
+	if file := fileOf(t, alone.Session); bytes.Contains(file, []byte(s1.ID())) || bytes.Contains(file, []byte(answer)) {
+		t.Error("without counterparts, the redaction names the original session or its entry")
 	}
 }
 

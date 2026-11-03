@@ -5,16 +5,19 @@ Redaction and publishing for agent sessions, built on
 agentredact writes a redacted copy of each session in a store and
 decides which of those copies may leave it.
 
-A redacted session, in agentsession's format 0.13, is a session of its
+A redacted session, in agentsession's format 0.19, is a session of its
 own made from an original:
 
 - every entry the redaction writes carries `redacted`, the positions
   in the original of the entries it was made from (`[n]`, `[[from, to]]`
   for a block left out, `[]` for an added entry);
 - its header carries `redacted: true` and
-  `redacted_from: {session, profile}`, and its ID is derived from the
-  original and the profile, so one original under one profile has one
-  redacted session;
+  `redacted_from: {session, profile}`, where `session` is the
+  original's pseudonym under a key only the holder of the originals
+  has, and its ID is derived from that and the profile, so one original
+  under one profile and key has one redacted session, and nobody holding
+  the original's native ID can tell which published session came from
+  it;
 - its hashes, request hashes included, are its own, so it verifies,
   grows as the original grows, and can be resumed like any session;
 - it is published by pushing it to a store set to hold only redacted
@@ -42,12 +45,39 @@ p := agentredact.Profile{
 		agentredact.Images(agentredact.DefaultImagePlaceholder),
 	},
 }
-res, err := agentredact.Redact(p, original, nil) // or the earlier redaction, to grow it
+key, err := agentredact.ReadKeyFile("/path/beside/the/store/redaction.key")
+res, err := agentredact.Redact(p, key, original, nil) // or the earlier redaction, to grow it
 ```
 
 `Result.Blobs` holds the blobs the redacted session needs beyond the
 original's, such as the placeholder that replaced a sidecar image,
-keyed by hash; store them beside it.
+keyed by hash, each with its media type; store them beside it with
+that type (`PutTypedBlob`).
+
+### The key
+
+Since format 0.19 a redaction names sessions under a key (RFC 0001,
+The redacted session): `redacted_from.session` is the original's
+pseudonym, an HMAC of its ID under the key, and the redacted session's
+ID and every reference to another session derive from pseudonyms. A
+native session ID, which the harness's own logs and its vendor hold,
+then leads to no published redaction.
+
+- **One key per store of originals**, at least 32 random bytes.
+  `GenerateKey` makes one and `WriteKeyFile` writes it to a new file,
+  mode 0600, refusing a path that exists; `ReadKeyFile` reads it back
+  and refuses a file its group or others may read. Keep the file beside
+  the store of originals, out of any repository, dataset or log, and
+  back it up with the originals.
+- **No default.** `Redact` and `RedactStore` refuse the zero `Key`
+  (`agentsession.ErrRedactionKey`). A `Key` never prints or marshals its
+  bytes, so it does not reach a log by accident; it is in no profile,
+  report or redacted session.
+- **Losing the key loses the redactions' continuity.** A redaction is
+  found again, and resumed, only by deriving its ID under the same key:
+  under another key every original gets a new redacted session, written
+  beside the old ones, which can no longer grow. `OriginalOf` finds the
+  original a redacted session was made from, for the holder of the key.
 
 A profile names one set of rules; change the rules and bump the
 version, or two redactions end up mixed in one session.
@@ -139,7 +169,7 @@ that differs: a profile name reused for changed rules, or
 ## Redacting a store
 
 ```go
-rep, err := agentredact.RedactStore(ctx, store, p, agentredact.StoreOptions{})
+rep, err := agentredact.RedactStore(ctx, store, p, key, agentredact.StoreOptions{})
 ```
 
 `RedactStore` keeps one redaction per original under the profile, in
@@ -169,14 +199,15 @@ originals, and takes their dependencies with them.
   without a base.
 - **Writing.** A new redaction is imported whole (`agentsession.Importer`,
   as the store's record); new entries are appended with `Store.Append`,
-  and where the store has `SetHead` (cas) the head is set to where an
-  import would put it. Blobs a redaction made go first, through the
-  store's `PutBlob` (`BlobWriter`): the cas store has one, the memory
-  and jsonl stores do not, and a redaction naming a blob is then not
-  written (`ErrNoBlobWriter`). A redaction that grew a new root, whose
-  ancestors were all left out, cannot be appended through any store
-  yet (`ErrRootAppend`): agentsession fills an empty parent from the
-  store's leaf. The redaction is let go (`Release`) however a write ends.
+  and where the store has `SetHead` the head is set to where an
+  import would put it. Blobs a redaction made go first, each with its
+  media type (`agentsession.TypedBlobWriter`): every store of
+  agentsession v0.0.36 takes them, a store that does not is given no
+  redaction naming one (`ErrNoBlobWriter`), and the redaction is given
+  the types of the blobs it names where the store holds types per
+  session. An
+  entry whose ancestors were all left out is appended at the universal
+  root. The redaction is let go (`Release`) however a write ends.
 - **The report** gives, per original, the entries and blobs written,
   whether it was up to date or waits, the findings of the whole
   redaction on every run, each with a stable `Kind`, and how many native
@@ -210,18 +241,14 @@ merely starts `data:`, is redacted like any other string.
 
 ### Member names
 
-agentsession's Rewriter gives a redactor no member name but an env
-entry's file paths, and a harness often keys a map by a file path. So
-`Redact` renames, through the string redactors, every member name in
-the header's members the format does not define, at any depth, and
-refuses with `ErrKeyNotRedacted` an entry holding a member name the
-redactors would change, in a custom entry's data, an outcome's details,
-a member the format does not define or an extension entry: a profile
-that would leave a matched name in place does not produce a redaction.
-The check cannot tell a name the format defines from one a writer chose,
-so a rule matching one, such as a literal rule for `content`, refuses
-every entry holding it. When agentsession renames such names itself,
-renaming replaces the refusal.
+A member name that is data, such as a file path keying a map in a
+custom entry's data, an outcome's details or a member the format does
+not define, reaches the string redactors through agentsession's
+Rewriter and is renamed (RFC 0001 0.14). Two names a redaction makes
+one are refused (`agentsession.ErrKeyCollision`), with a message naming
+neither. The names of the header's own members are the format's and
+are kept as written, their values rewritten; one the string redactors
+would change is reported (`FindingHeaderName`).
 
 ### Kept as written
 
@@ -233,17 +260,20 @@ profile's redactors never see them:
 - `call_id`s, a run's pending call IDs and the header's `spawned_by`,
   which pair calls with their outputs and derive subsession IDs;
 - the header's `created_at`, `payload`, `records` and `media`;
-- the entry a `parents` element names in another session, when that
-  session's counterparts are not given to `Redact`; each is reported
-  (`FindingForeignReference`). The store pass waits for such a session
-  instead;
+- nothing of the entry a `parents` element or a copied item names in
+  another session whose counterparts are not given to `Redact`: the
+  reference to the entry is removed, as RFC 0001 0.19 has it, and
+  reported (`FindingForeignReference`). The store pass waits for such a
+  session instead;
 - an env entry's file hashes, when the profile has no `Environment`;
 - a sidecar reference, when the profile has no `Images`; with it, a
   sidecar image is replaced, and other sidecar media, such as a file,
   is kept and reported;
-- an instruction part named by the hash of a text no earlier entry
-  holds keeps the original's hash, which can confirm a guessed text;
-  each is reported, by its id;
+- an instruction part named by the hash of a text no entry the
+  redaction wrote before it holds is written as `UnmetPartText` under
+  its id, never under the original's hash, which can confirm a guessed
+  text; a part keeping parts the redaction does not hold is refused
+  (`ErrUnmetKeep`);
 - inline media that is not an image, such as an input_file's PDF, and
   an image data URL inside a longer string, such as tool output or
   markdown: `Images` replaces whole-string images only; each is

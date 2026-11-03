@@ -94,7 +94,7 @@ func (r *redaction) forkFrom(o *Origin) error {
 	case h.ParentSession != o.Original.ID():
 		return fmt.Errorf("agentredact: %s is a fork of %q, not of %s", r.origID, h.ParentSession, o.Original.ID())
 	}
-	state, err := originState(r.p, o, h.Base, r.along)
+	state, err := originState(r, o, h.Base)
 	if err != nil {
 		return fmt.Errorf("agentredact: %s as a fork of %s: %w", r.origID, o.Redaction.ID(), err)
 	}
@@ -133,8 +133,11 @@ func (r *redaction) forkFrom(o *Origin) error {
 // originState replays the redaction of o.Original into o.Redaction up
 // to the entry base, and returns what it made of each entry up to
 // there. Nothing is written to o.Redaction.
-func originState(p Profile, o *Origin, base string, along Alongside) (map[string]*placed, error) {
-	r := newRedaction(p, o.Original, along)
+func originState(fork *redaction, o *Origin, base string) (map[string]*placed, error) {
+	r, err := newRedaction(fork.p, fork.key, o.Original, fork.along, fork.resolve)
+	if err != nil {
+		return nil, err
+	}
 	if o.Origin != nil {
 		if err := r.forkFrom(o.Origin); err != nil {
 			return nil, err
@@ -154,8 +157,7 @@ func originState(p Profile, o *Origin, base string, along Alongside) (map[string
 		return nil, err
 	}
 	r.red = o.Redaction
-	r.res = &Result{Session: r.red, Blobs: map[string][]byte{}}
-	var err error
+	r.res = &Result{Session: r.red, Blobs: map[string]Blob{}}
 	if r.out, err = r.sessions(); err != nil {
 		return nil, err
 	}

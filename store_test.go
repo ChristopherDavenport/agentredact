@@ -24,13 +24,13 @@ import (
 type storeKind struct {
 	name string
 	open func(t *testing.T) agentsession.Store
-	// blobs says the store takes blobs.
+	// blobs says the store takes blobs with their media types.
 	blobs bool
 }
 
 var storeKinds = []storeKind{
-	{name: "memory", open: func(*testing.T) agentsession.Store { return agentsession.NewMemoryStore() }},
-	{name: "jsonl", open: func(t *testing.T) agentsession.Store {
+	{name: "memory", blobs: true, open: func(*testing.T) agentsession.Store { return agentsession.NewMemoryStore() }},
+	{name: "jsonl", blobs: true, open: func(t *testing.T) agentsession.Store {
 		st, err := jsonl.Open(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
@@ -111,7 +111,7 @@ func held(t *testing.T, st agentsession.Store) map[string][]byte {
 
 func redactStore(t *testing.T, st agentsession.Store, p Profile, opts StoreOptions) *StoreReport {
 	t.Helper()
-	rep, err := RedactStore(context.Background(), st, p, opts)
+	rep, err := RedactStore(context.Background(), st, p, testKey, opts)
 	if err != nil {
 		t.Fatalf("RedactStore: %v", err)
 	}
@@ -127,7 +127,7 @@ func bySession(rep *StoreReport) map[string]SessionReport {
 	return out
 }
 
-func redID(id string) string { return agentsession.RedactedSessionID(id, storeProfile().Name) }
+func redID(id string) string { return redIDOf(id, storeProfile().Name) }
 
 // richOriginal holds a planted value in every place an entry and a
 // header can hold one: the header's cwd, harness and a member the
@@ -503,11 +503,14 @@ func TestRedactStoreSkipsAndNative(t *testing.T) {
 }
 
 // TestRedactStoreBlobs: a sidecar image's replacement is written as a
-// blob where the store takes blobs; where it takes none the redaction
-// is not written, its fork is stopped, and an unrelated session is
-// redacted.
+// blob with its media type where the store takes typed blobs, and the
+// redaction holds the type; where it takes none the redaction is not
+// written, its fork is stopped, and an unrelated session is redacted.
 func TestRedactStoreBlobs(t *testing.T) {
-	for _, kind := range storeKinds {
+	kinds := append(slices.Clone(storeKinds), storeKind{name: "no blobs", open: func(*testing.T) agentsession.Store {
+		return &openOnly{m: agentsession.NewMemoryStore(), released: map[string]int{}}
+	}})
+	for _, kind := range kinds {
 		t.Run(kind.name, func(t *testing.T) {
 			ctx := context.Background()
 			c := &clock{}
@@ -524,9 +527,9 @@ func TestRedactStoreBlobs(t *testing.T) {
 			st := kind.open(t)
 			load(t, st, s, f, u)
 
-			rep, err := RedactStore(ctx, st, p, StoreOptions{})
+			rep, err := RedactStore(ctx, st, p, testKey, StoreOptions{})
 			got := bySession(rep)
-			placeholder, _ := placeholderBytes(DefaultImagePlaceholder)
+			placeholder, _, _ := placeholderBytes(DefaultImagePlaceholder)
 			hash := agentsession.HashBytes(placeholder)
 			if kind.blobs {
 				if err != nil {
@@ -535,11 +538,9 @@ func TestRedactStoreBlobs(t *testing.T) {
 				if r := got[s.ID()]; r.Blobs != 1 || !r.Created {
 					t.Errorf("the sidecar session %+v, want one blob", r)
 				}
-				blob, err := st.(BlobWriter).(interface {
-					Blob(context.Context, string) ([]byte, error)
-				}).Blob(ctx, hash)
-				if err != nil || !bytes.Equal(blob, placeholder) {
-					t.Errorf("the blob %s: %v", hash, err)
+				blob, typ, err := agentsession.ReadSessionBlob(ctx, st.(agentsession.BlobReader), redID(s.ID()), hash)
+				if err != nil || !bytes.Equal(blob, placeholder) || typ != "image/png" {
+					t.Errorf("the blob %s: type %q, %v", hash, typ, err)
 				}
 				if !bytes.Contains(fileOf(t, read(t, st, redID(s.ID()))), []byte("sidecar:"+hash)) {
 					t.Error("the redaction does not name the replacement")
@@ -580,7 +581,8 @@ func TestRedactStoreFailures(t *testing.T) {
 	p := storeProfile()
 	bad := newOriginal("orig-bad")
 	early := appendAt(t, bad, c, user("first"))
-	appendAt(t, bad, c, &agentsession.CustomEntry{NS: "fake.notes", Data: json.RawMessage(`{"` + fakePassword + `":1}`)})
+	// Two member names the redaction makes one: refused.
+	appendAt(t, bad, c, &agentsession.CustomEntry{NS: "fake.notes", Data: json.RawMessage(`{"` + fakePassword + `":1,"` + SecretReplacement + `":2}`)})
 	badFork := fork(t, bad, early, "orig-bad-fork")
 	onFork := appendAt(t, badFork, c, user("on the fork"))
 	chained := newOriginal("orig-chained") // merges from the fork: stopped two steps away
@@ -603,7 +605,7 @@ func TestRedactStoreFailures(t *testing.T) {
 	st := agentsession.NewMemoryStore()
 	load(t, st, bad, badFork, chained, merger, a, b, d, good)
 
-	rep, err := RedactStore(context.Background(), st, p, StoreOptions{})
+	rep, err := RedactStore(context.Background(), st, p, testKey, StoreOptions{})
 	if err == nil {
 		t.Error("no error for the sessions that failed")
 	}
@@ -615,7 +617,7 @@ func TestRedactStoreFailures(t *testing.T) {
 		t.Errorf("a session merging from a stopped fork: %+v, want ErrDependency naming the fork", r)
 	}
 	for id, want := range map[string]error{
-		bad.ID(): ErrKeyNotRedacted, badFork.ID(): ErrDependency, merger.ID(): ErrDependency,
+		bad.ID(): agentsession.ErrKeyCollision, badFork.ID(): ErrDependency, merger.ID(): ErrDependency,
 		a.ID(): ErrCycle, b.ID(): ErrCycle, d.ID(): ErrCycle,
 	} {
 		if r := got[id]; !errors.Is(r.Err, want) || r.Created {
@@ -680,7 +682,7 @@ func TestRedactStoreBaseLeftOut(t *testing.T) {
 		if r.Err != nil || r.Fork || r.Created != (run == 0) {
 			t.Errorf("run %d: the fork %+v, want it redacted without a base", run, r)
 		}
-		if h := read(t, st, agentsession.RedactedSessionID(f.ID(), p.Name)).Header(); h.Base != "" || h.ParentSession != agentsession.RedactedSessionID(o.ID(), p.Name) {
+		if h := read(t, st, redIDOf(f.ID(), p.Name)).Header(); h.Base != "" || h.ParentSession != redIDOf(o.ID(), p.Name) {
 			t.Errorf("run %d: header base %q parent_session %q", run, h.Base, h.ParentSession)
 		}
 	}
@@ -783,30 +785,46 @@ func TestRedactStoreArrivalOrder(t *testing.T) {
 	}
 }
 
-// TestRedactStoreRootAppend: a redaction that grew a new root is
-// refused before anything is written, on every run.
+// TestRedactStoreRootAppend: a redaction that grew a new root, an
+// entry whose ancestors were all left out, is appended at the universal
+// root, as every store appends an entry whose ID is set and whose parent
+// is empty (agentsession v0.0.31), and equals a fresh pass's.
 func TestRedactStoreRootAppend(t *testing.T) {
-	c := &clock{}
-	p := structProfile("test.root@1", []EntryRedactor{LeaveOut(userWith("omit me"))})
-	o := newOriginal("orig-root")
-	first := appendAt(t, o, c, user("omit me"))
-	appendAt(t, o, c, user("kept"))
-	turn(t, o, c, "resp-1", "one")
-	st := agentsession.NewMemoryStore()
-	load(t, st, o)
-	redactStore(t, st, p, StoreOptions{})
-	before := fileOf(t, read(t, st, agentsession.RedactedSessionID(o.ID(), p.Name)))
-	n := len(agentsession.FileOrder(o))
-	userAt(t, o, c, first, "an edited prompt")
-	grow(t, st, o, n)
-	for run := range 2 {
-		rep, err := RedactStore(context.Background(), st, p, StoreOptions{})
-		if r := bySession(rep)[o.ID()]; !errors.Is(r.Err, ErrRootAppend) || !errors.Is(err, ErrRootAppend) || r.Written != 0 {
-			t.Errorf("run %d: %+v, want ErrRootAppend", run, r)
-		}
-	}
-	if after := fileOf(t, read(t, st, agentsession.RedactedSessionID(o.ID(), p.Name))); !bytes.Equal(after, before) {
-		t.Error("something was written for a redaction that grew a root")
+	for _, kind := range storeKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			c := &clock{}
+			p := structProfile("test.root@1", []EntryRedactor{LeaveOut(userWith("omit me"))})
+			o := newOriginal("orig-root")
+			first := appendAt(t, o, c, user("omit me"))
+			appendAt(t, o, c, user("kept"))
+			turn(t, o, c, "resp-1", "one")
+			st := kind.open(t)
+			load(t, st, o)
+			redactStore(t, st, p, StoreOptions{})
+			n := len(agentsession.FileOrder(o))
+			userAt(t, o, c, first, "an edited prompt")
+			grow(t, st, o, n)
+			rep, err := RedactStore(context.Background(), st, p, testKey, StoreOptions{})
+			if r := bySession(rep)[o.ID()]; err != nil || r.Err != nil || r.Written == 0 {
+				t.Fatalf("%+v, %v: want the new root appended", r, err)
+			}
+			red := read(t, st, redIDOf(o.ID(), p.Name))
+			roots := 0
+			for _, e := range red.Entries() {
+				if e.Base().Parent == "" {
+					roots++
+				}
+			}
+			if roots != 2 {
+				t.Errorf("%d first entries, want 2", roots)
+			}
+			fresh := kind.open(t)
+			load(t, fresh, read(t, st, o.ID())) // as the store holds it, a leaf label of its own included
+			redactStore(t, fresh, p, StoreOptions{})
+			if a, b := fileOf(t, red), fileOf(t, read(t, fresh, redIDOf(o.ID(), p.Name))); !bytes.Equal(a, b) {
+				t.Errorf("the grown redaction differs from a fresh pass's:\n%s\n---\n%s", a, b)
+			}
+		})
 	}
 }
 
@@ -927,7 +945,7 @@ func TestRedactStoreReleases(t *testing.T) {
 	turn(t, o, c, "resp-9", "nine")
 	grow(t, st, o, n)
 	st.failAfter = st.appends + 2
-	rep, err := RedactStore(context.Background(), st, p, StoreOptions{})
+	rep, err := RedactStore(context.Background(), st, p, testKey, StoreOptions{})
 	if r := bySession(rep)[o.ID()]; err == nil || r.Err == nil || r.Written != 1 {
 		t.Errorf("an append refused part way: %+v", r)
 	}
@@ -967,11 +985,11 @@ func TestRedactStoreHead(t *testing.T) {
 			userAt(t, o, c, first, "a branch")
 			grow(t, st, o, n)
 			rep := redactStore(t, st, p, StoreOptions{})
-			if r := bySession(rep)[o.ID()]; r.Written != 1 || len(r.Warnings) != 0 {
+			if r := bySession(rep)[o.ID()]; r.Written == 0 || len(r.Warnings) != 0 {
 				t.Errorf("%+v", r)
 			}
 			fresh := kind.open(t)
-			load(t, fresh, o)
+			load(t, fresh, read(t, st, o.ID())) // as the store holds it, a leaf label of its own included
 			redactStore(t, fresh, p, StoreOptions{})
 			if a, b := read(t, st, redID(o.ID())).Leaf(), read(t, fresh, redID(o.ID())).Leaf(); a != b || a == "" {
 				t.Errorf("the grown redaction's head %s, a fresh one's %s", a, b)
