@@ -111,3 +111,30 @@ func TestScanTruffleHog(t *testing.T) {
 		t.Errorf("Scan: %v", err)
 	}
 }
+
+// TestScanFailsClosed: a scan passes only on a run it understood that
+// said it finished: a run that writes nothing, output that is no
+// finding, and a session naming blobs scanned without its blobs are
+// errors, never passes (review finding 4).
+func TestScanFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	red := redactWith(t, agentredact.Profile{Name: "scan.default@1", Strings: []agentredact.StringRedactor{agentredact.DefaultPatterns()}})
+	for _, bin := range []string{"trufflehog-silent", "trufflehog-garbled"} {
+		if res, err := (Scanner{Binary: filepath.Join("testdata", bin)}).Scan(ctx, red, nil); !errors.Is(err, ErrScan) {
+			t.Errorf("%s: %+v, %v; want ErrScan", bin, res, err)
+		}
+	}
+	s := agentsession.New(agentsession.Header{ID: "orig-sidecar", CreatedAt: t0, Media: agentsession.MediaSidecar})
+	e := agentsession.NewItemEntry(openresponses.UserMessage(&openresponses.InputImage{ImageURL: "sidecar:" + agentsession.HashText("FAKE-BLOB")}))
+	e.Timestamp = t0.Add(time.Second)
+	if _, err := s.Append(e); err != nil {
+		t.Fatal(err)
+	}
+	r, err := agentredact.Redact(agentredact.Profile{Name: "scan.none@1"}, testKey(t), s, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := stub.Scan(ctx, r.Session, nil); !errors.Is(err, ErrScan) {
+		t.Errorf("a session naming blobs, scanned without them: %+v, %v; want ErrScan", res, err)
+	}
+}

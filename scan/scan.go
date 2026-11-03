@@ -100,8 +100,12 @@ func (r *Result) Verdict() agentredact.Verdict {
 var ErrScan = errors.New("scan: trufflehog")
 
 // Scan scans what the redacted session red would publish: its file, the
-// blobs it names that blobs returns (a store's [agentsession.BlobReader]
-// or nil to scan no blob), and, with ATIF set, its ATIF documents.
+// blobs it names, read through blobs (a store's
+// [agentsession.BlobReader], which may be nil only for a session naming
+// none), and, with ATIF set, its ATIF documents. It fails closed: a
+// run that does not say it finished scanning, a line of output that is
+// not a finding, and a session whose blobs cannot be read are errors,
+// never passes.
 func (s Scanner) Scan(ctx context.Context, red *agentsession.Session, blobs agentsession.BlobReader) (*Result, error) {
 	if !red.Header().Redacted {
 		return nil, fmt.Errorf("%w: %s", agentredact.ErrNotRedacted, red.ID())
@@ -120,9 +124,11 @@ func (s Scanner) Scan(ctx context.Context, red *agentsession.Session, blobs agen
 		bin = "trufflehog"
 	}
 	cmd := exec.CommandContext(ctx, bin, "filesystem", dir, "--json", "--no-verification", "--no-update")
-	var out bytes.Buffer
+	var out, logs bytes.Buffer
 	cmd.Stdout = &out
-	cmd.Stderr = nil // its log may quote what it found; it is not kept
+	// Its log may quote what it found: it is read for the line saying the
+	// scan finished, and never kept or shown.
+	cmd.Stderr = &logs
 	if err := cmd.Run(); err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
@@ -136,7 +142,7 @@ func (s Scanner) Scan(ctx context.Context, red *agentsession.Session, blobs agen
 	sc.Buffer(make([]byte, 64*1024), 16<<20)
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
-		if len(line) == 0 || line[0] != '{' {
+		if len(line) == 0 {
 			continue
 		}
 		var r struct {
@@ -154,7 +160,7 @@ func (s Scanner) Scan(ctx context.Context, red *agentsession.Session, blobs agen
 			return nil, fmt.Errorf("%w: a line of its output is not a finding", ErrScan)
 		}
 		if r.DetectorName == "" {
-			continue // a log line, not a finding
+			return nil, fmt.Errorf("%w: a line of its output is not a finding", ErrScan)
 		}
 		f := Finding{Detector: r.DetectorName}
 		rel, err := filepath.Rel(dir, filepathOf(dir, r.SourceMetadata.Data.Filesystem.File))
@@ -177,6 +183,9 @@ func (s Scanner) Scan(ctx context.Context, red *agentsession.Session, blobs agen
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("%w: reading its output: %v", ErrScan, err)
 	}
+	if !finished(logs.Bytes()) {
+		return nil, fmt.Errorf("%w: it did not say it finished scanning", ErrScan)
+	}
 	for f, n := range counts {
 		f.Count = n
 		res.Findings = append(res.Findings, f)
@@ -185,6 +194,21 @@ func (s Scanner) Scan(ctx context.Context, red *agentsession.Session, blobs agen
 		return strings.Compare(string(a.Artifact)+"\x00"+a.Detector+"\x00"+a.Entry, string(b.Artifact)+"\x00"+b.Detector+"\x00"+b.Entry)
 	})
 	return res, nil
+}
+
+// finished reports whether trufflehog's log, JSON lines on stderr,
+// holds the line it writes when a scan completes, "finished scanning".
+// A run without it, cut short or of another program, is not a scan.
+func finished(logs []byte) bool {
+	for _, l := range bytes.Split(logs, []byte("\n")) {
+		var m struct {
+			Msg string `json:"msg"`
+		}
+		if json.Unmarshal(bytes.TrimSpace(l), &m) == nil && m.Msg == "finished scanning" {
+			return true
+		}
+	}
+	return false
 }
 
 // filepathOf is the file a finding names, which TruffleHog gives
@@ -218,11 +242,14 @@ func (s Scanner) stage(ctx context.Context, dir string, red *agentsession.Sessio
 	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), buf.Bytes(), 0o600); err != nil {
 		return nil, err
 	}
+	hashes, err := agentsession.SessionBlobs(red)
+	if err != nil {
+		return nil, err
+	}
+	if len(hashes) > 0 && blobs == nil {
+		return nil, fmt.Errorf("%w: the session names %d blobs and no blob reader was given", ErrScan, len(hashes))
+	}
 	if blobs != nil {
-		hashes, err := agentsession.SessionBlobs(red)
-		if err != nil {
-			return nil, err
-		}
 		if len(hashes) > 0 {
 			if err := os.Mkdir(filepath.Join(dir, "blobs"), 0o700); err != nil {
 				return nil, err

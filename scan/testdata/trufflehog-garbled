@@ -1,0 +1,5 @@
+#!/bin/sh
+# A stand-in for a trufflehog whose output the scan does not know: a
+# JSON line that is no finding, then the completion line.
+echo '{"unexpected":"shape"}'
+echo '{"level":"info-0","msg":"finished scanning","chunks":1}' >&2

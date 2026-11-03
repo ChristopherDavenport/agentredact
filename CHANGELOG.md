@@ -163,6 +163,9 @@ versions may break the API.
 - **Publishing requires a scan by default.** With no `Judges` named,
   `Publish` requires the scan's verdict (`DefaultJudges`); publishing
   with no verdict at all takes `Options.Unjudged`, set by name.
+- **The scan fails closed.** A run whose log has no "finished scanning"
+  line, a line of output that is not a finding, and a session naming
+  blobs scanned without a blob reader are `ErrScan`, never a pass.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such
