@@ -404,18 +404,19 @@ by its own ID and head hash, never by its original.
 ## Status
 
 Profiles, the string redactors (`Secrets`, `HomePaths`, `Patterns`,
-`ParseRules`), the entry redactors `Environment` and `Images`, the
-structural redactors `LeaveOut` and `BlockOut`, the session redactors
-`KeepLeafPath` and `DropBranches`, `Redact`, which applies a profile
-to one session, and `RedactStore`, which keeps a store's redactions
-current, are here. The design is [docs/plans/agentredact.md](docs/plans/agentredact.md);
+`PII`, `ParseRules`), identity members, the entry redactors
+`Environment` and `Images`, the structural redactors `LeaveOut` and
+`BlockOut`, the session redactors `KeepLeafPath` and `DropBranches`,
+`Redact`, which applies a profile to one session, `RedactStore`, which
+keeps a store's redactions current, verdicts, the `scan` package and
+the `publish` package are here. The manifest, the dataset export, the
+review (#5) and the command are not yet. The design is [docs/plans/agentredact.md](docs/plans/agentredact.md);
 the work is tracked in issues
 [#2](https://github.com/ChristopherDavenport/agentredact/issues/2) (redactors),
 [#3](https://github.com/ChristopherDavenport/agentredact/issues/3) (the store pass),
 [#4](https://github.com/ChristopherDavenport/agentredact/issues/4) (scan),
 [#5](https://github.com/ChristopherDavenport/agentredact/issues/5) (review) and
 [#6](https://github.com/ChristopherDavenport/agentredact/issues/6) (manifest and publish).
-There is no command yet.
 
 `agentredact/secrets` is a module of its own, standard library only:
 the streaming secret redactor, every JSON spelling of each value
