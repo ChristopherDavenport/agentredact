@@ -173,6 +173,11 @@ const (
 	// FindingEmbeddedImage: an image data URL inside a longer string,
 	// kept.
 	FindingEmbeddedImage FindingKind = "embedded-image"
+	// FindingIdentity: a value an identity member of the original names
+	// ([Profile.Identity]), in one of its spellings, still held by the
+	// redacted session: one the original named only after the entry
+	// holding it, or one a string redactor changed in part.
+	FindingIdentity FindingKind = "identity-value"
 	// FindingImage: an image kept whole, inline or sidecar, by a profile
 	// with no [Images] redactor: no string redactor reads the text in
 	// its pixels, so a screenshot keeps whatever the screen showed. A

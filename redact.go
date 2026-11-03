@@ -1,6 +1,7 @@
 package agentredact
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -389,6 +390,11 @@ func redactSession(p Profile, key Key, original, existing *agentsession.Session,
 		return nil, err
 	}
 	r.res.Findings = append(r.res.Findings, headerFindings...)
+	if f, err := identityInHeader(r.red.Header(), r.allIdents); err != nil {
+		return nil, err
+	} else if f != nil {
+		r.res.Findings = append(r.res.Findings, *f)
+	}
 	r.lastTS = original.Header().CreatedAt
 	if err := r.walk(len(r.order), true); err != nil {
 		return nil, err
@@ -439,8 +445,28 @@ func newRedaction(p Profile, key Key, original *agentsession.Session, along Alon
 	r.redID = names.ID()
 	r.images = slices.ContainsFunc(p.Entries, func(e EntryRedactor) bool { _, ok := e.(images); return ok })
 	r.ph = NewPlaceholders()
-	chain := p.StringFunc()
+	// Text that names a session names its redaction (RFC 0001 0.19),
+	// before the profile's own rules; the user's identity values, as far
+	// as the original has named them, after.
+	ids := Plain(names.ReplaceIDs(agentsession.SessionIDsNamed(original)))
+	chain := Chain(append(append([]StringRedactor{ids}, p.Strings...), func(s string, ph *Placeholders) string {
+		return r.idents.replace(s, ph)
+	})...)
 	r.f = func(s string) string { return chain(s, r.ph) }
+	r.idents, r.allIdents = newIdentities(), newIdentities()
+	if len(p.Identity) > 0 {
+		if err := r.idents.harvestHeader(p.Identity, original.Header()); err != nil {
+			return nil, err
+		}
+		if err := r.allIdents.harvestHeader(p.Identity, original.Header()); err != nil {
+			return nil, err
+		}
+		for _, e := range r.order {
+			if err := r.allIdents.harvestEntry(p.Identity, e); err != nil {
+				return nil, err
+			}
+		}
+	}
 	r.rw = agentsession.NewRewriter(r.f).Alongside(r.alongside)
 	return r, nil
 }
@@ -481,6 +507,11 @@ func (r *redaction) walk(upto int, check bool) error {
 		// The Rewriter meets every entry from the first, those left out
 		// and those already redacted among them, so a part named by hash
 		// names the rewritten text an earlier entry holds.
+		if len(r.p.Identity) > 0 {
+			if err := r.idents.harvestEntry(r.p.Identity, e); err != nil {
+				return entryErr(r.origID, pos, e, err)
+			}
+		}
 		met := len(r.rw.Unmet())
 		body, err := r.rw.Rewrite(e)
 		if err != nil {
@@ -564,6 +595,44 @@ func (r *redaction) header() (agentsession.Header, []Finding, error) {
 		return agentsession.Header{}, nil, err
 	}
 	return h, headerNames(r.original.Header(), r.f), nil
+}
+
+// identityInHeader is a finding when the redacted session's header h
+// holds a spelling of an identity value, and nil otherwise.
+func identityInHeader(h agentsession.Header, ids *identities) (*Finding, error) {
+	if len(ids.order) == 0 {
+		return nil, nil
+	}
+	data, err := json.Marshal(h)
+	if err != nil {
+		return nil, err
+	}
+	var hit bool
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case string:
+			hit = hit || ids.found(x)
+		case []any:
+			for _, c := range x {
+				walk(c)
+			}
+		case map[string]any:
+			for k, c := range x {
+				hit = hit || ids.found(k)
+				walk(c)
+			}
+		}
+	}
+	tree, err := decodeTree(data)
+	if err != nil {
+		return nil, err
+	}
+	walk(tree)
+	if !hit {
+		return nil, nil
+	}
+	return &Finding{Kind: FindingIdentity, Redactor: "redact", Message: "the header holds a value an identity member of the original names"}, nil
 }
 
 // redactedHeader is the header of a new redaction of the original whose

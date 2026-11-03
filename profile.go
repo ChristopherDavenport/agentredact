@@ -51,6 +51,16 @@ type Profile struct {
 	// Sessions choose whole branches to leave out, before any entry is
 	// redacted: see [SessionRedactor].
 	Sessions []SessionRedactor
+	// Identity names the members of the originals that hold values
+	// identifying the user, such as [ClaudeCodeIdentity]. [Redact] reads
+	// the values from each original, header first and then each entry
+	// as it reaches it in file order, and replaces every spelling of
+	// each value it has read so far wherever the string redactors reach,
+	// after Strings, with "[REDACTED identity#<n>]"; and it reports each
+	// spelling of any value the whole original names that the redacted
+	// session still holds as a [FindingIdentity]. The profile names the
+	// members, never the values.
+	Identity []IdentityMember
 }
 
 // ErrProfileName is returned for a profile name [ValidateProfileName]
@@ -124,6 +134,11 @@ func (p Profile) Validate() error {
 	for i, s := range p.Sessions {
 		if s == nil {
 			return fmt.Errorf("agentredact: profile %s: session redactor %d is nil", p.Name, i)
+		}
+	}
+	for _, m := range p.Identity {
+		if err := m.validate(); err != nil {
+			return fmt.Errorf("agentredact: profile %s: %w", p.Name, err)
 		}
 	}
 	return nil

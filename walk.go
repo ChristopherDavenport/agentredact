@@ -69,14 +69,19 @@ type redaction struct {
 	// gives a sidecar blob's media type, when the caller can.
 	images    bool
 	mediaType func(hash string) string
-	original  *agentsession.Session
-	order     []agentsession.Entry
-	origID    string
-	redID     string
-	red       *agentsession.Session
-	res       *Result
-	rw        *agentsession.Rewriter
-	placed    map[string]*placed
+	// idents are the identity values the original has named up to the
+	// entry being redacted, which the string redactors replace, and
+	// allIdents those the whole original names, which the redaction is
+	// checked for.
+	idents, allIdents *identities
+	original          *agentsession.Session
+	order             []agentsession.Entry
+	origID            string
+	redID             string
+	red               *agentsession.Session
+	res               *Result
+	rw                *agentsession.Rewriter
+	placed            map[string]*placed
 	// leftOut is set once an entry has been left out, by any redactor.
 	leftOut bool
 	// lastTS is the timestamp of the entry last written, which one whose
@@ -754,7 +759,7 @@ func (r *redaction) build(pos int, e agentsession.Entry, m Made, parent string) 
 		n.Base().Timestamp = r.stamp(e.Base().Timestamp) // never a clock
 	}
 	findings := &r.res.Findings
-	if err := inspect(n, pos, findings, r.images, r.mediaType); err != nil {
+	if err := inspect(n, pos, findings, r.images, r.mediaType, r.allIdents); err != nil {
 		return nil, err
 	}
 	add := func(kind FindingKind, at, message string) {

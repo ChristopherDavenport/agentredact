@@ -364,3 +364,104 @@ func TestKeptImageFinding(t *testing.T) {
 		t.Errorf("a profile with Images reports %+v", with.Findings)
 	}
 }
+
+// TestSessionIDsInText: text quoting the original's own ID, or a
+// child's it links to, names their redactions instead, wherever the
+// string redactors reach, as references do (RFC 0001 0.19, #11).
+func TestSessionIDsInText(t *testing.T) {
+	c := &clock{}
+	const own = "11111111-1111-4111-8111-00000000f00d" // synthetic
+	s := newOriginal(own)
+	appendAt(t, s, c, user("work in /tmp/claude-1000/-home-example-proj/"+own+"/scratchpad"))
+	respond(t, s, c, "resp-1", call("call-sub"))
+	child := agentsession.SubsessionID(own, "call-sub")
+	appendAt(t, s, c, agentsession.NewSubsessionLink(child, "call-sub"))
+	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.NewFunctionCallOutput("call-sub", "child "+child+" wrote "+own+".txt")))
+	respond(t, s, c, "resp-2", agentsession.NewItemEntry(openresponses.AssistantText("ok")))
+	p := testProfile()
+	res := redact(t, p, s, nil)
+	file := fileOf(t, res.Session)
+	if bytes.Contains(file, []byte(own)) || bytes.Contains(file, []byte(child)) {
+		t.Errorf("the redaction quotes an original session ID:\n%s", file)
+	}
+	redChild := RedactedID(testKey, child, p.Name)
+	for _, want := range []string{"-~-proj/" + res.Session.ID() + "/scratchpad", "child " + redChild + " wrote " + res.Session.ID() + ".txt", `"session":"` + redChild + `"`} {
+		if !bytes.Contains(file, []byte(want)) {
+			t.Errorf("the redaction lacks %s:\n%s", want, file)
+		}
+	}
+}
+
+// claudeCodeShaped is a synthetic session shaped as agentimport writes a
+// Claude Code import, holding identity members and text quoting their
+// values in other spellings.
+//
+//	1 custom credential_org  2 item with a session_context attachment
+//	3 custom api-request  4 user quoting the values  5 msg  6 resp-1
+func claudeCodeShaped(t *testing.T, c *clock) *agentsession.Session {
+	t.Helper()
+	s := newOriginal("orig-identity")
+	appendAt(t, s, c, &agentsession.CustomEntry{NS: "claudecode", Data: json.RawMessage(`{"attachment":{"organizationUuid":"0a000000-0000-4000-8000-00000000a001","type":"credential_org"},"cwd":"` + fakeHome + `/project"}`)})
+	ctx := user("hello")
+	ctx.Unknown = map[string]json.RawMessage{"claudecode:attachment": json.RawMessage(`{"context":{"userEmail":"The user's email address is fake.user@example.test."},"type":"session_context"}`)}
+	appendAt(t, s, c, ctx)
+	appendAt(t, s, c, &agentsession.CustomEntry{NS: "claudecode", Data: json.RawMessage(`{"params":{"safeguards":[{"classifier_context":{"home_dir":"` + fakeHome + `","user_identity":"ExampleLogin"}}]},"type":"api-request"}`)})
+	appendAt(t, s, c, user("mail FAKE.USER@example.test or fake.user%40example.test, org 0a000000-0000-4000-8000-00000000a001, cache github.com/!example!login/tool, ExampleLogin wrote it"))
+	turn(t, s, c, "resp-1", "noted")
+	return s
+}
+
+// TestIdentityValues: a profile's identity members harvest the user's
+// values from the original, and every spelling of each, as written, in
+// another case, URL-encoded or Go-module-escaped, is replaced; nothing
+// is left for the check to find (#13).
+func TestIdentityValues(t *testing.T) {
+	s := claudeCodeShaped(t, &clock{})
+	p := testProfile()
+	p.Name = "test.identity@1"
+	p.Identity = ClaudeCodeIdentity()
+	res := redact(t, p, s, nil)
+	file := strings.ToLower(string(fileOf(t, res.Session)))
+	for _, v := range []string{"fake.user@example.test", "fake.user%40example.test", "0a000000-0000-4000-8000-00000000a001", "examplelogin", "!example!login"} {
+		if strings.Contains(file, v) {
+			t.Errorf("the redaction keeps %q:\n%s", v, file)
+		}
+	}
+	if hasKind(res, FindingIdentity) {
+		t.Errorf("findings %+v, want no identity value left", res.Findings)
+	}
+	if !strings.Contains(file, "[redacted identity#") {
+		t.Errorf("no identity placeholder:\n%s", file)
+	}
+}
+
+// TestIdentityNamedLate: a value the original names only after the
+// entry quoting it is not replaced there, since what a redaction writes
+// at a position rests on the entries up to it, but the check finds it,
+// by its pointer and with no value, and the session is not publishable.
+func TestIdentityNamedLate(t *testing.T) {
+	c := &clock{}
+	s := newOriginal("orig-identity-late")
+	appendAt(t, s, c, user("signed, LateLoginName"))
+	appendAt(t, s, c, &agentsession.CustomEntry{NS: "claudecode", Data: json.RawMessage(`{"params":{"safeguards":[{"classifier_context":{"user_identity":"LateLoginName"}}]}}`)})
+	turn(t, s, c, "resp-1", "ok")
+	p := testProfile()
+	p.Name = "test.identity@1"
+	p.Identity = ClaudeCodeIdentity()
+	res := redact(t, p, s, nil)
+	var got []string
+	for _, f := range res.Findings {
+		if f.Kind == FindingIdentity {
+			got = append(got, fmt.Sprintf("%d %s", f.Position, f.At))
+			if strings.Contains(f.Message, "LateLoginName") {
+				t.Errorf("a finding quotes the value: %+v", f)
+			}
+		}
+	}
+	if want := []string{"1 /item/content/0/text"}; !slices.Equal(got, want) {
+		t.Errorf("identity findings %v, want %v", got, want)
+	}
+	if bytes.Contains(fileOf(t, res.Session), []byte(`"user_identity":"LateLoginName"`)) {
+		t.Error("the declaring member kept the value")
+	}
+}

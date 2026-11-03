@@ -92,6 +92,40 @@ versions may break the API.
   `Redact` learns through the new `WithMediaTypes` and `RedactStore`
   from the store. `Publishable` is false for such a session unless the
   publisher accepts `image`. It adds a finding and changes no output.
+- **Breaking (output): `HomePaths` finds the home in more spellings
+  (#12).** After a backslash and an escape letter (`\n`, `\t`, `\r`,
+  `\b`, `\f`), as a string holding JSON or shell source writes a newline
+  before a path; and in its dash-encoded form, every character but a
+  letter or a digit written `-`, as Claude Code names a project
+  directory (`-home-example-proj` becomes `-~-proj`) and an agentsession
+  jsonl store keys a session (`home-example-proj` after a separator
+  becomes `~-proj`), bounded so that `-srv-home-example` and
+  `-home-example2` are left alone. agentsession's `export.HomePaths`
+  does not do either; this is the one to use.
+- **Breaking (output): session IDs in text name their redactions (RFC
+  0001 0.19, #11).** Every redaction rewrites, as text, the original's
+  own ID and each session ID it references, before the profile's own
+  string redactors, to the ID the key and profile derive for that
+  session (`agentsession.RedactionNames.ReplaceIDs` over
+  `SessionIDsNamed`), so a scratchpad path or a tool output quoting one
+  names the redaction. The IDs come from the original alone.
+- **Added: identity values (#13).** `Profile.Identity` lists the members
+  that name the user (`IdentityMember`: header or entry type,
+  namespace, JSON Pointer with `*`, an optional `Extract` pattern,
+  `Home` for a path's home directory), and `ClaudeCodeIdentity` is the
+  list agentimport v0.0.1's Claude Code converter documents. The values
+  are read from each original as the redaction reaches them and every
+  spelling of each (any ASCII case, a path's dash encoding, the Go module
+  cache's `!` escaping, URL encodings) is replaced with `[REDACTED
+  identity#<n>]` after the profile's string redactors; the redacted
+  session is then searched for every value the whole original names,
+  and what it still holds is reported as `FindingIdentity`
+  (`identity-value`), by pointer, with no value.
+- **Profiles take a new version.** #20, #12, #11 and #13 change what a
+  profile writes (with the keyed names, every redaction is a new session
+  anyway): name the profiles you redact with under a new version, such
+  as `default@2`, so `redacted_from.profile` names the rules that wrote
+  the session.
 - Tests: a custom entry carrying a call's `call_id` leaves with the call
   (RFC 0001 0.15), and a compaction keeps its `trust` when its entries
   are left out.

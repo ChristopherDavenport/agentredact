@@ -80,6 +80,25 @@ func Secrets(values ...string) StringRedactor {
 // other segments match as written. A spelling with a doubled separator,
 // /home//example, is not matched.
 //
+// A backslash and one of the escape letters n, t, r, b and f before
+// home is a boundary too, as a string holding JSON or shell source
+// writes a newline or a tab before a path: x\n/home/example/src, with
+// a literal backslash, becomes x\n~/src.
+//
+// Home is also found in its dash-encoded form, the directory name
+// several harnesses give a project, every character of home but an
+// ASCII letter or digit written '-': Claude Code's project directory
+// -home-example-coding-proj, and the same inside its scratchpad paths,
+// becomes -~-coding-proj, and an agentsession jsonl store's
+// home-example-coding-proj, after a separator, becomes ~-coding-proj.
+// The encoded form must start the string or follow a character that is
+// not a letter, a digit, '.', '_' or '-' (or an escape, as above), and
+// be followed by '-', a separator, the end, or anything but a letter, a
+// digit or '_', so -srv-home-example, a path under another root, and
+// -home-example2, another user's, are left alone. "-~" is written
+// because no harness's encoding writes a '~', so it cannot be taken for
+// a directory of its own.
+//
 // home is taken as written, trailing separators trimmed, and a home
 // holding no backslash is cleaned as a slash path; the result does not
 // depend on the platform it runs on. An empty home, ".", "/", "\" or a
@@ -95,27 +114,98 @@ func HomePaths(home string) StringRedactor {
 	if re == nil {
 		return func(s string, _ *Placeholders) string { return s }
 	}
+	encoded := dashEncoded(home)
 	return func(s string, _ *Placeholders) string {
-		matches := re.FindAllStringIndex(s, -1)
-		if matches == nil {
+		s = replaceHome(s, re.FindAllStringIndex(s, -1), "~", func(c byte) bool {
+			return c == '/' || c == '\\' || !continuesSegment(c)
+		})
+		if encoded == "" || !strings.Contains(s, encoded[1:]) {
 			return s
 		}
-		var b strings.Builder
-		last := 0
-		for _, m := range matches {
-			before := m[0] == 0 || !partOfSegment(s[m[0]-1])
-			rest := s[m[1]:]
-			after := rest == "" || rest[0] == '/' || rest[0] == '\\' || !continuesSegment(rest[0])
-			if !before || !after {
-				continue
+		dashAfter := func(c byte) bool { return c == '-' || c == '/' || c == '\\' || !continuesSegment(c) }
+		if encoded[0] == '-' {
+			s = replaceHome(s, indexAll(s, encoded), "-~", dashAfter)
+			// The form without the leading dash, after a separator alone.
+			var after []([]int)
+			for _, m := range indexAll(s, encoded[1:]) {
+				if m[0] > 0 && (s[m[0]-1] == '/' || s[m[0]-1] == '\\') {
+					after = append(after, m)
+				}
 			}
-			b.WriteString(s[last:m[0]])
-			b.WriteString("~")
-			last = m[1]
+			return replaceHome(s, after, "~", dashAfter)
 		}
-		b.WriteString(s[last:])
-		return b.String()
+		return replaceHome(s, indexAll(s, encoded), "~", dashAfter)
 	}
+}
+
+// replaceHome writes with in place of each match of s, [from, to), that
+// stands on its own: what precedes it is no part of a path segment, or
+// is an escape, and endsHome accepts the byte following it, if any.
+func replaceHome(s string, matches [][]int, with string, endsHome func(c byte) bool) string {
+	if matches == nil {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range matches {
+		if m[0] < last {
+			continue
+		}
+		before := m[0] == 0 || !partOfSegment(s[m[0]-1]) || escapeBefore(s, m[0])
+		after := m[1] == len(s) || endsHome(s[m[1]])
+		if !before || !after {
+			continue
+		}
+		b.WriteString(s[last:m[0]])
+		b.WriteString(with)
+		last = m[1]
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// escapeBefore reports whether s holds, just before i, a backslash and
+// an escape letter, as a string holding JSON or C source writes a
+// newline, a tab, a return, a backspace or a form feed.
+func escapeBefore(s string, i int) bool {
+	return i >= 2 && s[i-2] == '\\' && strings.IndexByte("ntrbf", s[i-1]) >= 0
+}
+
+// indexAll returns the start and end of each occurrence of sub in s,
+// not overlapping, in order.
+func indexAll(s, sub string) [][]int {
+	var out [][]int
+	for from := 0; from <= len(s)-len(sub); {
+		i := strings.Index(s[from:], sub)
+		if i < 0 {
+			break
+		}
+		out = append(out, []int{from + i, from + i + len(sub)})
+		from += i + len(sub)
+	}
+	return out
+}
+
+// dashEncoded is home as a harness encodes a path in a directory name,
+// every byte but an ASCII letter or digit written '-', or "" for a home
+// with fewer than two letters or digits, which would match too much.
+func dashEncoded(home string) string {
+	b := []byte(home)
+	n := 0
+	for i, c := range b {
+		if isAlnum(c) {
+			n++
+		} else {
+			b[i] = '-'
+		}
+	}
+	if n < 2 || len(b) < 2 {
+		return ""
+	}
+	return string(b)
 }
 
 // homeSeparator matches one separator as a string may spell it: '/',

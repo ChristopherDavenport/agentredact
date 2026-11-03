@@ -16,7 +16,10 @@ import (
 // whole, inline or sidecar. A sidecar is an image when an image_url
 // names it, or when mediaType gives its blob an image/ type. pos is its
 // position in the original.
-func inspect(e agentsession.Entry, pos int, findings *[]Finding, images bool, mediaType func(hash string) string) error {
+//
+// A string or a member name holding a spelling of a value ids holds is
+// reported as an identity value, by its pointer, never the value.
+func inspect(e agentsession.Entry, pos int, findings *[]Finding, images bool, mediaType func(hash string) string, ids *identities) error {
 	data, err := agentsession.MarshalEntry(e)
 	if err != nil {
 		return err
@@ -34,6 +37,9 @@ func inspect(e agentsession.Entry, pos int, findings *[]Finding, images bool, me
 	walk = func(v any, at, member string) error {
 		switch x := v.(type) {
 		case string:
+			if ids.found(x) {
+				report(FindingIdentity, at, "a value an identity member of the original names, in one of its spellings")
+			}
 			if !images && keptImage(x, member, mediaType) {
 				report(FindingImage, at, "an image kept: the profile replaces no image, and no string redactor reads the text in its pixels")
 			}
@@ -53,6 +59,9 @@ func inspect(e agentsession.Entry, pos int, findings *[]Finding, images bool, me
 			}
 		case map[string]any:
 			for _, k := range sortedMembers(x) {
+				if ids.found(k) {
+					report(FindingIdentity, at, "a member name holding a value an identity member of the original names")
+				}
 				if err := walk(x[k], at+"/"+pointerToken(k), k); err != nil {
 					return err
 				}

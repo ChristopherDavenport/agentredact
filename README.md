@@ -34,7 +34,7 @@ URL encoding or image bytes are not found by the redactors.
 
 ```go
 p := agentredact.Profile{
-	Name: "default@1",
+	Name: "default@2",
 	Strings: []agentredact.StringRedactor{
 		agentredact.Secrets(apiKey),
 		agentredact.HomePaths(home),
@@ -44,6 +44,7 @@ p := agentredact.Profile{
 		agentredact.Environment(),
 		agentredact.Images(agentredact.DefaultImagePlaceholder),
 	},
+	Identity: agentredact.ClaudeCodeIdentity(), // the user's values a Claude Code import names
 }
 key, err := agentredact.ReadKeyFile("/path/beside/the/store/redaction.key")
 res, err := agentredact.Redact(p, key, original, nil) // or the earlier redaction, to grow it
@@ -81,6 +82,40 @@ then leads to no published redaction.
 
 A profile names one set of rules; change the rules and bump the
 version, or two redactions end up mixed in one session.
+
+### Home directories, session IDs and identity values
+
+- `HomePaths(home)` shortens a path under home to `~`, home bounded on
+  both sides (a separator or the end after it, a character that is no
+  part of a path segment before it, an escaped `\n`, `\t`, `\r`, `\b`
+  or `\f` included), and finds home in its dash-encoded form too, the
+  directory name Claude Code gives a project (`-home-example-proj`,
+  inside `/tmp/claude-<uid>/` scratchpads as well) and an agentsession
+  jsonl store's key (`home-example-proj` after a separator):
+  `-home-example-proj` becomes `-~-proj`. A harness's encoding writes no
+  `~`, so `-~` is never a real directory's name.
+- Every redaction rewrites, as text, each session ID the original
+  names a session by (its own `id`, `parent_session`, a `parents`
+  element's, a link's, a copied item's) to the ID of that session's
+  redaction, before the profile's own rules, as RFC 0001 0.19 requires:
+  a scratchpad path or a tool output quoting the session ID then names
+  its redaction. The IDs come from the original alone. Other spellings
+  of a session ID than the ID as written are not looked for.
+- `Profile.Identity` lists the members of the originals that name the
+  user (an email, an organization's ID, a login name, a home
+  directory), by entry type, namespace and JSON Pointer;
+  `ClaudeCodeIdentity` is agentimport v0.0.1's Claude Code list. The
+  values are read from each original, never written into the profile,
+  and every spelling of each is replaced with `[REDACTED identity#<n>]`
+  after the profile's string redactors: as written in any ASCII case, a
+  path's dash-encoded directory name, the Go module cache's escaping
+  (`!example!login` for `ExampleLogin`) and its URL encodings. A value
+  is replaced from the entry that names it on, since what a redaction
+  writes at a position rests on the entries up to it; the redaction is
+  then searched for every value the whole original names, and each
+  spelling still held, in a string or a member name, is an
+  `identity-value` finding with no value, which blocks `Publishable`.
+  Values shorter than three bytes are not harvested.
 
 ### Placeholders
 

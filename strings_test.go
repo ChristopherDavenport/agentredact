@@ -91,6 +91,26 @@ func TestHomePaths(t *testing.T) {
 		{"", "/home/example", "/home/example"},
 		{"/", "/etc", "/etc"},
 		{".", "./x", "./x"},
+		// After an escaped newline or tab, as a string holding JSON or
+		// shell source writes one (#12).
+		{"/home/example", `"x\n/home/example/p"`, `"x\n~/p"`},
+		{"/home/example", `a\t/home/example`, `a\t~`},
+		{"/home/example", `a\r\n/home/example/q`, `a\r\n~/q`},
+		// The dash-encoded directory a harness names a project by (#12).
+		{"/home/example", "-home-example-proj/", "-~-proj/"},
+		{"/home/example", "/tmp/claude-1000/-home-example-coding/x", "/tmp/claude-1000/-~-coding/x"},
+		{"/home/example", "projects/-home-example", "projects/-~"},
+		{"/home/example", `"-home-example"`, `"-~"`},
+		{"/home/example", "store/home-example-coding-x/", "store/~-coding-x/"},
+		{"/home/example", `x\n-home-example-p`, `x\n-~-p`},
+		{`C:\Users\example`, `C--Users-example-src`, `~-src`},
+		{"/home/ex.ample", "-home-ex-ample-proj", "-~-proj"},
+		{"/home/example", "-home-examplex-", "-home-examplex-"},
+		{"/home/example", "-home-example_old", "-home-example_old"},
+		{"/home/example", "-srv-home-example-x", "-srv-home-example-x"},
+		{"/home/example", "/srv/home/example", "/srv/home/example"},
+		{"/home/example", "xhome-example-y", "xhome-example-y"},
+		{"/home/example", "-home-example-and-home-example", "-~-and-home-example"},
 	} {
 		if got := HomePaths(tt.home)(tt.in, nil); got != tt.want {
 			t.Errorf("HomePaths(%q)(%q) = %q, want %q", tt.home, tt.in, got, tt.want)
