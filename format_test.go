@@ -637,3 +637,19 @@ func TestMemberNamesReported(t *testing.T) {
 		t.Errorf("member-name findings %v, want %v", at, want)
 	}
 }
+
+// TestNumberingSkipsLeftOut: a value only an entry left out held takes
+// no number, so the numbers kept do not tell how many distinct secrets
+// a dropped entry or branch held (review finding 9).
+func TestNumberingSkipsLeftOut(t *testing.T) {
+	c := &clock{}
+	s := newOriginal("orig-numbering-left-out")
+	appendAt(t, s, c, user("drop me: sk-test-1111111111111111111111111111"))
+	appendAt(t, s, c, user("keep me: sk-test-2222222222222222222222222222"))
+	turn(t, s, c, "resp-1", "ok")
+	p := structProfile("test.numbering@1", []EntryRedactor{LeaveOut(userWith("drop me"))})
+	res := redact(t, p, s, nil)
+	if file := fileOf(t, res.Session); !bytes.Contains(file, []byte("keep me: [REDACTED openai_key#1]")) {
+		t.Errorf("the kept key is not numbered 1:\n%s", file)
+	}
+}

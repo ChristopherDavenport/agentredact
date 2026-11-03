@@ -194,6 +194,8 @@ versions may break the API.
   keeps, reported when the string redactors would change it, as
   `ErrKeyNotRedacted` once refused it. Such checks run the rules without
   numbering or counting.
+- An entry the redaction leaves out takes no placeholder number, so the
+  numbers kept do not tell how many distinct values it held.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

@@ -18,7 +18,9 @@ import "strconv"
 // [StringRedactor] it calls. A number depends on the order the values
 // are met in, which is fixed: the header's strings first, then the
 // original's entries in file order, prefix included, each walked in the
-// same order, whether the redaction is fresh or resumed; and a fork
+// same order, whether the redaction is fresh or resumed; an entry the
+// redaction leaves out numbers nothing, so the numbers kept do not tell
+// how many values a dropped entry held; and a fork
 // redacted as a fork of its origin's redaction continues the numbering
 // its origin's redaction had reached at the base, so the shared prefix
 // and the fork's own entries name one value alike. A nil Placeholders,

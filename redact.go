@@ -529,6 +529,9 @@ func (r *redaction) walk(upto int, check bool) error {
 		if r.res != nil {
 			before = r.ph.snapshot()
 		}
+		// What the entry's strings number is taken back when it is left
+		// out, so the numbers kept tell nothing of what was dropped.
+		saved := r.ph.clone()
 		body, err := r.rw.Rewrite(e)
 		if err != nil {
 			return entryErr(r.origID, pos, e, quietRewriteErr(err))
@@ -538,10 +541,12 @@ func (r *redaction) walk(upto int, check bool) error {
 			// A fork's prefix: the origin's redaction decided it.
 			if !r.isKept(e.Base().ID) {
 				r.rw.LeftOut(e)
+				r.ph = saved
 			}
 			continue
 		}
 		if r.out[i] {
+			r.ph = saved
 			r.placed[e.Base().ID] = &placed{fate: dropped, pos: pos}
 			r.leftOut = true
 			r.rw.LeftOut(e)
@@ -555,6 +560,7 @@ func (r *redaction) walk(upto int, check bool) error {
 		}
 		if !r.isKept(e.Base().ID) {
 			r.rw.LeftOut(e)
+			r.ph = saved
 		} else if before != nil {
 			r.res.Counts = deltaCounts(r.res.Counts, before, r.ph.snapshot())
 		}
