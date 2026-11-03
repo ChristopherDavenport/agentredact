@@ -60,7 +60,7 @@ func redIDOf(id, profile string) string { return RedactedID(testKey, id, profile
 // pseudonymOf is the pseudonym of the native session id under profile
 // and testKey, which redacted_from names it by.
 func pseudonymOf(id, profile string) string {
-	ps, err := agentsession.Pseudonym(testKey.b, id, profile)
+	ps, err := agentsession.Pseudonym(keyBytes(testKey), id, profile)
 	if err != nil {
 		panic(err)
 	}

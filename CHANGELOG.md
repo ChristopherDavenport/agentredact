@@ -180,6 +180,9 @@ versions may break the API.
   (system accounts excepted), and `Home` members find a home anywhere
   in a string. `IdentityMember.Anywhere` reads every string of an
   entry.
+- A `Key` holds its bytes behind a pointer to a type that formats as
+  "…", so one in a caller's unexported field prints no byte under `%+v`
+  or slog.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

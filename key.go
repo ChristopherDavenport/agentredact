@@ -37,8 +37,20 @@ import (
 // The zero Key holds nothing, and [Redact] and [RedactStore] refuse it
 // with [agentsession.ErrRedactionKey]: there is no default key.
 type Key struct {
+	// m holds the bytes behind a pointer, so that printing a struct that
+	// holds a Key in an unexported field, which fmt and slog do without
+	// calling its String, prints an address and never the bytes.
+	m *keyMaterial
+}
+
+// keyMaterial is a key's bytes. It formats as "…" however it is
+// printed.
+type keyMaterial struct {
 	b []byte
 }
+
+// Format prints no byte of the key.
+func (*keyMaterial) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte("…")) }
 
 // NewKey returns a Key holding a copy of b, which must be at least
 // [agentsession.RedactionKeySize] (32) random bytes; a shorter one is
@@ -47,7 +59,7 @@ func NewKey(b []byte) (Key, error) {
 	if len(b) < agentsession.RedactionKeySize {
 		return Key{}, agentsession.ErrRedactionKey
 	}
-	return Key{b: bytes.Clone(b)}, nil
+	return Key{m: &keyMaterial{b: bytes.Clone(b)}}, nil
 }
 
 // GenerateKey returns a new Key of 32 bytes from crypto/rand.
@@ -56,20 +68,28 @@ func GenerateKey() (Key, error) {
 	if _, err := rand.Read(b); err != nil {
 		return Key{}, fmt.Errorf("agentredact: generating a key: %w", err)
 	}
-	return Key{b: b}, nil
+	return Key{m: &keyMaterial{b: b}}, nil
 }
 
 // valid reports whether k holds a key.
 func (k Key) valid() error {
-	if len(k.b) < agentsession.RedactionKeySize {
+	if len(k.bytes()) < agentsession.RedactionKeySize {
 		return agentsession.ErrRedactionKey
 	}
 	return nil
 }
 
+// bytes are the key's bytes, nil for the zero Key.
+func (k Key) bytes() []byte {
+	if k.m == nil {
+		return nil
+	}
+	return k.m.b
+}
+
 // String names a key without its bytes.
 func (k Key) String() string {
-	if k.b == nil {
+	if k.m == nil {
 		return "agentredact.Key(none)"
 	}
 	return "agentredact.Key(…)"
@@ -95,7 +115,7 @@ func (k Key) MarshalText() ([]byte, error) { return nil, errKeyMarshal }
 // original's [agentsession.Pseudonym], the derivation RFC 0001
 // recommends since 0.19. A zero key gives "".
 func RedactedID(key Key, original, profile string) string {
-	ps, err := agentsession.Pseudonym(key.b, original, profile)
+	ps, err := agentsession.Pseudonym(key.bytes(), original, profile)
 	if err != nil {
 		return ""
 	}
@@ -108,7 +128,7 @@ func (k Key) names(original *agentsession.Session, profile string) (*agentsessio
 	if err := k.valid(); err != nil {
 		return nil, err
 	}
-	return agentsession.NewRedactionNames(k.b, original, profile)
+	return agentsession.NewRedactionNames(k.bytes(), original, profile)
 }
 
 // keyFilePrefix starts a key file, so a file that is not one is told
@@ -138,7 +158,7 @@ func WriteKeyFile(path string, k Key) error {
 	if err != nil {
 		return fmt.Errorf("agentredact: writing the key file: %w", err)
 	}
-	_, werr := f.WriteString(keyFilePrefix + hex.EncodeToString(k.b) + "\n")
+	_, werr := f.WriteString(keyFilePrefix + hex.EncodeToString(k.bytes()) + "\n")
 	serr := f.Sync()
 	cerr := f.Close()
 	if err := errors.Join(werr, serr, cerr); err != nil {
@@ -200,5 +220,5 @@ func OriginalOf(ctx context.Context, st agentsession.Store, key Key, s *agentses
 	if err := key.valid(); err != nil {
 		return nil, nil, err
 	}
-	return agentsession.OriginalUnder(ctx, st, key.b, s)
+	return agentsession.OriginalUnder(ctx, st, key.bytes(), s)
 }

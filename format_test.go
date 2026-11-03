@@ -168,7 +168,7 @@ func TestPseudonymNames(t *testing.T) {
 	if unkeyed := agentsession.RedactedSessionID(orig.ID(), p.Name); bytes.Contains(file, []byte(unkeyed)) || h.ID == unkeyed {
 		t.Error("the redaction holds the unkeyed derivation over the original's ID")
 	}
-	if bytes.Contains(file, []byte(orig.ID())) || bytes.Contains(file, testKey.b) || bytes.Contains(file, []byte(fmt.Sprintf("%x", testKey.b))) {
+	if bytes.Contains(file, []byte(orig.ID())) || bytes.Contains(file, keyBytes(testKey)) || bytes.Contains(file, []byte(fmt.Sprintf("%x", keyBytes(testKey)))) {
 		t.Error("the redaction holds the original's ID or the key")
 	}
 	other := redact(t, p, orig, nil)
@@ -186,7 +186,7 @@ func TestPseudonymNames(t *testing.T) {
 	var logged bytes.Buffer
 	slog.New(slog.NewTextHandler(&logged, nil)).Info("redacting", "key", testKey)
 	for _, out := range []string{fmt.Sprint(testKey), fmt.Sprintf("%v %+v %#v %s %q %x", testKey, testKey, testKey, testKey, testKey, testKey), logged.String()} {
-		if strings.Contains(out, string(testKey.b)) || strings.Contains(out, fmt.Sprintf("%x", testKey.b)) {
+		if strings.Contains(out, string(keyBytes(testKey))) || strings.Contains(out, fmt.Sprintf("%x", keyBytes(testKey))) {
 			t.Errorf("a printed key shows its bytes: %s", out)
 		}
 	}
@@ -530,3 +530,25 @@ func TestIdentityFromText(t *testing.T) {
 		t.Error("a system account's name was replaced")
 	}
 }
+
+// TestKeyInsideAStruct: a Key in a caller's unexported field prints no
+// byte of itself, by %+v, %#v or slog (review finding 6).
+func TestKeyInsideAStruct(t *testing.T) {
+	type config struct {
+		name string
+		key  Key
+	}
+	c := config{name: "x", key: testKey}
+	var logged bytes.Buffer
+	slog.New(slog.NewTextHandler(&logged, nil)).Info("cfg", "c", c)
+	slog.New(slog.NewJSONHandler(&logged, nil)).Info("cfg", "c", c)
+	raw := string(keyBytes(testKey))
+	for _, out := range []string{fmt.Sprintf("%v %+v %#v", c, c, c), logged.String()} {
+		if strings.Contains(out, raw) || strings.Contains(out, fmt.Sprint([]byte(raw))) || strings.Contains(out, fmt.Sprintf("%x", raw)) {
+			t.Errorf("the key's bytes are printed: %s", out)
+		}
+	}
+}
+
+// keyBytes are k's bytes, for tests that look for them in output.
+func keyBytes(k Key) []byte { return k.bytes() }
