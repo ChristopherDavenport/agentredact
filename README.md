@@ -388,6 +388,19 @@ a count; the value TruffleHog reports is never kept, and its log is not
 read. `Result.Verdict` is the verdict to record with `WriteVerdict`:
 any finding fails it.
 
+## Publish
+
+`publish.Publish(ctx, private, target, publish.Options{Profile, Report,
+Judges})` copies to `target` the redacted sessions of `private` under
+the profile that the store pass's `Report` holds publishable and every
+judge in `Judges` cleared at its current judged entry, blobs first with
+their types, importing a session the target lacks and appending to one
+it holds what it lacks; every other session is held, with its reason.
+Open the target set to hold only redacted entries (`WithRedactedOnly`,
+`MemoryRedactedOnly`): an original, or a verdict, sent there by mistake
+is refused. `Result.Published` names each session as a manifest does,
+by its own ID and head hash, never by its original.
+
 ## Status
 
 Profiles, the string redactors (`Secrets`, `HomePaths`, `Patterns`,

@@ -307,14 +307,18 @@ bytes; every redacted session verifies, its request hashes included.
    what the deterministic pass missed: a name, a host, a customer. A
    flag blocks publishing until a person clears it or adds a redactor,
    which means a new profile.
-4. **Manifest** (#6): for each published session, its redacted hashes
-   and `redacted_from`. The original's hashes stay local, since an
-   original hash lets anyone confirm a guessed value.
-5. **Publish** (#6): push the redacted sessions to a store set to hold
-   only redacted entries, so an original sent by mistake is refused, or
-   export them, with their blobs and ATIF, into a dataset repository,
-   as pi-share-hf does. Until agentsession#244 lands, a push a remote
-   refuses leaves its objects there until a sweep.
+4. **Manifest** (#6): for each published session, its own `id` and
+   head hash, never an original's ID or entry hash (RFC 0002, Redacted
+   sessions, with agentsession#70's manifest object); the mapping to
+   originals stays with the holder of the key. Each header's
+   `redacted_from.session` is the original's keyed pseudonym (0.19),
+   which leads nowhere without the key.
+5. **Publish** (#6, `publish`): push the sessions the store pass holds
+   publishable and the required judges cleared at their judged entry to
+   a store set to hold only redacted entries, so an original sent by
+   mistake is refused (a redacted-only remote refuses a push before any
+   upload, agentsession#244), or export them, with their blobs and
+   ATIF, into a dataset repository, as pi-share-hf does.
 
 Scan and review verdicts go in a separate session, a fork of the one
 it judges at the entry it judged up to, with the verdict an `outcome`

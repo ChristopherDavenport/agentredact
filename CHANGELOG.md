@@ -145,6 +145,12 @@ versions may break the API.
   an artifact, the redacted entry and a count, never the value;
   `Result.Verdict` is the scan's verdict (kind `test`), failing on any
   finding. Tests run a stub binary; the real one is used when installed.
+- **Added: the `publish` package (#6, the publish part).** `Publish`
+  copies a profile's redacted sessions that the store pass holds
+  publishable and the required judges cleared to a store holding only
+  redacted entries, blobs first with their types, importing or growing
+  each, and holds the rest with their reasons; `Published` names each
+  by its own ID and head hash, never its original.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such
