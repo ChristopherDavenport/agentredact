@@ -3,8 +3,8 @@ package agentredact
 import (
 	"encoding/json"
 	"path"
-	"slices"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
