@@ -3,6 +3,8 @@ package agentredact
 import (
 	"context"
 	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +38,42 @@ type Verdict struct {
 	// found in, by their IDs in the redacted session, which name no
 	// original.
 	Entries []string
+	// Covered is the state of the redacted session the verdict judged
+	// ([StateOf]), which [WriteVerdict] records: a verdict clears that
+	// state and no other.
+	Covered State
+}
+
+// State is what a redacted session holds, as a verdict covers it and a
+// report reads it: its head ([JudgedEntry]), and every entry it holds,
+// on every branch, but leaf labels, which move the head and carry
+// nothing, counted and digested. Two states are one only when the
+// session holds exactly the same entries under the same head, so an
+// entry appended on a branch, which leaves the head where it was, is a
+// new state, and a leaf label moving the head back is no way round it.
+type State struct {
+	Head    string `json:"head"`
+	Entries int    `json:"entries"`
+	// Digest is sha256:<hex> over the entries' IDs, sorted, each ended
+	// by a newline.
+	Digest string `json:"digest"`
+}
+
+// StateOf is the state of the session s.
+func StateOf(s *agentsession.Session) State {
+	var ids []string
+	for _, e := range agentsession.FileOrder(s) {
+		if l, ok := e.(*agentsession.LabelEntry); ok && l.Label != nil && *l.Label == agentsession.LeafLabel {
+			continue
+		}
+		ids = append(ids, e.Base().ID)
+	}
+	slices.Sort(ids)
+	h := sha256.New()
+	for _, id := range ids {
+		h.Write([]byte(id + "\n"))
+	}
+	return State{Head: JudgedEntry(s), Entries: len(ids), Digest: "sha256:" + hex.EncodeToString(h.Sum(nil))}
 }
 
 // VerdictHarness is the harness a verdict session's header names, by
@@ -51,6 +89,7 @@ const verdictMember = "agentredact:verdict"
 type verdictDetails struct {
 	Findings map[string]int `json:"agentredact:findings"`
 	Entries  []string       `json:"agentredact:entries,omitempty"`
+	Covered  *State         `json:"agentredact:covered,omitempty"`
 }
 
 // ErrNotRedacted is returned by [WriteVerdict] for a session that is
@@ -126,7 +165,11 @@ func WriteVerdict(red *agentsession.Session, judged string, v Verdict, at time.T
 	}
 	entries := slices.Clone(v.Entries)
 	slices.Sort(entries)
-	d := verdictDetails{Findings: v.Findings, Entries: slices.Compact(entries)}
+	covered := StateOf(red)
+	if covered.Head != judged {
+		return nil, fmt.Errorf("agentredact: a verdict judges a session up to its head, %s, not %s", covered.Head, judged)
+	}
+	d := verdictDetails{Findings: v.Findings, Entries: slices.Compact(entries), Covered: &covered}
 	if d.Findings == nil {
 		d.Findings = map[string]int{}
 	}
@@ -191,7 +234,7 @@ func Verdicts(ctx context.Context, st agentsession.Store, red string) ([]Recorde
 				judge = judge[len("agentredact/"):]
 			}
 			out = append(out, RecordedVerdict{
-				Verdict: Verdict{Judge: judge, Kind: o.Kind, Pass: *o.Pass, Findings: d.Findings, Entries: d.Entries},
+				Verdict: Verdict{Judge: judge, Kind: o.Kind, Pass: *o.Pass, Findings: d.Findings, Entries: d.Entries, Covered: covered(d.Covered)},
 				Session: s.ID(), Judged: o.Target, At: o.Timestamp,
 			})
 		}
@@ -211,16 +254,26 @@ func Verdicts(ctx context.Context, st agentsession.Store, red string) ([]Recorde
 	return out, nil
 }
 
-// Cleared reports whether every judge of judges passed red at its
-// current judged entry ([JudgedEntry]), the latest verdict of each
-// counting: a session that grew after it was judged waits for a new
-// verdict, since a verdict covers no entry after its target.
+// covered is the state a verdict records, the zero State for one that
+// records none, which clears nothing.
+func covered(s *State) State {
+	if s == nil {
+		return State{}
+	}
+	return *s
+}
+
+// Cleared reports whether every judge of judges passed red in exactly
+// the state it holds now ([StateOf]: its head and every entry, on every
+// branch), the latest such verdict of each counting. A session that
+// changed after it was judged, by an entry on any branch, waits for a
+// new verdict.
 func Cleared(verdicts []RecordedVerdict, red *agentsession.Session, judges ...string) bool {
-	at := JudgedEntry(red)
+	now := StateOf(red)
 	for _, j := range judges {
 		ok := false
 		for _, v := range verdicts {
-			if v.Judge == j && v.Judged == at {
+			if v.Judge == j && v.Covered.Digest != "" && v.Covered == now && v.Judged == now.Head {
 				ok = v.Pass
 			}
 		}

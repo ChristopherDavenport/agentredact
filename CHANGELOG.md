@@ -151,6 +151,12 @@ versions may break the API.
   redacted entries, blobs first with their types, importing or growing
   each, and holds the rest with their reasons; `Published` names each
   by its own ID and head hash, never its original.
+- **A verdict clears only the state it judged.** `State`/`StateOf`: the
+  head and a digest over every entry on every branch, leaf labels
+  aside. `WriteVerdict` records it (`agentredact:covered`) and `Cleared`
+  requires it to equal the session's current state, so an entry
+  appended on a branch after a scan, which leaves the head in place, is
+  not published on the old verdict.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

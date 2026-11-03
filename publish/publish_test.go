@@ -8,6 +8,7 @@ import (
 
 	"github.com/ChristopherDavenport/agentredact"
 	"github.com/ChristopherDavenport/agentsession"
+	"github.com/ChristopherDavenport/agentsession/jsonl"
 	"github.com/ChristopherDavenport/openresponses"
 )
 
@@ -53,14 +54,14 @@ func file(t *testing.T, s *agentsession.Session) []byte {
 	return buf.Bytes()
 }
 
-func load(t *testing.T, st *agentsession.MemoryStore, s *agentsession.Session) {
+func load(t *testing.T, st agentsession.Store, s *agentsession.Session) {
 	t.Helper()
-	if _, err := st.Import(context.Background(), bytes.NewReader(file(t, s)), true); err != nil {
+	if _, err := st.(agentsession.Importer).Import(context.Background(), bytes.NewReader(file(t, s)), true); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func pass(t *testing.T, st *agentsession.MemoryStore) *agentredact.StoreReport {
+func pass(t *testing.T, st agentsession.Store) *agentredact.StoreReport {
 	t.Helper()
 	rep, err := agentredact.RedactStore(context.Background(), st, profile, key(t), agentredact.StoreOptions{})
 	if err != nil {
@@ -157,5 +158,51 @@ func TestPublish(t *testing.T) {
 	got, err := target.Read(ctx, cleanRed)
 	if err != nil || !bytes.Equal(file(t, got), file(t, red)) {
 		t.Errorf("the target's copy differs from the private redaction: %v", err)
+	}
+}
+
+// TestPublishBranchAfterVerdict: a verdict clears only the state it
+// judged. A branch appended after the scan, which leaves the head where
+// it was, is not published on the old verdict (review finding 1).
+func TestPublishBranchAfterVerdict(t *testing.T) {
+	ctx := context.Background()
+	// jsonl keeps the head with a leaf label after a branch append.
+	private, err := jsonl.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { private.Close() })
+	o := session(t, "orig-branch", "e1", "e2")
+	load(t, private, o)
+	pass(t, private)
+	redID := agentredact.RedactedID(key(t), o.ID(), profile.Name)
+	red, err := private.Read(ctx, redID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	judged := agentredact.JudgedEntry(red)
+	v, err := agentredact.WriteVerdict(red, judged, agentredact.Verdict{Judge: "scan", Kind: "test", Pass: true}, t0.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	load(t, private, v)
+	// e3 hangs from e1: a branch, which does not move the head.
+	e3 := agentsession.NewItemEntry(openresponses.UserText("a branch holding hf_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE00"))
+	e3.Parent = agentsession.FileOrder(o)[0].Base().ID
+	e3.Timestamp = t0.Add(3 * time.Second)
+	if _, err := private.Append(ctx, o.ID(), e3); err != nil {
+		t.Fatal(err)
+	}
+	rep := pass(t, private)
+	if red, err = private.Read(ctx, redID); err != nil || agentredact.JudgedEntry(red) != judged {
+		t.Fatalf("the head moved (%v); the case proves nothing", err)
+	}
+	target := agentsession.NewMemoryStore(agentsession.MemoryRedactedOnly())
+	res, err := Publish(ctx, private, target, Options{Profile: profile.Name, Report: rep, Judges: []string{"scan"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Published) != 0 {
+		t.Errorf("published %+v on a verdict that did not judge the branch", res.Published)
 	}
 }
