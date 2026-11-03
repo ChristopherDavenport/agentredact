@@ -78,3 +78,58 @@ func TestVerdict(t *testing.T) {
 		t.Errorf("the store pass redacted a verdict: skipped %d, sessions %d", rep.Skipped, len(rep.Sessions))
 	}
 }
+
+// TestVerdictLabelPrefix: an outcome whose label does not start with
+// agentredact/ is no verdict of a judge here (review finding 10).
+func TestVerdictLabelPrefix(t *testing.T) {
+	ctx := context.Background()
+	orig := plainOriginal(t, &clock{})
+	st := agentsession.NewMemoryStore()
+	load(t, st, orig)
+	p := testProfile()
+	redactStore(t, st, p, StoreOptions{})
+	red := read(t, st, redIDOf(orig.ID(), p.Name))
+	v, err := WriteVerdict(red, JudgedEntry(red), Verdict{Judge: "scan", Kind: "test", Pass: true}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := bytes.Replace(fileOf(t, v), []byte(`"agentredact/scan"`), []byte(`"notagentred/scan"`), 1)
+	back, err := agentsession.Read(bytes.NewReader(stripID(t, data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Import(ctx, bytes.NewReader(fileOf(t, back)), true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Verdicts(ctx, st, red.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 || Cleared(got, red, "scan") {
+		t.Errorf("verdicts %+v from a label of another prefix", got)
+	}
+}
+
+// stripID takes the last line's id out, so the file reads with the
+// entry's hash recomputed.
+func stripID(t *testing.T, data []byte) []byte {
+	t.Helper()
+	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte("\n"))
+	var m map[string]any
+	if err := json.Unmarshal(lines[len(lines)-1], &m); err != nil {
+		t.Fatal(err)
+	}
+	e, err := agentsession.UnmarshalEntry(lines[len(lines)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := agentsession.Read(bytes.NewReader(bytes.Join(lines[:len(lines)-1], []byte("\n"))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Base().ID = ""
+	if _, err := s.Commit(e); err != nil {
+		t.Fatal(err)
+	}
+	return fileOf(t, s)
+}

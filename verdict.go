@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ChristopherDavenport/agentsession"
@@ -229,9 +230,9 @@ func Verdicts(ctx context.Context, st agentsession.Store, red string) ([]Recorde
 					return nil, fmt.Errorf("agentredact: verdict %s: %w", s.ID(), err)
 				}
 			}
-			judge := o.Label
-			if len(judge) > len("agentredact/") {
-				judge = judge[len("agentredact/"):]
+			judge, ours := strings.CutPrefix(o.Label, "agentredact/")
+			if !ours || judge == "" {
+				continue // an outcome of another writer's, no verdict here
 			}
 			out = append(out, RecordedVerdict{
 				Verdict: Verdict{Judge: judge, Kind: o.Kind, Pass: *o.Pass, Findings: d.Findings, Entries: d.Entries, Covered: covered(d.Covered)},
