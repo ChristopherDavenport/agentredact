@@ -27,8 +27,14 @@ before writing code. Issues #2–#6 track the parts.
   module, at a version, are refused ("contains one or more replace
   directives"); `go get` is not affected. So `cmd/agentredact`, meant
   for `go install`, is a nested module of its own (`cmd/agentredact`,
-  requiring the root at the released version, with no replace of its
-  own in a release) rather than a package of the root.
+  requiring the root at the released version) rather than a package of
+  the root. In the tree it replaces the root and `secrets` with `../..`
+  and `../../secrets`, as `make replaces` requires, and `make extracted`
+  skips it while the tree has moved on from the root version it
+  requires. Open: a release that keeps those replaces makes
+  `go install .../cmd/agentredact@vX` refuse it; the release has to drop
+  them from `cmd/agentredact/go.mod` before tagging, which
+  `scripts/versions.sh` does not do yet.
 - The root imports the standard library, its `secrets` module,
   `agentsession`, `openresponses` and `agentpolicy` alone. At any depth
   the build may reach only those and the two modules `agentpolicy`

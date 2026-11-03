@@ -7,8 +7,10 @@ GOVULNCHECK ?= $(GO) run golang.org/x/vuln/cmd/govulncheck@latest
 # only, which programs that never read a session import without the
 # rest of this module; the root requires it, at exactly the version the
 # whole repository is released at, through a replace pointing at the
-# tree (see replaces below).
-SUBMODULES = secrets
+# tree (see replaces below). cmd/agentredact is the command, a module of
+# its own so a module meant for go install is not the root, which
+# carries the secrets replace; it requires the root the same way.
+SUBMODULES = secrets cmd/agentredact
 
 # Every module here: the root and the nested ones. The version bump,
 # the replace check and the extracted build go over all of them, since

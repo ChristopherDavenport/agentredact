@@ -215,6 +215,14 @@ versions may break the API.
   `Result.Verdict` is a verdict of kind `eval`. A model error, an answer
   it cannot read, a flag naming an entry not shown, and the cap fail
   the review closed.
+- **Added: the `agentredact` command (#6)**, a nested module
+  (`cmd/agentredact`): `keygen` writes a key file; `redact` runs the
+  store pass under the built-in profile (`-profile`, default
+  `default@2`: home, default patterns, Claude Code identity members,
+  environment and images, plus `-rules`); `scan` runs TruffleHog and
+  records verdicts; `publish` pushes to a redacted-only store and writes
+  the manifest; `export` writes a local dataset. Every command but
+  `export` needs `-key`.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such
