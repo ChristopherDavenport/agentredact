@@ -101,6 +101,11 @@ type SessionReport struct {
 	// on every run, so the latest report says it all: see [Finding].
 	// They hold no values.
 	Findings []Finding
+	// State is the redaction's state when this run left it ([StateOf]):
+	// what Publishable holds of. A publisher holds it to the session's
+	// state when it publishes, so a report from before the session
+	// changed decides nothing.
+	State State
 	// Counts are the replacements the string redactors made in the whole
 	// redaction, by kind ([Result.Counts]), recounted on every run: a
 	// count, never a value. A manifest or a dataset card says from them
@@ -584,6 +589,7 @@ func (ps *pass) one(ctx context.Context, id string) SessionReport {
 		return rp
 	}
 	rp.UpToDate = !rp.Created && rp.Written == 0 && rp.Blobs == 0
+	rp.State = StateOf(red)
 	if ps.users[id] > 0 {
 		ps.along.Entries[id] = res.Counterparts
 	}

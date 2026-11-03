@@ -26,7 +26,8 @@ type Options struct {
 	Profile string
 	// Report is the store pass's latest report over the private store
 	// under Profile ([agentredact.RedactStore]): a session it does not
-	// say is publishable is held.
+	// say is publishable, or whose state it read is not the session's
+	// state now ([agentredact.SessionReport.State]), is held.
 	Report *agentredact.StoreReport
 	// Judges are the judges whose verdicts must clear a session at its
 	// current judged entry, such as "scan" ([agentredact.Cleared]).
@@ -108,6 +109,10 @@ func Publish(ctx context.Context, from, to agentsession.Store, opts Options) (*R
 		if err != nil {
 			hold("it could not be read")
 			errs = append(errs, err)
+			continue
+		}
+		if rp.State != agentredact.StateOf(red) {
+			hold("the report is of another state of the session: run the store pass again")
 			continue
 		}
 		if err := ownRedacted(red); err != nil {

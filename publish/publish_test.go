@@ -206,3 +206,38 @@ func TestPublishBranchAfterVerdict(t *testing.T) {
 		t.Errorf("published %+v on a verdict that did not judge the branch", res.Published)
 	}
 }
+
+// TestPublishStaleReport: a report says what was publishable in the
+// state the store pass read; one from before the session changed does
+// not publish it (review finding 2).
+func TestPublishStaleReport(t *testing.T) {
+	ctx := context.Background()
+	private := agentsession.NewMemoryStore()
+	o := session(t, "orig-stale", "first")
+	load(t, private, o)
+	old := pass(t, private)
+	e := agentsession.NewItemEntry(openresponses.UserText("second"))
+	e.Timestamp = t0.Add(5 * time.Second)
+	if _, err := private.Append(ctx, o.ID(), e); err != nil {
+		t.Fatal(err)
+	}
+	fresh := pass(t, private)
+	redID := agentredact.RedactedID(key(t), o.ID(), profile.Name)
+	red, err := private.Read(ctx, redID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := agentredact.WriteVerdict(red, agentredact.JudgedEntry(red), agentredact.Verdict{Judge: "scan", Kind: "test", Pass: true}, t0.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	load(t, private, v)
+	target := agentsession.NewMemoryStore(agentsession.MemoryRedactedOnly())
+	res, err := Publish(ctx, private, target, Options{Profile: profile.Name, Report: old, Judges: []string{"scan"}})
+	if err != nil || len(res.Published) != 0 {
+		t.Errorf("a stale report published %+v, %v", res, err)
+	}
+	if res, err = Publish(ctx, private, target, Options{Profile: profile.Name, Report: fresh, Judges: []string{"scan"}}); err != nil || len(res.Published) != 1 {
+		t.Errorf("the current report: %+v, %v", res, err)
+	}
+}

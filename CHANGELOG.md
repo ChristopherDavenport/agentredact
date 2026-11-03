@@ -157,6 +157,9 @@ versions may break the API.
   requires it to equal the session's current state, so an entry
   appended on a branch after a scan, which leaves the head in place, is
   not published on the old verdict.
+- **A report is tied to the state it read.** `SessionReport.State` is
+  the redaction's state when the run left it, and `publish.Publish`
+  holds a session whose state is not the report's.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such
