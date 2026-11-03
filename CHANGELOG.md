@@ -183,6 +183,12 @@ versions may break the API.
 - A `Key` holds its bytes behind a pointer to a type that formats as
   "…", so one in a caller's unexported field prints no byte under `%+v`
   or slog.
+- **Errors name no original.** `Redact` and `RedactStore` write each
+  native session ID an error would name as its redaction's ID.
+  `SessionReport.Original` and `WaitingOn` are private linking data
+  (JSON `private_original`, `private_waiting_on`), and
+  `StoreReport.Public` is the report with them taken out, for anywhere
+  a report is published.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

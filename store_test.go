@@ -613,8 +613,8 @@ func TestRedactStoreFailures(t *testing.T) {
 	if len(rep.Sessions) != 8 {
 		t.Errorf("%d sessions reported, want 8", len(rep.Sessions))
 	}
-	if r := got[chained.ID()]; !errors.Is(r.Err, ErrDependency) || !strings.Contains(r.Err.Error(), badFork.ID()) {
-		t.Errorf("a session merging from a stopped fork: %+v, want ErrDependency naming the fork", r)
+	if r := got[chained.ID()]; !errors.Is(r.Err, ErrDependency) || !strings.Contains(r.Err.Error(), redID(badFork.ID())) {
+		t.Errorf("a session merging from a stopped fork: %+v, want ErrDependency naming the fork's redaction", r)
 	}
 	for id, want := range map[string]error{
 		bad.ID(): agentsession.ErrKeyCollision, badFork.ID(): ErrDependency, merger.ID(): ErrDependency,

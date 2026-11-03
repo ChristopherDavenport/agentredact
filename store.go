@@ -63,8 +63,12 @@ type StoreReport struct {
 
 // SessionReport is what [RedactStore] did with one original.
 type SessionReport struct {
-	// Original is the original's ID.
-	Original string
+	// Original is the original's native ID: private linking data, the
+	// one field joining an original to its redaction, which must never
+	// be published. WaitingOn is too. [StoreReport.Public] is the
+	// report with both taken out, for anywhere a report leaves the
+	// holder of the originals.
+	Original string `json:"private_original"`
 	// Redaction is its redaction's ID, [RedactedID] of the original
 	// under the key and the profile.
 	Redaction string
@@ -89,7 +93,7 @@ type SessionReport struct {
 	// session it depends on that waits itself. Waiting is not a failure:
 	// once that session arrives a later run redacts this one, and until
 	// then every run reports it.
-	WaitingOn string
+	WaitingOn string `json:"private_waiting_on"`
 	// Native counts the redaction's own entries that carry no redacted:
 	// appended natively, by a writer who resumed the redaction. A store
 	// set to hold only redacted entries refuses such a session, so it
@@ -122,6 +126,23 @@ type SessionReport struct {
 	Err error
 
 	accept map[FindingKind]bool
+}
+
+// Public is a copy of r for anywhere it leaves the holder of the
+// originals: every session named by its redaction alone, Original
+// emptied and WaitingOn the redaction of the session waited on. A
+// report written to a published place is this, never r.
+func (r *StoreReport) Public(key Key) *StoreReport {
+	out := *r
+	out.Sessions = make([]SessionReport, len(r.Sessions))
+	for i, s := range r.Sessions {
+		s.Original = ""
+		if s.WaitingOn != "" {
+			s.WaitingOn = RedactedID(key, s.WaitingOn, r.Profile)
+		}
+		out.Sessions[i] = s
+	}
+	return &out
 }
 
 // Publishable reports whether the redaction is written and up to date
@@ -260,7 +281,7 @@ func RedactStore(ctx context.Context, st agentsession.Store, p Profile, key Key,
 			return ps.report, errors.Join(append(ps.errs(), err)...)
 		}
 		rp := ps.one(ctx, id)
-		rp.Err = scrubErr(rp.Err, nil)
+		rp.Err = scrubErr(rp.Err, nil, ps.native())
 		ps.report.Sessions = append(ps.report.Sessions, rp)
 		switch {
 		case rp.Err != nil:
@@ -275,11 +296,13 @@ func RedactStore(ctx context.Context, st agentsession.Store, p Profile, key Key,
 
 // pass is one run of [RedactStore].
 type pass struct {
-	st     agentsession.Store
-	p      Profile
-	key    Key
-	report *StoreReport
-	accept map[FindingKind]bool
+	// nativeIDs maps each original's ID to its redaction's, for errors.
+	nativeIDs map[string]string
+	st        agentsession.Store
+	p         Profile
+	key       Key
+	report    *StoreReport
+	accept    map[FindingKind]bool
 	// heads are the originals the store holds, by ID.
 	heads map[string]agentsession.Header
 	// deps are what each session depends on, as the plan read it.
@@ -319,7 +342,7 @@ func (ps *pass) errs() []error {
 	var errs []error
 	for _, rp := range ps.report.Sessions {
 		if rp.Err != nil {
-			errs = append(errs, fmt.Errorf("agentredact: session %s: %w", rp.Original, rp.Err))
+			errs = append(errs, fmt.Errorf("agentredact: redaction %s: %w", rp.Redaction, rp.Err))
 		}
 	}
 	return errs
@@ -428,10 +451,22 @@ func (ps *pass) plan(ctx context.Context, sel func(agentsession.Header) bool) ([
 // fail reports the original id as not redacted, for err.
 func (ps *pass) fail(id string, err error) {
 	ps.failed[id] = true
-	ps.report.Sessions = append(ps.report.Sessions, SessionReport{Original: id, Redaction: ps.redID(id), Err: scrubErr(err, nil), accept: ps.accept})
+	ps.report.Sessions = append(ps.report.Sessions, SessionReport{Original: id, Redaction: ps.redID(id), Err: scrubErr(err, nil, ps.native()), accept: ps.accept})
 }
 
 func (ps *pass) redID(id string) string { return RedactedID(ps.key, id, ps.p.Name) }
+
+// native maps every original the store lists to its redaction's ID, for
+// errors to name sessions by.
+func (ps *pass) native() map[string]string {
+	if ps.nativeIDs == nil {
+		ps.nativeIDs = map[string]string{}
+		for id := range ps.heads {
+			ps.nativeIDs[id] = ps.redID(id)
+		}
+	}
+	return ps.nativeIDs
+}
 
 // resolve reads a session a redaction names, for
 // [agentsession.RedactionNames] to verify whether it is a redaction
@@ -736,7 +771,7 @@ func (ps *pass) blobTypes(ctx context.Context, rp *SessionReport, res *Result, o
 		}
 		if orig == nil {
 			if orig, err = typer.SessionBlobTypes(ctx, original); err != nil {
-				rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: reading the original's media types: %w", err), nil).Error())
+				rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: reading the original's media types: %w", err), nil, ps.native()).Error())
 				return
 			}
 		}
@@ -748,7 +783,7 @@ func (ps *pass) blobTypes(ctx context.Context, rp *SessionReport, res *Result, o
 		return
 	}
 	if err := typer.SetSessionBlobTypes(ctx, rp.Redaction, types); err != nil {
-		rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: setting the redaction's media types: %w", err), nil).Error())
+		rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: setting the redaction's media types: %w", err), nil, ps.native()).Error())
 	}
 }
 
@@ -771,17 +806,17 @@ func (ps *pass) setHead(ctx context.Context, rp *SessionReport, red *agentsessio
 	}
 	var buf bytes.Buffer
 	if err := agentsession.Write(&buf, red); err != nil {
-		rp.Warnings = append(rp.Warnings, scrubErr(err, nil).Error())
+		rp.Warnings = append(rp.Warnings, scrubErr(err, nil, ps.native()).Error())
 		return
 	}
 	file, err := agentsession.Read(&buf)
 	if err != nil {
-		rp.Warnings = append(rp.Warnings, scrubErr(err, nil).Error())
+		rp.Warnings = append(rp.Warnings, scrubErr(err, nil, ps.native()).Error())
 		return
 	}
 	held, err := ps.read(ctx, rp.Redaction)
 	if err != nil {
-		rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: reading the head: %w", err), nil).Error())
+		rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: reading the head: %w", err), nil, ps.native()).Error())
 		return
 	}
 	want, got := file.Leaf(), held.Leaf()
@@ -789,7 +824,7 @@ func (ps *pass) setHead(ctx context.Context, rp *SessionReport, red *agentsessio
 		return
 	}
 	if err := hs.SetHead(ctx, rp.Redaction, got, want); err != nil {
-		rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: setting the head: %w", err), nil).Error())
+		rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: setting the head: %w", err), nil, ps.native()).Error())
 	}
 }
 
@@ -803,7 +838,7 @@ type releaser interface {
 func (ps *pass) release(rp *SessionReport) {
 	if rl, ok := ps.st.(releaser); ok {
 		if err := rl.Release(rp.Redaction); err != nil {
-			rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: releasing the redaction: %w", err), nil).Error())
+			rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: releasing the redaction: %w", err), nil, ps.native()).Error())
 		}
 	}
 }

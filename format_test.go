@@ -552,3 +552,61 @@ func TestKeyInsideAStruct(t *testing.T) {
 
 // keyBytes are k's bytes, for tests that look for them in output.
 func keyBytes(k Key) []byte { return k.bytes() }
+
+// TestErrorsNameNoOriginal: an error names a session by its redaction,
+// never by the original's native ID, in Redact and in the store pass
+// (review finding 7).
+func TestErrorsNameNoOriginal(t *testing.T) {
+	c := &clock{}
+	orig := plainOriginal(t, c)
+	p := testProfile()
+	red := redact(t, p, orig, nil).Session
+	short := newOriginal(orig.ID())
+	appendAt(t, short, &clock{}, user("x"))
+	_, err := Redact(p, testKey, short, red)
+	if err == nil || strings.Contains(err.Error(), orig.ID()) {
+		t.Errorf("a stale original: %v", err)
+	}
+	f := fork(t, orig, agentsession.FileOrder(orig)[2].Base().ID, "orig-native-fork-id")
+	if _, err := Redact(p, testKey, f, nil, WithOrigin(&Origin{Original: short, Redaction: red})); err == nil || strings.Contains(err.Error(), "orig-native-fork-id") || strings.Contains(err.Error(), orig.ID()) {
+		t.Errorf("a fork of another origin: %v", err)
+	}
+	st := agentsession.NewMemoryStore()
+	bad := newOriginal("orig-native-bad")
+	early := appendAt(t, bad, c, user("first"))
+	appendAt(t, bad, c, &agentsession.CustomEntry{NS: "fake.notes", Data: json.RawMessage(`{"` + fakePassword + `":1,"[REDACTED#1]":2}`)})
+	merger := newOriginal("orig-native-merger")
+	conv := user("merged")
+	conv.Parents = []agentsession.EntryRef{{Session: bad.ID(), Entry: early}}
+	appendAt(t, merger, c, conv)
+	load(t, st, bad, merger)
+	_, err = RedactStore(context.Background(), st, p, testKey, StoreOptions{})
+	if err == nil || strings.Contains(err.Error(), "orig-native") {
+		t.Errorf("the store pass: %v", err)
+	}
+}
+
+// TestPublicReport: a report that leaves names no original, by field or
+// in its JSON (review finding 7).
+func TestPublicReport(t *testing.T) {
+	st := agentsession.NewMemoryStore()
+	c := &clock{}
+	o := newOriginal("orig-native-report")
+	appendAt(t, o, c, user("hello"))
+	w := newOriginal("orig-native-waiter")
+	e := user("merged")
+	e.Parents = []agentsession.EntryRef{{Session: "orig-native-absent", Entry: agentsession.HashText("x")}}
+	appendAt(t, w, c, e)
+	load(t, st, o, w)
+	rep := redactStore(t, st, testProfile(), StoreOptions{})
+	data, err := json.Marshal(rep.Public(testKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "orig-native") {
+		t.Errorf("the public report names an original: %s", data)
+	}
+	if priv, _ := json.Marshal(rep); !strings.Contains(string(priv), `"private_original":"orig-native-report"`) {
+		t.Errorf("the private report does not mark the original as private: %s", priv)
+	}
+}

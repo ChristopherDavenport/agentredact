@@ -345,7 +345,7 @@ var ErrUnmappedRef = errors.New("agentredact: a reference into a session redacte
 func Redact(p Profile, key Key, original, existing *agentsession.Session, opts ...Option) (*Result, error) {
 	res, err := redactSession(p, key, original, existing, opts)
 	if err != nil {
-		return nil, scrubErr(err, original)
+		return nil, scrubErr(err, original, nativeIDs(key, p.Name, original, opts))
 	}
 	return res, nil
 }
@@ -733,6 +733,37 @@ func entryErr(origID string, pos int, e agentsession.Entry, err error) error {
 	return fmt.Errorf("agentredact: redacting %s, entry %d (%s): %w", origID, pos, e.EntryType(), err)
 }
 
+// nativeIDs maps each native session ID an error of a redaction of
+// original could name, its own, those it names and its origins', to the
+// ID of its redaction under key and profile.
+func nativeIDs(key Key, profile string, original *agentsession.Session, opts []Option) map[string]string {
+	ids := map[string]string{}
+	add := func(s *agentsession.Session) {
+		if s == nil {
+			return
+		}
+		for _, id := range agentsession.SessionIDsNamed(s) {
+			ids[id] = RedactedID(key, id, profile)
+		}
+	}
+	add(original)
+	var o options
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	for org := o.origin; org != nil; org = org.Origin {
+		add(org.Original)
+	}
+	for id := range ids {
+		if ids[id] == "" {
+			delete(ids, id)
+		}
+	}
+	return ids
+}
+
 // quietRewriteErr is err, from a rewrite, with a message that quotes no
 // original text: agentsession's ErrKeyCollision names the two member
 // names a rewrite made one, as written in the original, and an error
@@ -761,11 +792,27 @@ func (e *scrubbed) Unwrap() error { return e.err }
 // named by its position in original's file order instead, and every
 // other hash elided. Nil, and an error naming no hash, come back as they
 // are.
-func scrubErr(err error, original *agentsession.Session) error {
+//
+// ids, when not nil, names each native session ID to write in place of
+// one the message names: its redaction's ID, so no error names an
+// original session, which a native ID does to anyone holding the
+// harness's own logs.
+func scrubErr(err error, original *agentsession.Session, ids map[string]string) error {
 	if err == nil {
 		return nil
 	}
 	msg := err.Error()
+	if len(ids) > 0 {
+		pairs := make([]string, 0, 2*len(ids))
+		for _, id := range slices.SortedFunc(maps.Keys(ids), func(a, b string) int { return len(b) - len(a) }) {
+			if id != "" {
+				pairs = append(pairs, id, ids[id])
+			}
+		}
+		if now := strings.NewReplacer(pairs...).Replace(msg); now != msg {
+			return scrubErr(&scrubbed{msg: now, err: err}, original, nil)
+		}
+	}
 	if !hashRef.MatchString(msg) {
 		return err
 	}
