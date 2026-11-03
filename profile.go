@@ -14,7 +14,21 @@ import (
 // and no dependence on map order, since a response ID and an
 // instruction part's text are named across entries by their value, and
 // a rerun must write what it wrote before.
-type StringRedactor func(string) string
+//
+// ph numbers the placeholders of the redacted session being written
+// ([Placeholders]); a redactor that replaces values with a placeholder
+// of its own writes it with ph.For, so two distinct values are never
+// written alike. ph is nil outside a redaction, and a redactor that
+// writes no placeholder ignores it ([Plain]).
+type StringRedactor func(s string, ph *Placeholders) string
+
+// Plain adapts a function that writes no numbered placeholder to a
+// [StringRedactor]. A function replacing several distinct values with
+// one fixed text can make two instruction layer ids one, which
+// agentsession refuses ([agentsession.ErrLayersMerged]).
+func Plain(f func(string) string) StringRedactor {
+	return func(s string, _ *Placeholders) string { return f(s) }
+}
 
 // Profile is a named, versioned set of redactors. Its name is written
 // to a redacted session's redacted_from.profile and goes into the
@@ -140,17 +154,17 @@ func (p Profile) StringFunc() StringRedactor {
 // server-sent event.
 func Chain(rs ...StringRedactor) StringRedactor {
 	rs = append([]StringRedactor(nil), rs...)
-	apply := func(s string) string {
+	apply := func(s string, ph *Placeholders) string {
 		for _, r := range rs {
-			s = r(s)
+			s = r(s, ph)
 		}
 		return s
 	}
-	return func(s string) string {
+	return func(s string, ph *Placeholders) string {
 		if meta, payload, ok := splitBase64DataURL(s); ok {
-			return s[:len("data:")] + apply(meta) + "," + payload
+			return s[:len("data:")] + apply(meta, ph) + "," + payload
 		}
-		return apply(s)
+		return apply(s, ph)
 	}
 }
 

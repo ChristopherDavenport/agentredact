@@ -60,8 +60,11 @@ type redaction struct {
 	resolve func(id string) (*agentsession.Session, error)
 	// names derives the redaction's own ID, its redacted_from and the ID
 	// every reference to a session is re-pointed to.
-	names    *agentsession.RedactionNames
-	f        StringRedactor
+	names *agentsession.RedactionNames
+	// ph numbers the placeholders the string redactors write, and f is
+	// the profile's string redactors joined, writing through ph.
+	ph       *Placeholders
+	f        func(string) string
 	original *agentsession.Session
 	order    []agentsession.Entry
 	origID   string

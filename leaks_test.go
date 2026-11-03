@@ -200,7 +200,7 @@ func TestWorkspaceKindRedacted(t *testing.T) {
 	if bytes.Contains(fileOf(t, res.Session), []byte("corp-buildfarm-7")) {
 		t.Errorf("the kind was kept:\n%s", fileOf(t, res.Session))
 	}
-	if got := res.Session.Entries()[0].(*agentsession.EnvEntry).Workspace; got == nil || got.Kind != SecretReplacement {
+	if got := res.Session.Entries()[0].(*agentsession.EnvEntry).Workspace; got == nil || got.Kind != "[REDACTED#1]" {
 		t.Errorf("workspace %+v", got)
 	}
 }

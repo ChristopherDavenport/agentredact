@@ -205,7 +205,7 @@ func wantInstructions(t *testing.T, red *agentsession.Session, want string) {
 	}
 }
 
-const partsRedacted = "Never print [REDACTED openai_key].\n\nThe password is [REDACTED].\n\nYou work in ~/project."
+const partsRedacted = "Never print [REDACTED openai_key#1].\n\nThe password is [REDACTED#1].\n\nYou work in ~/project."
 
 // TestRedactPartsByHash: parts named by hash resolve to the rewritten
 // texts, in a fresh redaction and in one resumed past the entry that
@@ -722,9 +722,9 @@ func TestRedactWrapsAgentsessionErrors(t *testing.T) {
 	env.AddRead("/a/two", agentsession.HashText("2"))
 	appendAt(t, s, c, user("first"))
 	id := appendAt(t, s, c, env)
-	p := Profile{Name: "collide@1", Strings: []StringRedactor{func(s string) string {
+	p := Profile{Name: "collide@1", Strings: []StringRedactor{Plain(func(s string) string {
 		return strings.NewReplacer("one", "x", "two", "x").Replace(s)
-	}}}
+	})}}
 	_, err := Redact(p, testKey, s, nil)
 	if !errors.Is(err, agentsession.ErrKeyCollision) {
 		t.Fatalf("err %v, want ErrKeyCollision", err)
@@ -771,7 +771,7 @@ func TestChainLeavesBase64DataURLs(t *testing.T) {
 		{"data:x;token=" + fakeKey + ";base64,AA", "data:x;token=[REDACTED openai_key];base64,AA"},
 		{"data:application/pdf;name=AAA.pdf;base64,AAA", "data:application/pdf;name=[REDACTED].pdf;base64,AAA"},
 	} {
-		if got := r(tt.in); got != tt.want {
+		if got := r(tt.in, nil); got != tt.want {
 			t.Errorf("Chain(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
@@ -788,7 +788,7 @@ func TestRedactLeavesDataURLsWithoutImages(t *testing.T) {
 		t.Fatalf("the payload is not base64: %v", err)
 	}
 	url := "data:image/png;base64," + payload
-	if DefaultPatterns()(url) == url {
+	if DefaultPatterns()(url, nil) == url {
 		t.Fatal("the payload holds no pattern match; the case proves nothing")
 	}
 	c := &clock{}
@@ -804,7 +804,7 @@ func TestRedactLeavesDataURLsWithoutImages(t *testing.T) {
 	if got := m.Content[1].(*openresponses.InputImage).ImageURL; got != url {
 		t.Errorf("image_url %q, want %q", got, url)
 	}
-	if got := m.Content[0].(*openresponses.InputText).Text; got != "key [REDACTED openai_key]" {
+	if got := m.Content[0].(*openresponses.InputText).Text; got != "key [REDACTED openai_key#1]" {
 		t.Errorf("text %q", got)
 	}
 }

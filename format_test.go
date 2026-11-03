@@ -240,3 +240,70 @@ func TestKeyFile(t *testing.T) {
 		t.Errorf("a file holding no key: %v, want ErrKeyFile", err)
 	}
 }
+
+// TestLayersStayDistinct: two instruction layer ids of one message that
+// one pattern matches are written as two placeholders, so the layers
+// stay distinct and the session writes (RFC 0001 0.18, #20), however
+// many entries apart the values are met.
+func TestLayersStayDistinct(t *testing.T) {
+	c := &clock{}
+	s := newOriginal("orig-layers")
+	one, two := "sk-test-1111111111111111111111111111", "sk-test-2222222222222222222222222222"
+	appendAt(t, s, c, user("the second key is "+two))
+	layered := user("two layers")
+	layered.InstructionsLayers = []agentsession.LayerRef{
+		{ID: "/fake/" + one + "/AGENTS.md", Source: agentsession.LayerAgentsMD},
+		{ID: "/fake/" + two + "/AGENTS.md", Source: agentsession.LayerAgentsMD},
+	}
+	appendAt(t, s, c, layered)
+	turn(t, s, c, "resp-1", "ok")
+	res := redact(t, testProfile(), s, nil)
+	it := agentsession.FileOrder(readBack(t, res.Session))[1].(*agentsession.ItemEntry)
+	want := []agentsession.LayerRef{
+		{ID: "/fake/[REDACTED openai_key#2]/AGENTS.md", Source: agentsession.LayerAgentsMD},
+		{ID: "/fake/[REDACTED openai_key#1]/AGENTS.md", Source: agentsession.LayerAgentsMD},
+	}
+	if !reflect.DeepEqual(it.InstructionsLayers, want) {
+		t.Errorf("layers %+v, want %+v", it.InstructionsLayers, want)
+	}
+	first := agentsession.FileOrder(res.Session)[0].(*agentsession.ItemEntry)
+	if text := first.Item.(*openresponses.Message).Content[0].(*openresponses.InputText).Text; text != "the second key is [REDACTED openai_key#1]" {
+		t.Errorf("first text %q", text)
+	}
+	// Resumed after the first entry, the numbering is the fresh one's.
+	lines := bytes.SplitAfter(fileOf(t, s), []byte("\n"))
+	early, err := agentsession.Read(bytes.NewReader(bytes.Join(lines[:2], nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grown := redact(t, testProfile(), s, redact(t, testProfile(), early, nil).Session)
+	if a, b := fileOf(t, grown.Session), fileOf(t, res.Session); !bytes.Equal(a, b) {
+		t.Errorf("the resumed redaction differs from a fresh one:\n%s\n---\n%s", a, b)
+	}
+}
+
+// TestForkContinuesNumbering: a fork redacted as a fork of its origin's
+// redaction names a value its shared prefix holds by the prefix's
+// placeholder, though the origin met another value first on a branch
+// off the fork's path.
+func TestForkContinuesNumbering(t *testing.T) {
+	c := &clock{}
+	one, two := "sk-test-1111111111111111111111111111", "sk-test-2222222222222222222222222222"
+	o := newOriginal("orig-numbered")
+	userAt(t, o, c, "", "an abandoned branch holding "+one)
+	o.ResetLeaf()
+	userAt(t, o, c, "", "a branch holding "+two) // a second first entry
+	base := turn(t, o, c, "resp-1", "ok")
+	f := fork(t, o, base, "orig-numbered-fork")
+	appendAt(t, f, c, user("on the fork, "+two))
+	turn(t, f, c, "resp-f", "forked")
+	p := testProfile()
+	ro := redact(t, p, o, nil)
+	if !bytes.Contains(fileOf(t, ro.Session), []byte("a branch holding [REDACTED openai_key#2]")) {
+		t.Fatalf("the origin's redaction does not number the second key 2:\n%s", fileOf(t, ro.Session))
+	}
+	rf := redactFork(t, p, f, nil, &Origin{Original: o, Redaction: ro.Session})
+	if file := fileOf(t, rf.Session); !bytes.Contains(file, []byte("on the fork, [REDACTED openai_key#2]")) {
+		t.Errorf("the fork names the prefix's key otherwise:\n%s", file)
+	}
+}

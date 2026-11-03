@@ -72,6 +72,19 @@ versions may break the API.
   origin never dispatched failed with `ErrAnswerNotDispatched` mid-build.
   A fork redacted as a fork of its origin's redaction keeps the base and
   the promise.
+- **Breaking: numbered placeholders (#20).** In a redaction `Secrets`
+  writes `[REDACTED#<n>]` and `Patterns` `[REDACTED <name>#<n>]`, n
+  numbering the distinct values of that kind in the redacted session in
+  the order met (`Placeholders`, `NewPlaceholders`), so two instruction
+  layer ids holding different values of one kind stay distinct and
+  agentsession's `ErrLayersMerged` does not fire, and a reader can tell
+  equal values apart from different ones. A resume numbers as a fresh
+  redaction does, and a fork of an origin's redaction continues its
+  origin's numbering at the base. `StringRedactor` is now `func(s
+  string, ph *Placeholders) string`; `Plain` adapts a `func(string)
+  string`. Outside a redaction (nil `ph`) the placeholders are
+  unnumbered, as before. This changes what every profile using
+  `Secrets` or `Patterns` writes.
 - Tests: a custom entry carrying a call's `call_id` leaves with the call
   (RFC 0001 0.15), and a compaction keeps its `trust` when its entries
   are left out.

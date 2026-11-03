@@ -582,7 +582,7 @@ func TestRedactStoreFailures(t *testing.T) {
 	bad := newOriginal("orig-bad")
 	early := appendAt(t, bad, c, user("first"))
 	// Two member names the redaction makes one: refused.
-	appendAt(t, bad, c, &agentsession.CustomEntry{NS: "fake.notes", Data: json.RawMessage(`{"` + fakePassword + `":1,"` + SecretReplacement + `":2}`)})
+	appendAt(t, bad, c, &agentsession.CustomEntry{NS: "fake.notes", Data: json.RawMessage(`{"` + fakePassword + `":1,"[REDACTED#1]":2}`)})
 	badFork := fork(t, bad, early, "orig-bad-fork")
 	onFork := appendAt(t, badFork, c, user("on the fork"))
 	chained := newOriginal("orig-chained") // merges from the fork: stopped two steps away

@@ -165,7 +165,7 @@ func ParseRules(r io.Reader) (StringRedactor, error) {
 		}
 		regexes = append(regexes, rule{re: re, template: tmpl})
 	}
-	return func(s string) string {
+	return func(s string, _ *Placeholders) string {
 		for _, l := range literals {
 			s = strings.ReplaceAll(s, l.literal, l.repl)
 		}

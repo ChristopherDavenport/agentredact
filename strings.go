@@ -3,31 +3,60 @@ package agentredact
 import (
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/ChristopherDavenport/agentpolicy/guard"
 	"github.com/ChristopherDavenport/agentredact/secrets"
 )
 
-// SecretReplacement is what [Secrets] writes in place of each value.
+// SecretReplacement is what [Secrets] writes in place of each value
+// outside a redaction; in one it writes "[REDACTED#<n>]", n numbering
+// the distinct values it replaced in the redacted session
+// ([Placeholders]).
 const SecretReplacement = "[REDACTED]"
 
-// Secrets replaces every occurrence of each value with
-// [SecretReplacement]. Empty values are skipped. Longer values are
-// replaced first, so a value holding another is not left half
-// redacted; values of one length go in byte order, so the order the
-// caller lists them in does not change the output. Each value is
-// replaced in what the longer ones left. Values are matched as
-// written: a session's strings reach a redactor decoded, so their JSON
-// spellings are not looked for here. It is the secrets package's
-// Redactor, exact and with one placeholder for every value, which the
-// programs that redact a stream, a JSON one among them, use directly.
+// Secrets replaces every occurrence of each value with a placeholder:
+// ph.For("", value), "[REDACTED#<n>]" in a redaction, so two values are
+// two placeholders, and [SecretReplacement] outside one. Empty values
+// are skipped. Longer values are replaced first, so a value holding
+// another is not left half redacted; values of one length go in byte
+// order, so the order the caller lists them in does not change the
+// output. Each value is replaced in what the longer ones left. Values
+// are matched as written: a session's strings reach a redactor decoded,
+// so their JSON spellings are not looked for here. Outside a redaction
+// it is the secrets package's Redactor, exact and with one placeholder
+// for every value, which the programs that redact a stream, a JSON one
+// among them, use directly.
 func Secrets(values ...string) StringRedactor {
 	byValue := make(map[string]string, len(values))
 	for _, v := range values {
 		byValue[v] = v
 	}
-	return secrets.New(byValue, secrets.Exact(), secrets.WithPlaceholder(func(string) string { return SecretReplacement })).String
+	plain := secrets.New(byValue, secrets.Exact(), secrets.WithPlaceholder(func(string) string { return SecretReplacement }))
+	ordered := make([]string, 0, len(byValue))
+	for v := range byValue {
+		if v != "" {
+			ordered = append(ordered, v)
+		}
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if len(ordered[i]) != len(ordered[j]) {
+			return len(ordered[i]) > len(ordered[j])
+		}
+		return ordered[i] < ordered[j]
+	})
+	return func(s string, ph *Placeholders) string {
+		if ph == nil {
+			return plain.String(s)
+		}
+		for _, v := range ordered {
+			if strings.Contains(s, v) {
+				s = strings.ReplaceAll(s, v, ph.For("", v))
+			}
+		}
+		return s
+	}
 }
 
 // HomePaths shortens paths under the home directory home: home followed
@@ -64,9 +93,9 @@ func HomePaths(home string) StringRedactor {
 	}
 	re := homePattern(home)
 	if re == nil {
-		return func(s string) string { return s }
+		return func(s string, _ *Placeholders) string { return s }
 	}
-	return func(s string) string {
+	return func(s string, _ *Placeholders) string {
 		matches := re.FindAllStringIndex(s, -1)
 		if matches == nil {
 			return s
@@ -136,8 +165,10 @@ func continuesSegment(c byte) bool {
 }
 
 // Patterns replaces each match of each pattern, in order, with
-// "[REDACTED <name>]", as agentpolicy's guard.Redact writes a match,
-// each pattern applied to what the earlier ones left. With no patterns
+// "[REDACTED <name>]", as agentpolicy's guard.Redact writes a match, or
+// in a redaction "[REDACTED <name>#<n>]", n numbering the distinct
+// matches of that name in the redacted session ([Placeholders]), each
+// pattern applied to what the earlier ones left. With no patterns
 // it changes nothing; [DefaultPatterns] is the default set. A pattern
 // with no Regexp panics here, when the redactor is made, rather than
 // being skipped, since a skipped pattern is a secret passed.
@@ -149,9 +180,9 @@ func Patterns(patterns ...guard.Pattern) StringRedactor {
 			panic("agentredact: pattern " + p.Name + " has no Regexp")
 		}
 	}
-	return func(s string) string {
+	return func(s string, ph *Placeholders) string {
 		for _, p := range ps {
-			s = p.Regexp.ReplaceAllLiteralString(s, "[REDACTED "+p.Name+"]")
+			s = p.Regexp.ReplaceAllStringFunc(s, func(m string) string { return ph.For(p.Name, m) })
 		}
 		return s
 	}

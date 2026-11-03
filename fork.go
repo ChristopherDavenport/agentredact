@@ -94,7 +94,7 @@ func (r *redaction) forkFrom(o *Origin) error {
 	case h.ParentSession != o.Original.ID():
 		return fmt.Errorf("agentredact: %s is a fork of %q, not of %s", r.origID, h.ParentSession, o.Original.ID())
 	}
-	state, err := originState(r, o, h.Base)
+	state, ph, err := originState(r, o, h.Base)
 	if err != nil {
 		return fmt.Errorf("agentredact: %s as a fork of %s: %w", r.origID, o.Redaction.ID(), err)
 	}
@@ -127,21 +127,26 @@ func (r *redaction) forkFrom(o *Origin) error {
 	}
 	r.fork, r.base = true, base
 	r.originRedID = o.Redaction.ID()
+	r.ph = ph // the numbering the origin's redaction reached at the base
 	return nil
 }
 
 // originState replays the redaction of o.Original into o.Redaction up
 // to the entry base, and returns what it made of each entry up to
-// there. Nothing is written to o.Redaction.
-func originState(fork *redaction, o *Origin, base string) (map[string]*placed, error) {
+// there, and the numbering of its placeholders there. Nothing is
+// written to o.Redaction.
+func originState(fork *redaction, o *Origin, base string) (map[string]*placed, *Placeholders, error) {
 	r, err := newRedaction(fork.p, fork.key, o.Original, fork.along, fork.resolve)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if o.Origin != nil {
 		if err := r.forkFrom(o.Origin); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+	}
+	if _, _, err := r.header(); err != nil { // numbered first, as the origin's redaction did
+		return nil, nil, err
 	}
 	pos := 0
 	for i, e := range r.order {
@@ -151,27 +156,27 @@ func originState(fork *redaction, o *Origin, base string) (map[string]*placed, e
 		}
 	}
 	if pos == 0 {
-		return nil, fmt.Errorf("%w: the origin %s does not hold the fork's base", agentsession.ErrNoEntry, r.origID)
+		return nil, nil, fmt.Errorf("%w: the origin %s does not hold the fork's base", agentsession.ErrNoEntry, r.origID)
 	}
 	if err := r.resume(o.Redaction); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	r.red = o.Redaction
 	r.res = &Result{Session: r.red, Blobs: map[string]Blob{}}
 	if r.out, err = r.sessions(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := r.checkSessions(r.out); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	r.lastTS = o.Original.Header().CreatedAt
 	behind := r.done < pos
 	r.done = max(r.done, pos) // replay it all: never write to the origin's redaction
 	if err := r.walk(pos, false); err != nil {
 		if behind && errors.Is(err, ErrResumeDiverged) {
-			return nil, fmt.Errorf("%w: %w", ErrOriginBehind, err)
+			return nil, nil, fmt.Errorf("%w: %w", ErrOriginBehind, err)
 		}
-		return nil, err
+		return nil, nil, err
 	}
-	return r.placed, nil
+	return r.placed, r.ph.clone(), nil
 }

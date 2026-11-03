@@ -353,11 +353,13 @@ func redactSession(p Profile, key Key, original, existing *agentsession.Session,
 			return nil, err
 		}
 	}
+	// The header goes through the string redactors on a resume too, so
+	// the placeholders are numbered as a fresh redaction numbers them.
+	h, headerFindings, err := r.header()
+	if err != nil {
+		return nil, err
+	}
 	if existing == nil {
-		h, err := redactedHeader(p, original.Header(), r.names, r.f, r.remap(nil))
-		if err != nil {
-			return nil, err
-		}
 		if r.red, err = r.newSession(h, o.origin); err != nil {
 			return nil, err
 		}
@@ -374,7 +376,7 @@ func redactSession(p Profile, key Key, original, existing *agentsession.Session,
 	if err := r.checkSessions(r.out); err != nil {
 		return nil, err
 	}
-	r.res.Findings = append(r.res.Findings, headerNames(original.Header(), r.f)...)
+	r.res.Findings = append(r.res.Findings, headerFindings...)
 	r.lastTS = original.Header().CreatedAt
 	if err := r.walk(len(r.order), true); err != nil {
 		return nil, err
@@ -416,7 +418,6 @@ func newRedaction(p Profile, key Key, original *agentsession.Session, along Alon
 		key:      key,
 		resolve:  resolve,
 		names:    names,
-		f:        p.StringFunc(),
 		original: original,
 		order:    agentsession.FileOrder(original),
 		origID:   original.ID(),
@@ -424,6 +425,9 @@ func newRedaction(p Profile, key Key, original *agentsession.Session, along Alon
 		along:    along,
 	}
 	r.redID = names.ID()
+	r.ph = NewPlaceholders()
+	chain := p.StringFunc()
+	r.f = func(s string) string { return chain(s, r.ph) }
 	r.rw = agentsession.NewRewriter(r.f).Alongside(r.alongside)
 	return r, nil
 }
@@ -538,12 +542,23 @@ func writeUnmet(body agentsession.Entry, unmet []agentsession.UnmetPart) error {
 	return nil
 }
 
+// header is the header a new redaction writes, and what the header
+// keeps that must be reported. It is computed on every call, resumed or
+// not, before any entry, so the placeholders are numbered alike.
+func (r *redaction) header() (agentsession.Header, []Finding, error) {
+	h, err := redactedHeader(r.p, r.original.Header(), r.names, r.f, r.remap(nil))
+	if err != nil {
+		return agentsession.Header{}, nil, err
+	}
+	return h, headerNames(r.original.Header(), r.f), nil
+}
+
 // redactedHeader is the header of a new redaction of the original whose
 // header is h, its text rewritten by f through
 // [agentsession.RewriteHeaderStrings], its session references
 // re-pointed through remap, and its ID and redacted_from those names
 // derives.
-func redactedHeader(p Profile, h agentsession.Header, names *agentsession.RedactionNames, f StringRedactor, remap agentsession.Remap) (agentsession.Header, error) {
+func redactedHeader(p Profile, h agentsession.Header, names *agentsession.RedactionNames, f func(string) string, remap agentsession.Remap) (agentsession.Header, error) {
 	src := h
 	if _, ok := src.Extra["redacted_from"]; ok {
 		// A member in another form, from before 0.13: this header writes
@@ -590,7 +605,7 @@ func redactedHeader(p Profile, h agentsession.Header, names *agentsession.Redact
 // ([agentsession.RewriteHeaderStrings]), so such a name is kept: a
 // finding of the whole session, at position 0, naming neither the
 // member nor what f matched.
-func headerNames(h agentsession.Header, f StringRedactor) []Finding {
+func headerNames(h agentsession.Header, f func(string) string) []Finding {
 	var out []Finding
 	for _, k := range slices.Sorted(maps.Keys(h.Extra)) {
 		if k != "redacted_from" && f(k) != k {

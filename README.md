@@ -81,6 +81,25 @@ then leads to no published redaction.
 
 A profile names one set of rules; change the rules and bump the
 version, or two redactions end up mixed in one session.
+
+### Placeholders
+
+In a redaction, `Secrets` and `Patterns` number what they replace:
+`[REDACTED#<n>]` for a secret value and `[REDACTED <name>#<n>]` for a
+pattern match, n counting from 1 the distinct values of that kind in
+the redacted session (`Placeholders`). One value is one placeholder
+throughout a session and two values are two, so a reader can tell that
+two redacted values were equal, and two instruction layer ids holding
+different secrets stay distinct, as RFC 0001 0.18 requires
+(`agentsession.ErrLayersMerged`). The numbers follow the order the
+values are met, header first and then the original's entries in file
+order, so a resumed redaction numbers as a fresh one does, and a fork
+redacted as a fork of its origin's redaction continues its origin's
+numbering at the base. Outside a redaction (a nil `*Placeholders`)
+they write `[REDACTED]` and `[REDACTED <name>]`. A `StringRedactor` is
+`func(s string, ph *Placeholders) string`; `Plain` adapts a function
+that ignores `ph`. A rules file's replacements are written as given and
+not numbered.
 `ParseRules` reads a rules file in git-filter-repo's `--replace-text`
 form (`literal==>replacement`, `regex:pattern==>replacement`,
 `glob:pattern==>replacement`, a bare line for `***REMOVED***`).

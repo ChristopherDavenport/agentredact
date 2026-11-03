@@ -48,17 +48,17 @@ func TestSecrets(t *testing.T) {
 		{"fake-token and fake", "[REDACTED] and [REDACTED]"},
 		{"fakefake", "[REDACTED][REDACTED]"},
 	} {
-		if got := r(tt.in); got != tt.want {
+		if got := r(tt.in, nil); got != tt.want {
 			t.Errorf("Secrets(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 	// The order the values are listed in does not change the output.
-	a := Secrets("ab", "bc")("xabcx")
-	b := Secrets("bc", "ab")("xabcx")
+	a := Secrets("ab", "bc")("xabcx", nil)
+	b := Secrets("bc", "ab")("xabcx", nil)
 	if a != b {
 		t.Errorf("order dependent: %q vs %q", a, b)
 	}
-	if got := Secrets()("unchanged"); got != "unchanged" {
+	if got := Secrets()("unchanged", nil); got != "unchanged" {
 		t.Errorf("no values changed %q", got)
 	}
 }
@@ -92,7 +92,7 @@ func TestHomePaths(t *testing.T) {
 		{"/", "/etc", "/etc"},
 		{".", "./x", "./x"},
 	} {
-		if got := HomePaths(tt.home)(tt.in); got != tt.want {
+		if got := HomePaths(tt.home)(tt.in, nil); got != tt.want {
 			t.Errorf("HomePaths(%q)(%q) = %q, want %q", tt.home, tt.in, got, tt.want)
 		}
 	}
@@ -104,7 +104,7 @@ func TestPatterns(t *testing.T) {
 	r := DefaultPatterns()
 	in := "key " + key + " and " + aws + " end"
 	want := "key [REDACTED openai_key] and [REDACTED aws_access_key] end"
-	if got := r(in); got != want {
+	if got := r(in, nil); got != want {
 		t.Errorf("DefaultPatterns = %q, want %q", got, want)
 	}
 	// Each pattern runs on what the earlier ones left, and a match is
@@ -113,10 +113,10 @@ func TestPatterns(t *testing.T) {
 		guard.Pattern{Name: "num$1", Regexp: regexp.MustCompile(`[0-9]+`)},
 		guard.Pattern{Name: "word", Regexp: regexp.MustCompile(`num`)},
 	)
-	if got, want := custom("a 42 b"), "a [REDACTED [REDACTED word]$1] b"; got != want {
+	if got, want := custom("a 42 b", nil), "a [REDACTED [REDACTED word]$1] b"; got != want {
 		t.Errorf("Patterns = %q, want %q", got, want)
 	}
-	if got := Patterns()("sk-test-0000000000000000000000000000"); got != "sk-test-0000000000000000000000000000" {
+	if got := Patterns()("sk-test-0000000000000000000000000000", nil); got != "sk-test-0000000000000000000000000000" {
 		t.Errorf("no patterns changed %q", got)
 	}
 	defer func() {
@@ -127,9 +127,32 @@ func TestPatterns(t *testing.T) {
 	Patterns(guard.Pattern{Name: "broken"})
 }
 
+// TestPlaceholdersNumbered: in a redaction, Secrets and Patterns number
+// the distinct values they replace, per kind, in the order met, so one
+// value is one placeholder and two are two (#20).
+func TestPlaceholdersNumbered(t *testing.T) {
+	ph := NewPlaceholders()
+	secrets := Secrets("fake-one", "fake-two")
+	keys := DefaultPatterns()
+	for _, tt := range []struct {
+		r        StringRedactor
+		in, want string
+	}{
+		// Values of one length are replaced in byte order, so numbered so.
+		{secrets, "fake-two then fake-one", "[REDACTED#2] then [REDACTED#1]"},
+		{secrets, "fake-two again", "[REDACTED#2] again"},
+		{keys, "sk-test-1111111111111111111111111111 and sk-test-2222222222222222222222222222", "[REDACTED openai_key#1] and [REDACTED openai_key#2]"},
+		{keys, "AKIAFAKE0000EXAMPLE0 sk-test-2222222222222222222222222222", "[REDACTED aws_access_key#1] [REDACTED openai_key#2]"},
+	} {
+		if got := tt.r(tt.in, ph); got != tt.want {
+			t.Errorf("%q = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestChain(t *testing.T) {
 	r := Chain(Secrets("/home/example"), HomePaths("/home/example"))
-	if got := r("/home/example/x"); got != "[REDACTED]/x" {
+	if got := r("/home/example/x", nil); got != "[REDACTED]/x" {
 		t.Errorf("Chain = %q", got)
 	}
 }

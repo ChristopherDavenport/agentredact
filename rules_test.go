@@ -48,7 +48,7 @@ func TestParseRules(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseRules: %v", err)
 			}
-			if got := r(tt.in); got != tt.want {
+			if got := r(tt.in, nil); got != tt.want {
 				t.Errorf("rules %q on %q = %q, want %q", tt.rules, tt.in, got, tt.want)
 			}
 		})
