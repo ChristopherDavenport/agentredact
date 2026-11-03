@@ -285,9 +285,13 @@ profile's redactors never see them:
   reported (`FindingForeignReference`). The store pass waits for such a
   session instead;
 - an env entry's file hashes, when the profile has no `Environment`;
-- a sidecar reference, when the profile has no `Images`; with it, a
-  sidecar image is replaced, and other sidecar media, such as a file,
-  is kept and reported;
+- every image, when the profile has no `Images`: each one kept whole,
+  inline, sidecar under an `image_url`, or a sidecar blob the store
+  types `image/*` under any item (`WithMediaTypes`, which the store
+  pass sets), is reported as an `image` finding, since nothing reads
+  the text in a screenshot; a publisher that accepts screenshots
+  accepts the kind. With `Images` a sidecar image is replaced, and
+  other sidecar media, such as a file, is kept and reported;
 - an instruction part named by the hash of a text no entry the
   redaction wrote before it holds is written as `UnmetPartText` under
   its id, never under the original's hash, which can confirm a guessed

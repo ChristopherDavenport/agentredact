@@ -173,6 +173,11 @@ const (
 	// FindingEmbeddedImage: an image data URL inside a longer string,
 	// kept.
 	FindingEmbeddedImage FindingKind = "embedded-image"
+	// FindingImage: an image kept whole, inline or sidecar, by a profile
+	// with no [Images] redactor: no string redactor reads the text in
+	// its pixels, so a screenshot keeps whatever the screen showed. A
+	// publisher that accepts screenshots accepts this kind.
+	FindingImage FindingKind = "image"
 	// FindingForeignReference: a reference to an entry of a session not
 	// redacted alongside (a parents element's entry, a copied_from
 	// entry), removed, since the entry standing for it in that session's

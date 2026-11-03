@@ -57,6 +57,17 @@ type options struct {
 	origin    *Origin
 	alongside Alongside
 	resolve   func(id string) (*agentsession.Session, error)
+	mediaType func(hash string) string
+}
+
+// WithMediaTypes tells [Redact] the media type of a sidecar blob the
+// original names, by its hash, "" for one it does not know, as a store
+// holds it for the original ([agentsession.SessionBlobTyper],
+// [agentsession.TypedBlobReader]). A profile with no [Images] redactor
+// then reports a sidecar blob of an image type as a [FindingImage]
+// whatever item names it; without it, only one an image_url names.
+func WithMediaTypes(mediaType func(hash string) string) Option {
+	return func(o *options) { o.mediaType = mediaType }
 }
 
 // WithResolve lets [Redact] read the sessions the original names, so
@@ -348,6 +359,7 @@ func redactSession(p Profile, key Key, original, existing *agentsession.Session,
 	if err != nil {
 		return nil, err
 	}
+	r.mediaType = o.mediaType
 	if o.origin != nil {
 		if err := r.forkFrom(o.origin); err != nil {
 			return nil, err
@@ -425,6 +437,7 @@ func newRedaction(p Profile, key Key, original *agentsession.Session, along Alon
 		along:    along,
 	}
 	r.redID = names.ID()
+	r.images = slices.ContainsFunc(p.Entries, func(e EntryRedactor) bool { _, ok := e.(images); return ok })
 	r.ph = NewPlaceholders()
 	chain := p.StringFunc()
 	r.f = func(s string) string { return chain(s, r.ph) }

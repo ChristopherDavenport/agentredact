@@ -85,6 +85,13 @@ versions may break the API.
   string`. Outside a redaction (nil `ph`) the placeholders are
   unnumbered, as before. This changes what every profile using
   `Secrets` or `Patterns` writes.
+- Added: `FindingImage` (`image`, #17). A profile with no `Images`
+  keeps every image, and each is now reported, once per image, with no
+  value: an inline image data URL, a sidecar under an `image_url`, and
+  a sidecar blob whose stored type is `image/*` under any item, which
+  `Redact` learns through the new `WithMediaTypes` and `RedactStore`
+  from the store. `Publishable` is false for such a session unless the
+  publisher accepts `image`. It adds a finding and changes no output.
 - Tests: a custom entry carrying a call's `call_id` leaves with the call
   (RFC 0001 0.15), and a compaction keeps its `trust` when its entries
   are left out.

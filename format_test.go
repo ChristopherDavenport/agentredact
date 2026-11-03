@@ -307,3 +307,60 @@ func TestForkContinuesNumbering(t *testing.T) {
 		t.Errorf("the fork names the prefix's key otherwise:\n%s", file)
 	}
 }
+
+// TestKeptImageFinding: a profile with no Images keeps every image and
+// reports each, inline, sidecar under an image_url, and a sidecar blob
+// of an image type under any item, as an image finding with no value
+// (#17); a profile with Images reports none.
+func TestKeptImageFinding(t *testing.T) {
+	c := &clock{}
+	s := agentsession.New(agentsession.Header{ID: "orig-images", CreatedAt: t0, Media: agentsession.MediaSidecar})
+	shot := "sidecar:" + agentsession.HashText("FAKE-SCREENSHOT-0001")
+	file := "sidecar:" + agentsession.HashText("FAKE-PNG-AS-FILE-0002")
+	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.UserMessage(
+		&openresponses.InputText{Text: "three pictures"},
+		&openresponses.InputImage{ImageURL: fakeImage},
+		&openresponses.InputImage{ImageURL: shot},
+		&openresponses.InputFile{Filename: "fake.png", FileData: file},
+	)))
+	turn(t, s, c, "resp-1", "seen")
+	types := func(hash string) string {
+		if "sidecar:"+hash == file {
+			return "image/png"
+		}
+		return ""
+	}
+	plain := Profile{Name: "test.no-images@1", Strings: []StringRedactor{Secrets(fakePassword)}}
+	res, err := Redact(plain, testKey, s, nil, WithMediaTypes(types))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var at []string
+	for _, f := range res.Findings {
+		if f.Kind == FindingImage {
+			at = append(at, f.At)
+			if f.Position != 1 || strings.Contains(f.Message, "sha256:") || strings.Contains(f.Message, "FAKE") {
+				t.Errorf("finding %+v", f)
+			}
+		}
+	}
+	want := []string{"/item/content/1/image_url", "/item/content/2/image_url", "/item/content/3/file_data"}
+	if !slices.Equal(at, want) {
+		t.Errorf("image findings at %v, want %v", at, want)
+	}
+	rep := SessionReport{Findings: res.Findings, accept: map[FindingKind]bool{}}
+	if rep.Publishable() {
+		t.Error("a session keeping images is publishable")
+	}
+	rep.accept[FindingImage] = true
+	if !rep.Publishable() {
+		t.Errorf("a session keeping images is not publishable when images are accepted: %+v", res.Findings)
+	}
+	with, err := Redact(testProfile(), testKey, s, nil, WithMediaTypes(types))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasKind(with, FindingImage) {
+		t.Errorf("a profile with Images reports %+v", with.Findings)
+	}
+}

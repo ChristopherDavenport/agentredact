@@ -551,14 +551,14 @@ func (ps *pass) one(ctx context.Context, id string) SessionReport {
 			}
 		}
 	}
-	opts := []Option{WithAlongside(ps.along), WithResolve(ps.resolve(ctx))}
+	opts := []Option{WithAlongside(ps.along), WithResolve(ps.resolve(ctx)), WithMediaTypes(ps.mediaTypes(ctx, id))}
 	if origin != nil {
 		opts = append(opts, WithOrigin(origin))
 	}
 	res, err := Redact(ps.p, ps.key, orig, existing, opts...)
 	if err != nil && existing == nil && origin != nil && errors.Is(err, ErrBaseLeftOut) {
 		origin = nil
-		res, err = Redact(ps.p, ps.key, orig, nil, opts[:2]...)
+		res, err = Redact(ps.p, ps.key, orig, nil, opts[:3]...)
 	}
 	if err != nil {
 		rp.Err = err
@@ -584,6 +584,33 @@ func (ps *pass) one(ctx context.Context, id string) SessionReport {
 		ps.snaps[id], ps.reds[id], ps.chains[id] = orig, red, origin
 	}
 	return rp
+}
+
+// mediaTypes gives the media type the store holds for a sidecar blob
+// of the original id: the session's own type where the store keeps
+// types per session, and otherwise the blob's, "" when it holds none.
+func (ps *pass) mediaTypes(ctx context.Context, id string) func(hash string) string {
+	var (
+		session map[string]string
+		read    bool
+	)
+	return func(hash string) string {
+		if typer, ok := ps.st.(agentsession.SessionBlobTyper); ok {
+			if !read {
+				session, _ = typer.SessionBlobTypes(ctx, id)
+				read = true
+			}
+			if t := session[hash]; t != "" {
+				return t
+			}
+		}
+		if tr, ok := ps.st.(agentsession.TypedBlobReader); ok {
+			if _, t, err := tr.TypedBlob(ctx, hash); err == nil {
+				return t
+			}
+		}
+		return ""
+	}
 }
 
 // origin is the origin a fork is redacted as a fork of: its origin's

@@ -63,16 +63,20 @@ type redaction struct {
 	names *agentsession.RedactionNames
 	// ph numbers the placeholders the string redactors write, and f is
 	// the profile's string redactors joined, writing through ph.
-	ph       *Placeholders
-	f        func(string) string
-	original *agentsession.Session
-	order    []agentsession.Entry
-	origID   string
-	redID    string
-	red      *agentsession.Session
-	res      *Result
-	rw       *agentsession.Rewriter
-	placed   map[string]*placed
+	ph *Placeholders
+	f  func(string) string
+	// images says the profile replaces images ([Images]); mediaType
+	// gives a sidecar blob's media type, when the caller can.
+	images    bool
+	mediaType func(hash string) string
+	original  *agentsession.Session
+	order     []agentsession.Entry
+	origID    string
+	redID     string
+	red       *agentsession.Session
+	res       *Result
+	rw        *agentsession.Rewriter
+	placed    map[string]*placed
 	// leftOut is set once an entry has been left out, by any redactor.
 	leftOut bool
 	// lastTS is the timestamp of the entry last written, which one whose
@@ -750,7 +754,7 @@ func (r *redaction) build(pos int, e agentsession.Entry, m Made, parent string) 
 		n.Base().Timestamp = r.stamp(e.Base().Timestamp) // never a clock
 	}
 	findings := &r.res.Findings
-	if err := inspect(n, pos, findings); err != nil {
+	if err := inspect(n, pos, findings, r.images, r.mediaType); err != nil {
 		return nil, err
 	}
 	add := func(kind FindingKind, at, message string) {
