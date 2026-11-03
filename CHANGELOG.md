@@ -138,6 +138,13 @@ versions may break the API.
   kind and name redacted entries, never values. A session that grew
   after it was judged is not cleared until judged again. `RedactStore`
   skips verdict sessions (`StoreReport.Skipped`).
+- **Added: the `scan` package (#4).** `Scanner.Scan` runs the
+  `trufflehog` binary over a redacted session's file, the blobs it names
+  and, optionally, its ATIF documents (`NoPassthrough`), with
+  verification and updates off, and keeps each finding as a detector,
+  an artifact, the redacted entry and a count, never the value;
+  `Result.Verdict` is the scan's verdict (kind `test`), failing on any
+  finding. Tests run a stub binary; the real one is used when installed.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

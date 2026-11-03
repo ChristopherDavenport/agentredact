@@ -375,6 +375,19 @@ whether every judge named passed it at its current judged entry: a
 session that grew after it was judged waits for a new verdict, since a
 verdict covers no entry after its target.
 
+## Scan
+
+`scan.Scanner.Scan` runs the `trufflehog` binary (`os/exec`, never
+linked) over what a redacted session would publish: its file, the blobs
+it names (from a store's `BlobReader`) and, with `ATIF` set, its ATIF
+documents exported with `NoPassthrough`, staged in a private temporary
+directory and scanned with `filesystem --json --no-verification
+--no-update`, so the scan makes no network call. A finding is kept as
+its detector, the artifact and the redacted entry it was found in, with
+a count; the value TruffleHog reports is never kept, and its log is not
+read. `Result.Verdict` is the verdict to record with `WriteVerdict`:
+any finding fails it.
+
 ## Status
 
 Profiles, the string redactors (`Secrets`, `HomePaths`, `Patterns`,
