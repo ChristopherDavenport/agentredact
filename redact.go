@@ -462,6 +462,9 @@ func newRedaction(p Profile, key Key, original *agentsession.Session, along Alon
 		return r.idents.replace(s, ph)
 	})...)
 	r.f = func(s string) string { return chain(s, r.ph) }
+	// probe is the same rules writing nothing down: no number taken, no
+	// count, for asking whether a name would change.
+	r.probe = func(s string) string { return chain(s, nil) }
 	r.idents, r.allIdents = newIdentities(), newIdentities()
 	if len(p.Identity) > 0 {
 		if err := r.idents.harvestHeader(p.Identity, original.Header()); err != nil {
@@ -623,7 +626,7 @@ func (r *redaction) header() (agentsession.Header, []Finding, error) {
 	if err != nil {
 		return agentsession.Header{}, nil, err
 	}
-	return h, headerNames(r.original.Header(), r.f), nil
+	return h, headerNames(r.original.Header(), r.probe), nil
 }
 
 // identityInHeader is a finding when the redacted session's header h

@@ -189,6 +189,11 @@ versions may break the API.
   (JSON `private_original`, `private_waiting_on`), and
   `StoreReport.Public` is the report with them taken out, for anywhere
   a report is published.
+- Added: `FindingMemberName` (`member-name`): the name of a member the
+  format does not define, or of an item's own member, which the format
+  keeps, reported when the string redactors would change it, as
+  `ErrKeyNotRedacted` once refused it. Such checks run the rules without
+  numbering or counting.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

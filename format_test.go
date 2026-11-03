@@ -610,3 +610,30 @@ func TestPublicReport(t *testing.T) {
 		t.Errorf("the private report does not mark the original as private: %s", priv)
 	}
 }
+
+// TestMemberNamesReported: the name of a member the format does not
+// define, or of an item's own member, which the format keeps as written,
+// is reported, without the name, when the string redactors would change
+// it (review finding 8).
+func TestMemberNamesReported(t *testing.T) {
+	c := &clock{}
+	s := newOriginal("orig-member-names")
+	e := user("hello")
+	e.Unknown = map[string]json.RawMessage{"x:" + fakeHome + "/k": json.RawMessage(`1`)}
+	appendAt(t, s, c, e)
+	appendAt(t, s, c, user("plain"))
+	p := Profile{Name: "test.names@1", Strings: []StringRedactor{HomePaths(fakeHome), Secrets("role")}}
+	res := redact(t, p, s, nil)
+	var at []string
+	for _, f := range res.Findings {
+		if f.Kind == FindingMemberName {
+			at = append(at, fmt.Sprintf("%d %s", f.Position, f.At))
+			if strings.Contains(f.Message+f.At, fakeHome) {
+				t.Errorf("a finding names the member: %+v", f)
+			}
+		}
+	}
+	if want := []string{"1 ", "1 /item", "2 /item"}; !slices.Equal(at, want) {
+		t.Errorf("member-name findings %v, want %v", at, want)
+	}
+}

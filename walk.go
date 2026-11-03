@@ -65,6 +65,9 @@ type redaction struct {
 	// the profile's string redactors joined, writing through ph.
 	ph *Placeholders
 	f  func(string) string
+	// probe is f writing nothing down, for asking whether a name would
+	// change.
+	probe func(string) string
 	// images says the profile replaces images ([Images]); mediaType
 	// gives a sidecar blob's media type, when the caller can.
 	images    bool
@@ -762,6 +765,7 @@ func (r *redaction) build(pos int, e agentsession.Entry, m Made, parent string) 
 	if err := inspect(n, pos, findings, r.images, r.mediaType, r.allIdents); err != nil {
 		return nil, err
 	}
+	*findings = append(*findings, memberNames(n, pos, r.probe)...)
 	add := func(kind FindingKind, at, message string) {
 		*findings = append(*findings, Finding{Kind: kind, Position: pos, At: at, Redactor: "redact", Message: message})
 	}

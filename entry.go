@@ -200,6 +200,11 @@ const (
 	// written, since the format keeps a header member's name; reported at
 	// position 0.
 	FindingHeaderName FindingKind = "header-member-name"
+	// FindingMemberName: the name of an entry's member the format does
+	// not define, or of an item's own member, that the string redactors
+	// would change, kept as written, since the format keeps such names;
+	// at "" for the entry's member and "/item" for the item's.
+	FindingMemberName FindingKind = "member-name"
 	// FindingRedactor: what a profile's own redactor reported through
 	// [EntryContext.Report].
 	FindingRedactor FindingKind = "redactor"

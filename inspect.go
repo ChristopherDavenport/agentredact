@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/ChristopherDavenport/agentsession"
@@ -90,4 +92,37 @@ func keptImage(s, member string, mediaType func(hash string) string) bool {
 		return false
 	}
 	return strings.HasPrefix(strings.ToLower(mediaType(hash)), "image/")
+}
+
+// memberNames reports each name the format keeps as written that f
+// would change: of a member of e the format does not define, and of a
+// member of an item entry's item, whose names the payload profile
+// defines. The Rewriter leaves both, so a matched name would be written
+// as the original had it; the finding names neither the member nor the
+// match.
+func memberNames(e agentsession.Entry, pos int, f func(string) string) []Finding {
+	var out []Finding
+	report := func(at string) {
+		out = append(out, Finding{Kind: FindingMemberName, Position: pos, At: at, Redactor: "redact",
+			Message: "a member's name holds what the string redactors replace, and the format keeps it as written"})
+	}
+	for _, k := range slices.Sorted(maps.Keys(e.Base().Unknown)) {
+		if f(k) != k {
+			report("")
+			break
+		}
+	}
+	if it, ok := e.(*agentsession.ItemEntry); ok && it.Item != nil {
+		data, err := json.Marshal(it.Item)
+		var m map[string]json.RawMessage
+		if err == nil && json.Unmarshal(data, &m) == nil {
+			for _, k := range slices.Sorted(maps.Keys(m)) {
+				if f(k) != k {
+					report("/item")
+					break
+				}
+			}
+		}
+	}
+	return out
 }
