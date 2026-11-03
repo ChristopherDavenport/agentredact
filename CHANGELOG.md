@@ -160,6 +160,9 @@ versions may break the API.
 - **A report is tied to the state it read.** `SessionReport.State` is
   the redaction's state when the run left it, and `publish.Publish`
   holds a session whose state is not the report's.
+- **Publishing requires a scan by default.** With no `Judges` named,
+  `Publish` requires the scan's verdict (`DefaultJudges`); publishing
+  with no verdict at all takes `Options.Unjudged`, set by name.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

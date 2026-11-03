@@ -87,10 +87,14 @@ func TestPublish(t *testing.T) {
 
 	cleanRed := agentredact.RedactedID(key(t), clean.ID(), profile.Name)
 	mediaRed := agentredact.RedactedID(key(t), media.ID(), profile.Name)
-	// With no judge required, the store pass's verdict alone decides,
-	// into a target of its own.
+	// A scan is required unless the caller opts out by name; opted out,
+	// the store pass's verdict alone decides, into a target of its own.
 	alone := agentsession.NewMemoryStore(agentsession.MemoryRedactedOnly())
 	res, err := Publish(ctx, private, alone, Options{Profile: profile.Name, Report: rep})
+	if err != nil || len(res.Published) != 0 {
+		t.Fatalf("no judge named: %+v, %v; want the scan required", res, err)
+	}
+	res, err = Publish(ctx, private, alone, Options{Profile: profile.Name, Report: rep, Unjudged: true})
 	if err != nil || len(res.Published) != 1 || res.Published[0].Session != cleanRed || len(res.Held) != 1 || res.Held[0].Session != mediaRed {
 		t.Fatalf("no judges: %+v, %v", res, err)
 	}

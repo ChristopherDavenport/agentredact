@@ -29,10 +29,19 @@ type Options struct {
 	// say is publishable, or whose state it read is not the session's
 	// state now ([agentredact.SessionReport.State]), is held.
 	Report *agentredact.StoreReport
-	// Judges are the judges whose verdicts must clear a session at its
-	// current judged entry, such as "scan" ([agentredact.Cleared]).
+	// Judges are the judges whose verdicts must clear a session in its
+	// current state ([agentredact.Cleared]); [DefaultJudges], the scan,
+	// when none are named.
 	Judges []string
+	// Unjudged publishes with no verdict required at all, the store
+	// pass's report alone deciding. It must be set by name: nothing
+	// publishes unscanned by default (#4).
+	Unjudged bool
 }
+
+// DefaultJudges are the judges a session must be cleared by when
+// Options names none: the TruffleHog scan (package scan's Judge).
+var DefaultJudges = []string{"scan"}
 
 // Published names one session pushed, as a manifest names it: its own
 // ID and the hash of its head entry, never its original's ID or hashes
@@ -77,6 +86,14 @@ func Publish(ctx context.Context, from, to agentsession.Store, opts Options) (*R
 	if opts.Report.Profile != opts.Profile {
 		return nil, fmt.Errorf("publish: the report is of profile %q, not %q", opts.Report.Profile, opts.Profile)
 	}
+	judges := opts.Judges
+	switch {
+	case opts.Unjudged && len(judges) > 0:
+		return nil, errors.New("publish: Unjudged and Judges both set")
+	case opts.Unjudged:
+	case len(judges) == 0:
+		judges = DefaultJudges
+	}
 	reports := map[string]agentredact.SessionReport{}
 	for _, r := range opts.Report.Sessions {
 		reports[r.Redaction] = r
@@ -119,14 +136,14 @@ func Publish(ctx context.Context, from, to agentsession.Store, opts Options) (*R
 			hold(err.Error())
 			continue
 		}
-		if len(opts.Judges) > 0 {
+		if len(judges) > 0 {
 			verdicts, err := agentredact.Verdicts(ctx, from, id)
 			if err != nil {
 				hold("its verdicts could not be read")
 				errs = append(errs, err)
 				continue
 			}
-			if !agentredact.Cleared(verdicts, red, opts.Judges...) {
+			if !agentredact.Cleared(verdicts, red, judges...) {
 				hold("not cleared by every judge at its judged entry")
 				continue
 			}
