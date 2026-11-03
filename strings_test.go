@@ -217,3 +217,40 @@ func TestPII(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultProfileLeaks: what the review found the default profile
+// kept (review finding 5): the home as WSL and Windows spell it from the
+// other side, secrets the patterns missed, a truncated key block, and a
+// secret in its JSON spelling.
+func TestDefaultProfileLeaks(t *testing.T) {
+	home := HomePaths("/home/example")
+	pats := DefaultPatterns()
+	sec := Secrets(`fake"pass\word`)
+	for _, tt := range []struct {
+		name     string
+		r        StringRedactor
+		in, want string
+	}{
+		{"wsl", home, `open \\wsl.localhost\Ubuntu\home\example\p`, `open ~\p`},
+		{"wsl json", home, `"\\\\wsl.localhost\\Ubuntu\\home\\example\\p"`, `"~\\p"`},
+		{"wsl$", home, `\\wsl$\Debian\home\example`, `~`},
+		{"mnt", home, "cd /mnt/c/Users/example/proj", "cd ~/proj"},
+		{"windows", home, `C:\Users\example\proj`, `~\proj`},
+		{"other user", home, "/mnt/c/Users/other/proj", "/mnt/c/Users/other/proj"},
+		{"bearer", pats, "Authorization: Bearer fakeTOKENfakeTOKEN0000", "Authorization: Bearer [REDACTED bearer_token]"},
+		{"hf", pats, "hf_FAKEfakeFAKEfakeFAKEfakeFAKEfake00", "[REDACTED huggingface_token]"},
+		{"stripe", pats, "sk_live_FAKEfakeFAKEfake0000 rk_live_FAKEfakeFAKEfake0000", "[REDACTED stripe_key] [REDACTED stripe_key]"},
+		{"aws secret", pats, `aws_secret_access_key = FAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfake`, `aws_secret_access_key = [REDACTED aws_secret_key]`},
+		{"gitlab", pats, "glpat-" + "FAKEfakeFAKEfake0000", "[REDACTED gitlab_token]"},
+		{"slack webhook", pats, "https://hooks.slack.com/services/TFAKE0000/BFAKE0000/FAKEfakeFAKEfake", "[REDACTED slack_webhook]"},
+		{"url password", pats, "postgres://fakeuser:fakepass@db.example.invalid/x", "postgres://fakeuser:[REDACTED url_password]@db.example.invalid/x"},
+		{"pgp", pats, "-----BEGIN PGP PRIVATE KEY BLOCK-----\nFAKE\n-----END PGP PRIVATE KEY BLOCK-----", "[REDACTED private_key]"},
+		{"truncated", pats, "key: -----BEGIN RSA PRIVATE KEY-----\nFAKEFAKE\nFAKE", "key: [REDACTED private_key]"},
+		{"json spelling", sec, `{"arguments":"{\"pw\":\"fake\\\"pass\\\\word\"}"}`, `{"arguments":"{\"pw\":\"[REDACTED]\"}"}`},
+		{"json spelling once", sec, `"pw":"fake\"pass\\word"`, `"pw":"[REDACTED]"`},
+	} {
+		if got := tt.r(tt.in, nil); got != tt.want {
+			t.Errorf("%s: %q = %q, want %q", tt.name, tt.in, got, tt.want)
+		}
+	}
+}

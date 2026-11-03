@@ -468,8 +468,8 @@ func TestIdentityNamedLate(t *testing.T) {
 
 // TestReplacementCounts: a redaction counts what each kind of string
 // redactor replaced in what it wrote, a count and never a value, and a
-// store pass reports the counts on every run; what no rule matches, a
-// Bearer header here, is counted nowhere (#18).
+// store pass reports the counts on every run; private addresses are
+// kept (#18).
 func TestReplacementCounts(t *testing.T) {
 	c := &clock{}
 	s := newOriginal("orig-counts")
@@ -484,13 +484,13 @@ func TestReplacementCounts(t *testing.T) {
 	res := redact(t, p, s, nil)
 	// The header's cwd and note, the user's path, and the call's argument
 	// hold the home.
-	// The URL's credentials read as an email address, password and host.
-	want := map[string]int{"secret": 1, "home": 4, "openai_key": 2, "email": 2}
+	// The default patterns take the URL's password and the Bearer token.
+	want := map[string]int{"secret": 1, "home": 4, "openai_key": 2, "email": 1, "bearer_token": 1, "url_password": 1}
 	if !reflect.DeepEqual(res.Counts, want) {
 		t.Errorf("counts %v, want %v", res.Counts, want)
 	}
 	file := fileOf(t, res.Session)
-	for _, kept := range []string{"10.0.0.8", "127.0.0.1", "Bearer fake-bearer-0000"} {
+	for _, kept := range []string{"10.0.0.8", "127.0.0.1"} {
 		if !bytes.Contains(file, []byte(kept)) {
 			t.Errorf("%s was replaced", kept)
 		}
@@ -501,5 +501,32 @@ func TestReplacementCounts(t *testing.T) {
 		if r := bySession(redactStore(t, st, p, StoreOptions{}))[s.ID()]; !reflect.DeepEqual(r.Counts, want) {
 			t.Errorf("run %d: counts %v, want %v", run, r.Counts, want)
 		}
+	}
+}
+
+// TestIdentityFromText: the host and login names a shell prompt, an
+// ls -l listing and an env entry's workspace name are harvested and
+// replaced, with no api-request record (review finding 5).
+func TestIdentityFromText(t *testing.T) {
+	c := &clock{}
+	s := newOriginal("orig-identity-text")
+	env := agentsession.NewEnvEntry("")
+	ws := env.SetWorkspace(agentsession.WorkspaceLocal, "")
+	if err := ws.SetMember("host", "fakehost-ws-01"); err != nil {
+		t.Fatal(err)
+	}
+	appendAt(t, s, c, env)
+	appendAt(t, s, c, user("fakelogin@FAKEHOST-01:~$ ls -l\n-rw-r--r-- 1 fakeowner fakegroup 12 Jan  1 00:00 f.txt\ndrwxr-xr-x 2 root root 4096 Jan  1 00:00 d"))
+	turn(t, s, c, "resp-1", "fakelogin owns it on FAKEHOST-01 and fakehost-ws-01; fakeowner too")
+	p := Profile{Name: "test.identity-text@1", Identity: ClaudeCodeIdentity()}
+	res := redact(t, p, s, nil)
+	file := strings.ToLower(string(fileOf(t, res.Session)))
+	for _, v := range []string{"fakelogin", "fakehost-01", "fakeowner", "fakegroup", "fakehost-ws-01"} {
+		if strings.Contains(file, v) {
+			t.Errorf("the redaction keeps %q", v)
+		}
+	}
+	if !strings.Contains(file, "root root") {
+		t.Error("a system account's name was replaced")
 	}
 }

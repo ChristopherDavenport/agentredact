@@ -33,9 +33,13 @@ type IdentityMember struct {
 	// as a file writes it, in which a token "*" stands for every element
 	// of an array or member of an object.
 	Pointer string
+	// Anywhere reads every string of the entry, at any depth, rather than
+	// the member Pointer names; it needs Extract.
+	Anywhere bool
 	// Extract, when set, harvests its matches in the member's string
 	// rather than the string, as a member holding a sentence names an
-	// email address in it.
+	// email address in it; of a pattern with groups, each group a match
+	// fills.
 	Extract *regexp.Regexp
 	// Home says the member holds a path, of which the home directory it
 	// starts with, /home/<name>, /Users/<name> or <drive>:\Users\<name>,
@@ -59,7 +63,7 @@ var emailPattern = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z
 // session ID, the header's id, is rewritten wherever text quotes it by
 // every redaction (RFC 0001 0.19), so it is not listed.
 func ClaudeCodeIdentity() []IdentityMember {
-	return []IdentityMember{
+	return append([]IdentityMember{
 		{Header: true, Pointer: "/cwd", Home: true},
 		{Header: true, Pointer: "/agentimport:source/native_id"},
 		{Type: agentsession.TypeEnv, Pointer: "/cwd", Home: true},
@@ -70,7 +74,34 @@ func ClaudeCodeIdentity() []IdentityMember {
 		{Type: agentsession.TypeItem, Pointer: "/claudecode:attachment/context/userEmail", Extract: emailPattern},
 		{Type: agentsession.TypeItem, Pointer: "/instructions_part/id", Home: true},
 		{Type: agentsession.TypeItem, Pointer: "/instructions_part/*/id", Home: true},
+	}, TextIdentity()...)
+}
+
+// promptPattern finds the login and host names a shell prompt writes,
+// login@host:~ or login@host:/path.
+var promptPattern = regexp.MustCompile(`(?:^|[\s"'(\[>])([a-z_][a-z0-9_-]{1,31})@([A-Za-z0-9][A-Za-z0-9-]{0,62}):(?:~|/)`)
+
+// lsPattern finds the owner and group names an ls -l listing writes.
+var lsPattern = regexp.MustCompile(`(?m)^[-dlcbps][rwxsStT-]{9}[.+@]?\s+[0-9]+\s+([A-Za-z_][A-Za-z0-9_.-]*)\s+([A-Za-z_][A-Za-z0-9_.-]*)\s+[0-9]`)
+
+// TextIdentity is the identity members any session's text carries
+// whatever wrote it: the login and host names a shell prompt writes,
+// the owner and group names an ls -l listing writes, and the host an
+// env entry's workspace names. A system account's name (root, nobody
+// and the like) is never harvested.
+func TextIdentity() []IdentityMember {
+	return []IdentityMember{
+		{Type: agentsession.TypeEnv, Pointer: "/workspace/host"},
+		{Anywhere: true, Extract: promptPattern},
+		{Anywhere: true, Extract: lsPattern},
 	}
+}
+
+// systemNames are account and group names no one is identified by.
+var systemNames = map[string]bool{
+	"root": true, "nobody": true, "nogroup": true, "daemon": true, "bin": true, "sys": true, "adm": true,
+	"wheel": true, "staff": true, "users": true, "admin": true, "www-data": true, "syslog": true,
+	"docker": true, "sudo": true, "messagebus": true, "localhost": true, "ubuntu": true,
 }
 
 // minIdentity is the shortest value harvested: a shorter one would match
@@ -79,6 +110,9 @@ const minIdentity = 3
 
 // validate reports whether m can be read.
 func (m IdentityMember) validate() error {
+	if m.Anywhere && m.Extract == nil {
+		return fmt.Errorf("agentredact: an identity member read anywhere needs an Extract pattern")
+	}
 	if m.Pointer != "" && !strings.HasPrefix(m.Pointer, "/") {
 		return fmt.Errorf("agentredact: identity member pointer %q does not start with /", m.Pointer)
 	}
@@ -111,7 +145,7 @@ func (ids *identities) clone() *identities {
 
 // add adds v and its spellings, unless it is too short.
 func (ids *identities) add(v string) {
-	if len(v) < minIdentity || ids.values[v] {
+	if len(v) < minIdentity || ids.values[v] || systemNames[strings.ToLower(v)] || strings.HasPrefix(v, "systemd-") || strings.HasPrefix(v, "_") {
 		return
 	}
 	ids.values[v] = true
@@ -312,14 +346,26 @@ func (ids *identities) harvest(m IdentityMember, tree any) {
 			tokens = append(tokens, strings.ReplaceAll(strings.ReplaceAll(t, "~1", "/"), "~0", "~"))
 		}
 	}
-	for _, s := range pointed(tree, tokens) {
+	var strs []string
+	if m.Anywhere {
+		strs = allStrings(tree, nil)
+	} else {
+		strs = pointed(tree, tokens)
+	}
+	for _, s := range strs {
 		switch {
+		case m.Extract != nil && m.Extract.NumSubexp() > 0:
+			for _, ms := range m.Extract.FindAllStringSubmatch(s, -1) {
+				for _, g := range ms[1:] {
+					ids.add(g)
+				}
+			}
 		case m.Extract != nil:
 			for _, v := range m.Extract.FindAllString(s, -1) {
 				ids.add(v)
 			}
 		case m.Home:
-			if h := homeOf(s); h != "" {
+			for _, h := range homesIn(s) {
 				ids.add(h)
 			}
 		default:
@@ -358,10 +404,30 @@ func pointed(v any, tokens []string) []string {
 	return out
 }
 
-// homePrefix matches the home directory a path starts with.
-var homePrefix = regexp.MustCompile(`^(?:/home/[^/\\]+|/Users/[^/\\]+|[A-Za-z]:[/\\]Users[/\\][^/\\]+)`)
+// homesPattern finds a home directory anywhere in a string: /home/<name>,
+// /Users/<name>, <drive>:\Users\<name>, /mnt/<drive>/Users/<name> and
+// \\wsl.localhost\<distro>\home\<name> or \\wsl$\..., in any of the
+// separators a path or its JSON spelling writes.
+var homesPattern = regexp.MustCompile(`(?:(?:\\\\|\\){2}wsl(?:\.localhost|\$)(?:\\\\|\\)[^\\/\s"']+(?:\\\\|\\)home(?:\\\\|\\)[^\\/\s"']+|/mnt/[A-Za-z]/Users/[^\\/\s"']+|[A-Za-z]:(?:\\\\|\\|/)Users(?:\\\\|\\|/)[^\\/\s"']+|/home/[^\\/\s"']+|/Users/[^\\/\s"']+)`)
 
-// homeOf is the home directory the path p starts with, or "".
-func homeOf(p string) string {
-	return homePrefix.FindString(p)
+// homesIn are the home directories named in s, anywhere in it.
+func homesIn(s string) []string {
+	return homesPattern.FindAllString(s, -1)
+}
+
+// allStrings appends to out every string in v, member names aside.
+func allStrings(v any, out []string) []string {
+	switch x := v.(type) {
+	case string:
+		out = append(out, x)
+	case []any:
+		for _, c := range x {
+			out = allStrings(c, out)
+		}
+	case map[string]any:
+		for _, k := range sortedMembers(x) {
+			out = allStrings(x[k], out)
+		}
+	}
+	return out
 }

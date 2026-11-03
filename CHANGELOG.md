@@ -166,6 +166,20 @@ versions may break the API.
 - **The scan fails closed.** A run whose log has no "finished scanning"
   line, a line of output that is not a finding, and a session naming
   blobs scanned without a blob reader are `ErrScan`, never a pass.
+- **More found under the default profile.** `HomePaths` finds the home
+  through a WSL share (`\\wsl.localhost\<distro>`, `\\wsl$`) and the same
+  user's Windows profile (`C:\Users\<name>`, `/mnt/<drive>/Users/<name>`).
+  `DefaultPatterns` adds `ExtraSecretPatterns`, applied first: private
+  key blocks, PEM or PGP, whole or cut off (to the end of the string),
+  Bearer tokens, Hugging Face, Stripe live, GitLab and Slack webhook
+  tokens, AWS secret keys named as such and URL passwords; a pattern's
+  group named `secret` is replaced alone. `Secrets` finds a value in
+  its JSON spellings, once and twice escaped. `TextIdentity`, part of
+  `ClaudeCodeIdentity`, harvests the login and host names of shell
+  prompts, `ls -l` owners and groups and an env workspace's host
+  (system accounts excepted), and `Home` members find a home anywhere
+  in a string. `IdentityMember.Anywhere` reads every string of an
+  entry.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

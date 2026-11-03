@@ -1,7 +1,9 @@
 package agentredact
 
 import (
+	"encoding/json"
 	"path"
+	"slices"
 	"regexp"
 	"sort"
 	"strings"
@@ -23,22 +25,43 @@ const SecretReplacement = "[REDACTED]"
 // another is not left half redacted; values of one length go in byte
 // order, so the order the caller lists them in does not change the
 // output. Each value is replaced in what the longer ones left. Values
-// are matched as written: a session's strings reach a redactor decoded,
-// so their JSON spellings are not looked for here. Outside a redaction
-// it is the secrets package's Redactor, exact and with one placeholder
-// for every value, which the programs that redact a stream, a JSON one
-// among them, use directly.
+// are matched as written and in their JSON spellings, once and twice
+// escaped, as a session's strings hold JSON text, a function call's
+// arguments among them, whose escapes the Rewriter does not decode.
+// Outside a redaction it is the secrets package's Redactor, with one
+// placeholder for every value, which the programs that redact a stream,
+// a JSON one among them, use directly.
 func Secrets(values ...string) StringRedactor {
 	byValue := make(map[string]string, len(values))
 	for _, v := range values {
 		byValue[v] = v
 	}
-	plain := secrets.New(byValue, secrets.Exact(), secrets.WithPlaceholder(func(string) string { return SecretReplacement }))
-	ordered := make([]string, 0, len(byValue))
+	// The secrets package finds each value in its JSON spellings; given
+	// each value's once-escaped spelling as well, it finds the twice
+	// escaped ones too.
+	named := map[string]string{}
 	for v := range byValue {
-		if v != "" {
-			ordered = append(ordered, v)
+		named["v:"+v] = v
+		if sp := jsonSpellings(v); len(sp) > 1 {
+			named["j:"+v] = sp[1]
 		}
+	}
+	plain := secrets.New(named, secrets.WithPlaceholder(func(string) string { return SecretReplacement }))
+	// Each spelling of each value, with the value it spells.
+	spells := map[string]string{}
+	for v := range byValue {
+		for _, sp := range jsonSpellings(v) {
+			if sp == "" {
+				continue
+			}
+			if was, ok := spells[sp]; !ok || v < was {
+				spells[sp] = v
+			}
+		}
+	}
+	ordered := make([]string, 0, len(spells))
+	for sp := range spells {
+		ordered = append(ordered, sp)
 	}
 	sort.Slice(ordered, func(i, j int) bool {
 		if len(ordered[i]) != len(ordered[j]) {
@@ -50,13 +73,42 @@ func Secrets(values ...string) StringRedactor {
 		if ph == nil {
 			return plain.String(s)
 		}
-		for _, v := range ordered {
-			if strings.Contains(s, v) {
-				s = strings.ReplaceAll(s, v, ph.For("", v))
+		for _, sp := range ordered {
+			if strings.Contains(s, sp) {
+				s = strings.ReplaceAll(s, sp, ph.For("", spells[sp]))
 			}
 		}
 		return s
 	}
+}
+
+// jsonSpellings are v as written and as JSON text writes it inside a
+// string, once and twice escaped, with and without HTML escapes.
+func jsonSpellings(v string) []string {
+	out := []string{v}
+	once := v
+	for range 2 {
+		for _, html := range []bool{false, true} {
+			var b strings.Builder
+			enc := json.NewEncoder(&b)
+			enc.SetEscapeHTML(html)
+			if enc.Encode(once) != nil {
+				continue
+			}
+			e := strings.TrimSuffix(b.String(), "\n")
+			e = e[1 : len(e)-1]
+			if !slices.Contains(out, e) {
+				out = append(out, e)
+			}
+		}
+		var b strings.Builder
+		enc := json.NewEncoder(&b)
+		enc.SetEscapeHTML(false)
+		_ = enc.Encode(once)
+		e := strings.TrimSuffix(b.String(), "\n")
+		once = e[1 : len(e)-1]
+	}
+	return out
 }
 
 // HomePaths shortens paths under the home directory home: home followed
@@ -115,16 +167,22 @@ func HomePaths(home string) StringRedactor {
 		return func(s string, _ *Placeholders) string { return s }
 	}
 	encoded := dashEncoded(home)
+	others := otherSideHomes(home, re)
 	return func(s string, ph *Placeholders) string {
-		s, n := replaceHome(s, re.FindAllStringIndex(s, -1), "~", func(c byte) bool {
-			return c == '/' || c == '\\' || !continuesSegment(c)
-		})
+		endsPath := func(c byte) bool { return c == '/' || c == '\\' || !continuesSegment(c) }
+		n := 0
+		for _, o := range others {
+			var k int
+			s, k = replaceHome(s, o.FindAllStringIndex(s, -1), "~", endsPath)
+			n += k
+		}
+		s, k := replaceHome(s, re.FindAllStringIndex(s, -1), "~", endsPath)
+		n += k
 		defer func() { ph.Count("home", n) }()
 		if encoded == "" || !strings.Contains(s, encoded[1:]) {
 			return s
 		}
 		dashAfter := func(c byte) bool { return c == '-' || c == '/' || c == '\\' || !continuesSegment(c) }
-		var k int
 		if encoded[0] == '-' {
 			s, k = replaceHome(s, indexAll(s, encoded), "-~", dashAfter)
 			n += k
@@ -143,6 +201,32 @@ func HomePaths(home string) StringRedactor {
 		n += k
 		return s
 	}
+}
+
+// otherSideHomes are the patterns of home as the other side of a WSL
+// machine spells it: a Linux home through Windows' \\wsl.localhost\<distro>
+// or \\wsl$\<distro> share, and the same user's Windows profile,
+// <drive>:\Users\<name> or, from Linux, /mnt/<drive>/Users/<name>, for a
+// home /home/<name> or /Users/<name>; and for a Windows home, its
+// /mnt/<drive> form. The separators match as home's do.
+func otherSideHomes(home string, re *regexp.Regexp) []*regexp.Regexp {
+	segs := strings.FieldsFunc(home, func(r rune) bool { return r == '/' || r == '\\' })
+	if len(segs) < 2 {
+		return nil
+	}
+	user := regexp.QuoteMeta(segs[len(segs)-1])
+	profile := `(?:/mnt/[A-Za-z]|[A-Za-z]:)` + homeSeparator + `[Uu]sers` + homeSeparator + user
+	switch {
+	case strings.HasPrefix(home, "/") && len(segs) == 2 && (segs[0] == "home" || segs[0] == "Users"):
+		share := `(?:\\\\|\\){2}wsl(?:\.localhost|\$)(?:\\\\|\\)[A-Za-z0-9._-]+`
+		return []*regexp.Regexp{regexp.MustCompile(share + re.String()), regexp.MustCompile(profile)}
+	case strings.HasPrefix(home, "/"):
+		share := `(?:\\\\|\\){2}wsl(?:\.localhost|\$)(?:\\\\|\\)[A-Za-z0-9._-]+`
+		return []*regexp.Regexp{regexp.MustCompile(share + re.String())}
+	case len(segs) == 3 && strings.EqualFold(segs[1], "users"):
+		return []*regexp.Regexp{regexp.MustCompile(`/mnt/[A-Za-z]` + homeSeparator + `[Uu]sers` + homeSeparator + user)}
+	}
+	return nil
 }
 
 // replaceHome writes with in place of each match of s, [from, to), that
@@ -280,15 +364,68 @@ func Patterns(patterns ...guard.Pattern) StringRedactor {
 	}
 	return func(s string, ph *Placeholders) string {
 		for _, p := range ps {
-			s = p.Regexp.ReplaceAllStringFunc(s, func(m string) string { return ph.For(p.Name, m) })
+			g := p.Regexp.SubexpIndex("secret")
+			if g < 0 {
+				s = p.Regexp.ReplaceAllStringFunc(s, func(m string) string { return ph.For(p.Name, m) })
+				continue
+			}
+			s = replaceGroup(s, p.Regexp, g, func(m string) string { return ph.For(p.Name, m) })
 		}
 		return s
 	}
 }
 
-// DefaultPatterns is [Patterns] over [DefaultSecretPatterns].
+// replaceGroup replaces, in each match of re in s, the text group g
+// matched, leaving the rest of the match, as a pattern with a group
+// named "secret" asks: the password of a URL, the token after Bearer.
+func replaceGroup(s string, re *regexp.Regexp, g int, with func(string) string) string {
+	matches := re.FindAllStringSubmatchIndex(s, -1)
+	if matches == nil {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range matches {
+		from, to := m[2*g], m[2*g+1]
+		if from < 0 {
+			continue
+		}
+		b.WriteString(s[last:from])
+		b.WriteString(with(s[from:to]))
+		last = to
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// DefaultPatterns is [Patterns] over [ExtraSecretPatterns] and then
+// [DefaultSecretPatterns].
 func DefaultPatterns() StringRedactor {
-	return Patterns(DefaultSecretPatterns()...)
+	return Patterns(append(ExtraSecretPatterns(), DefaultSecretPatterns()...)...)
+}
+
+// ExtraSecretPatterns returns, afresh on each call, the secret shapes
+// [DefaultPatterns] looks for beyond agentpolicy's list, applied before
+// it: a private key block, PEM or PGP, whole or cut off before its END
+// line, which is redacted to the end of the string; a token after
+// Bearer; Hugging Face, Stripe live, GitLab personal access and Slack
+// webhook tokens; an AWS secret access key where a name says it is one;
+// and the password in a URL's credentials. A pattern with a group named
+// "secret" replaces that group alone, so "Bearer" and the URL around a
+// password stay. A change here changes what a profile using
+// DefaultPatterns writes, so it takes a new version.
+func ExtraSecretPatterns() []guard.Pattern {
+	return []guard.Pattern{
+		{Name: "private_key", Regexp: regexp.MustCompile(`-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----`)},
+		{Name: "private_key", Regexp: regexp.MustCompile(`-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]*$`)},
+		{Name: "bearer_token", Regexp: regexp.MustCompile(`(?i)\bbearer\s+(?P<secret>[A-Za-z0-9._~+/-]{16,}=*)`)},
+		{Name: "huggingface_token", Regexp: regexp.MustCompile(`\bhf_[A-Za-z0-9]{30,}\b`)},
+		{Name: "stripe_key", Regexp: regexp.MustCompile(`\b(?:sk|rk)_live_[A-Za-z0-9]{16,}\b`)},
+		{Name: "gitlab_token", Regexp: regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}\b`)},
+		{Name: "slack_webhook", Regexp: regexp.MustCompile(`https://hooks\.slack\.com/services/[A-Za-z0-9_/-]+`)},
+		{Name: "aws_secret_key", Regexp: regexp.MustCompile(`(?i)(?:aws_?secret_?(?:access_?)?key|secret_?access_?key)["']?\s*[:=]\s*["']?(?P<secret>[A-Za-z0-9/+]{40})\b`)},
+		{Name: "url_password", Regexp: regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@"'\\]+:(?P<secret>[^\s@/"'\\]+)@`)},
+	}
 }
 
 // DefaultSecretPatterns returns, afresh on each call, the patterns
