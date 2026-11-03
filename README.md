@@ -402,6 +402,15 @@ Open the target set to hold only redacted entries (`WithRedactedOnly`,
 is refused. `Result.Published` names each session as a manifest does,
 by its own ID and head hash, never by its original.
 
+`NewManifest` lists what a publish published, each session by its
+redacted ID and head hash, with the profile, the judges and the
+replacement counts (`agentredact/manifest@1`, kept minimal until
+agentsession#70 defines the shared manifest object); `Check` holds it
+to the published store. `ExportDataset` writes the sessions a manifest
+lists to a local directory a dataset host renders: per session its ATIF
+document and a Session Trace Simple Format-shaped `trace.jsonl`, the
+manifest and a card. Uploading the directory is your step.
+
 ## Status
 
 Profiles, the string redactors (`Secrets`, `HomePaths`, `Patterns`,

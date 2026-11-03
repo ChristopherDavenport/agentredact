@@ -196,6 +196,16 @@ versions may break the API.
   numbering or counting.
 - An entry the redaction leaves out takes no placeholder number, so the
   numbers kept do not tell how many distinct values it held.
+- **Added: the manifest and the dataset export (#6).** `Manifest`
+  (`agentredact/manifest@1`, minimal until agentsession#70 defines the
+  shared object) names each published session by its redacted ID and
+  head hash, never an original, with the profile, the judges and the
+  replacement counts; `NewManifest` builds it from a publish and
+  `Check` holds it to the published store. `ExportDataset` writes a
+  local directory: per session its ATIF document (NoPassthrough) and a
+  Session Trace Simple Format-shaped `trace.jsonl` (sub-agents in
+  `subagents/`), an optional backstop through `export.RewriteStrings`,
+  the manifest and a dataset card. Nothing is uploaded.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such
