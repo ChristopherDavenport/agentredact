@@ -388,6 +388,18 @@ a count; the value TruffleHog reports is never kept, and its log is not
 read. `Result.Verdict` is the verdict to record with `WriteVerdict`:
 any finding fails it.
 
+## Review
+
+`review.Reviewer{Model, ModelName, MaxTokens, Context}.Review` has a
+model of your choosing (any openresponses adapter; there is no default
+model) read a redacted session for what the rules missed, within a
+token cap you must set, and returns flags by entry and kind, never
+text; `Result.Verdict` is recorded with `WriteVerdict` like the scan's,
+and `publish.Options{Judges: []string{"scan", "review"}}` requires
+both. What the model reads may leave the machine: give it the
+redaction's own context (`review.AgentsMD`), not the original's. A
+model error, an unreadable answer or the cap fails the review.
+
 ## Publish
 
 `publish.Publish(ctx, private, target, publish.Options{Profile, Report,
@@ -419,8 +431,8 @@ Profiles, the string redactors (`Secrets`, `HomePaths`, `Patterns`,
 `BlockOut`, the session redactors `KeepLeafPath` and `DropBranches`,
 `Redact`, which applies a profile to one session, `RedactStore`, which
 keeps a store's redactions current, verdicts, the `scan` package and
-the `publish` package are here. The manifest, the dataset export, the
-review (#5) and the command are not yet. The design is [docs/plans/agentredact.md](docs/plans/agentredact.md);
+the `scan`, `review` and `publish` packages (manifest and dataset
+export included) and the `agentredact` command are here. The design is [docs/plans/agentredact.md](docs/plans/agentredact.md);
 the work is tracked in issues
 [#2](https://github.com/ChristopherDavenport/agentredact/issues/2) (redactors),
 [#3](https://github.com/ChristopherDavenport/agentredact/issues/3) (the store pass),

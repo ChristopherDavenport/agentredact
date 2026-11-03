@@ -350,9 +350,12 @@ verdicts, and each safe to run again.
 
 ## Open questions
 
-- Where the review's context comes from: the session's AGENTS.md chain,
-  or a file the publisher supplies? Which model, and how its cost is
-  bounded?
+- The review (settled 2026-11-03): the host supplies the model, an
+  openresponses adapter and a model name, and a token cap, with no
+  default for either; the context is what the caller passes, the
+  redaction's own AGENTS.md parts by default (`review.AgentsMD`), since
+  what the model reads may leave the machine; a review that errs or
+  reaches the cap fails closed.
 - First dataset host: Hugging Face? Does a dataset repository count as
   a store, and does its upload client clear the dependency rule?
 - Catching a profile reused for changed rules: a digest of the rules

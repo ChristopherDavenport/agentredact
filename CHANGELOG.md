@@ -206,6 +206,15 @@ versions may break the API.
   Session Trace Simple Format-shaped `trace.jsonl` (sub-agents in
   `subagents/`), an optional backstop through `export.RewriteStrings`,
   the manifest and a dataset card. Nothing is uploaded.
+- **Added: the `review` package (#5).** `Reviewer.Review` has the
+  caller's model (an openresponses adapter, with the model name the
+  caller gives; no default) read a redacted session in chunks with the
+  project context the caller passes (`AgentsMD` reads a session's
+  AGENTS.md parts), within a token cap the caller must set (no default),
+  and keeps each flag as an entry and a kind, never text.
+  `Result.Verdict` is a verdict of kind `eval`. A model error, an answer
+  it cannot read, a flag naming an entry not shown, and the cap fail
+  the review closed.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such
