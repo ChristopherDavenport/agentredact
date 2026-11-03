@@ -358,6 +358,23 @@ original and hold no value and no original hash, and they are never
 published with the redacted session. The scan and the review are the
 backstop for what the redactors miss, not a guarantee.
 
+## Verdicts
+
+A scan's or a review's judgement of a redacted session is written, as
+RFC 0001 0.19 has a judge write one, as an `outcome` in a fork of the
+redacted session at the last entry judged (`WriteVerdict`, at
+`JudgedEntry`): the fork's header carries no `redacted`, names the
+harness `agentredact` and the member `agentredact:verdict`, and its
+`parent_session` is the redacted session; the outcome's `pass` is the
+verdict, its `details` the findings by kind and count and the redacted
+entries they were found in, never a value. Store it in the private
+store beside the session: a store holding only redacted entries refuses
+it, so a verdict cannot leave with what it judged, and the store pass
+skips it. `Verdicts` lists a redaction's verdicts and `Cleared` says
+whether every judge named passed it at its current judged entry: a
+session that grew after it was judged waits for a new verdict, since a
+verdict covers no entry after its target.
+
 ## Status
 
 Profiles, the string redactors (`Secrets`, `HomePaths`, `Patterns`,

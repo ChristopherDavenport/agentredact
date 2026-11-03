@@ -130,6 +130,14 @@ versions may break the API.
   redactors made in the whole redaction, recounted on every run
   (`Placeholders.Count` for a redactor writing fixed text, as
   `HomePaths` and a rules file do).
+- **Added: verdicts (RFC 0001 0.19).** `Verdict`, `WriteVerdict`,
+  `JudgedEntry`, `VerdictID`, `Verdicts`, `RecordedVerdict` and
+  `Cleared`: a scan's or a review's judgement is an `outcome` in a fork
+  of the redacted session at the last entry judged, with no `redacted`,
+  which a redacted-only store refuses; its details count findings by
+  kind and name redacted entries, never values. A session that grew
+  after it was judged is not cleared until judged again. `RedactStore`
+  skips verdict sessions (`StoreReport.Skipped`).
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

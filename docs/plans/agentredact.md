@@ -316,8 +316,9 @@ bytes; every redacted session verifies, its request hashes included.
    as pi-share-hf does. Until agentsession#244 lands, a push a remote
    refuses leaves its objects there until a sweep.
 
-Scan and review verdicts go in a separate session that links to the one
-it judges, naming the entry it judged up to. They are records, not
+Scan and review verdicts go in a separate session, a fork of the one
+it judges at the entry it judged up to, with the verdict an `outcome`
+there (RFC 0001 0.19, The redacted session; `WriteVerdict`). They are records, not
 redacted entries: appended to the redacted session they would be native
 entries, and the publish target would refuse it.
 
@@ -353,8 +354,9 @@ verdicts, and each safe to run again.
 - Catching a profile reused for changed rules: a digest of the rules
   would confirm guessed secret values if published, so it can only be
   kept beside the private store, never in `redacted_from`.
-- Publishing a session that grew after it was judged: push it only up
-  to the judged entry, or hold it until the new entries are judged?
+- Publishing a session that grew after it was judged: settled
+  2026-11-03, it waits for a new verdict (`Cleared` holds a verdict to
+  the session's current judged entry).
 - A header's strings: no agentsession helper rewrites them as
   `RewriteStrings` does an entry's (`cwd`, `harness`, extension
   members). Ask for one, or redact the members agentredact knows and

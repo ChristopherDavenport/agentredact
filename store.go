@@ -56,7 +56,8 @@ type StoreReport struct {
 	// in the order it took them.
 	Sessions []SessionReport
 	// Skipped counts the sessions the store holds that are redactions
-	// themselves, under any profile, which are never redacted again.
+	// themselves, under any profile, or verdicts on them ([Verdict]),
+	// which are never redacted.
 	Skipped int
 }
 
@@ -327,7 +328,7 @@ func (ps *pass) list(ctx context.Context) error {
 			return fmt.Errorf("agentredact: listing the store: %w", err)
 		}
 		h := sum.Header
-		if h.Redacted {
+		if h.Redacted || isVerdict(h) {
 			ps.report.Skipped++
 			continue
 		}
