@@ -90,7 +90,7 @@ var promptPattern = regexp.MustCompile(`(?:^|[\s"'(\[>])([a-z_][a-z0-9_-]{1,31})
 // More prompt shapes: [login@host dir]$ and login@host dir %.
 var (
 	bracketPrompt = regexp.MustCompile(`\[([a-z_][a-z0-9_-]{1,31})@([A-Za-z0-9][A-Za-z0-9.-]{0,62})[ :][^\]\n]*\][$#%]`)
-	spacePrompt   = regexp.MustCompile(`(?m)(?:^|[\s"'])([a-z_][a-z0-9_-]{1,31})@([A-Za-z0-9][A-Za-z0-9-]{0,62}) [~/][^\s]* ?[%$#]`)
+	spacePrompt   = regexp.MustCompile(`(?m)(?:^|[\s"'])([a-z_][a-z0-9_-]{1,31})@([A-Za-z0-9][A-Za-z0-9-]{0,62}) [^\s@]+ ?[%$#](?:\s|$)`)
 	// idPattern finds the names id prints: uid=1000(name) gid=...(group).
 	idPattern = regexp.MustCompile(`\b(?:uid|gid|groups)=[0-9]+\(([^)\s]+)\)`)
 	// gitAuthor finds the names and emails git log and git show print.
@@ -576,9 +576,17 @@ func pointed(v any, tokens []string) []string {
 // separators a path or its JSON spelling writes.
 var homesPattern = regexp.MustCompile(`(?:(?:\\\\|\\){2}wsl(?:\.localhost|\$)(?:\\\\|\\)[^\\/\s"']+(?:\\\\|\\)home(?:\\\\|\\)[^\\/\s"']+|/mnt/[A-Za-z]/Users/[^\\/\s"']+|[A-Za-z]:(?:\\\\|\\|/)Users(?:\\\\|\\|/)[^\\/\s"']+|/home/[^\\/\s"']+|/Users/[^\\/\s"']+)`)
 
+// spacedHomes finds a home whose name holds spaces, up to the separator
+// that must follow it, as a macOS or Windows name often does.
+var spacedHomes = regexp.MustCompile(`(?:/mnt/[A-Za-z]/Users|/Users|/home|[A-Za-z]:(?:\\\\|\\|/)Users)(?:\\\\|\\|/)[^\\/\n"']+ [^\\/\n"']+(?:\\|/)`)
+
 // homesIn are the home directories named in s, anywhere in it.
 func homesIn(s string) []string {
-	return homesPattern.FindAllString(s, -1)
+	out := homesPattern.FindAllString(s, -1)
+	for _, h := range spacedHomes.FindAllString(s, -1) {
+		out = append(out, strings.TrimRight(h, `/\`))
+	}
+	return out
 }
 
 // allStrings appends to out every string in v, member names aside.

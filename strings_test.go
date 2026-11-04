@@ -82,7 +82,7 @@ func TestHomePaths(t *testing.T) {
 		{`C:\Users\example`, `"C:\\Users\\example\\src"`, `"~\\src"`},
 		{"/home/example", `"\/home\/example\/src"`, `"~\/src"`},
 		{"/home/example", `/home\example/x`, `~/x`},
-		{`C:\Users\example`, `C:\users\example`, `C:\users\example`},
+		{`C:\Users\example`, `C:\users\example`, `~`}, // any Windows profile is a home (round 4)
 		{"/home/example", "/mnt/backup/home/example/x", "/mnt/backup/home/example/x"},
 		{"/home/example", "x/home/example", "x/home/example"},
 		{"/home/example", "path:/home/example", "path:~"},
@@ -280,6 +280,34 @@ func TestRecheckLeaks(t *testing.T) {
 		{"gocspx", pats, "GOCSPX-FAKEfakeFAKEfakeFAKE00", "[REDACTED google_client_secret]"},
 		{"pem base64", pats, "key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCkZBS0U=", "key: [REDACTED pem_base64]"},
 		{"slack escaped", pats, `"https:\/\/hooks.slack.com\/services\/TFAKE0000\/BFAKE0000\/FAKEfakeFAKE"`, `"[REDACTED slack_webhook]"`},
+	} {
+		if got := tt.r(tt.in, nil); got != tt.want {
+			t.Errorf("%s: %q = %q, want %q", tt.name, tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestRound4Leaks: the N2 forms round 3 still kept (round 4, 2).
+func TestRound4Leaks(t *testing.T) {
+	home := HomePaths("/home/example")
+	pats := DefaultPatterns()
+	for _, tt := range []struct {
+		name     string
+		r        StringRedactor
+		in, want string
+	}{
+		{"windows other name", home, `C:\Users\Fake.Person\proj`, `~\proj`},
+		{"windows json", home, `"C:\\Users\\Fake.Person\\proj"`, `"~\\proj"`},
+		{"windows public kept", home, `C:\Users\Public\x`, `C:\Users\Public\x`},
+		{"mnt spaced", home, "cd /mnt/c/Users/Fake Person/proj", "cd ~/proj"},
+		{"db password", pats, "DB_PASSWORD=fakepass0000", "DB_PASSWORD=[REDACTED password]"},
+		{"pgpassword", pats, "PGPASSWORD=fakepass0000 psql", "PGPASSWORD=[REDACTED password] psql"},
+		{"mysql pwd", pats, "MYSQL_PWD=fakepass0000", "MYSQL_PWD=[REDACTED password]"},
+		{"json password", pats, `{"password": "fakepass0000"}`, `{"password": "[REDACTED password]"}`},
+		{"json escaped", pats, `{\"db_password\":\"fakepass0000\"}`, `{\"db_password\":\"[REDACTED password]\"}`},
+		{"yaml password", pats, "db:\n  password: fakepass0000\n", "db:\n  password: [REDACTED password]\n"},
+		{"yaml aws", pats, "- name: AWS_SECRET_ACCESS_KEY\n  value: FAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfake", "- name: AWS_SECRET_ACCESS_KEY\n  value: [REDACTED aws_secret_key]"},
+		{"wrapped pem", pats, "LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCkZBS0VGQUtFRkFLRUZBS0VGQUtF\nRkFLRUZBS0VGQUtFRkFLRUZBS0VGQUtF\nLS0tLS1FTkQgUFJJVkFURSBLRVktLS0tLQo=\nnext", "[REDACTED pem_base64]\nnext"},
 	} {
 		if got := tt.r(tt.in, nil); got != tt.want {
 			t.Errorf("%s: %q = %q, want %q", tt.name, tt.in, got, tt.want)

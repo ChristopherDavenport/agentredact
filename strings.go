@@ -205,21 +205,42 @@ func HomePaths(home string) StringRedactor {
 
 // windowsProfile matches a Windows user's profile seen from WSL,
 // /mnt/<drive>/Users/<name>, whatever the name and its case.
-var windowsProfile = regexp.MustCompile(`/mnt/[A-Za-z]` + homeSeparator + `(?i:users)` + homeSeparator + `([^/\\\s"':*?<>|]+)`)
+var (
+	windowsProfile = regexp.MustCompile(`(?:/mnt/[A-Za-z]|\b[A-Za-z]:)` + homeSeparator + `(?i:users)` + homeSeparator + `([^/\\\s"':*?<>|]+)`)
+	// spacedProfile is one whose name holds spaces, taken up to the
+	// separator that must follow it.
+	spacedProfile = regexp.MustCompile(`(?:/mnt/[A-Za-z]|\b[A-Za-z]:)` + homeSeparator + `(?i:users)` + homeSeparator + `([^/\\\n"':*?<>|]+ [^/\\\n"':*?<>|]+)(?:/|\\)`)
+)
 
 // sharedProfiles are the profiles under Users no person owns.
 var sharedProfiles = map[string]bool{"public": true, "default": true, "all users": true, "default user": true}
 
-// windowsProfiles are the matches of windowsProfile in s that name a
-// person's profile: any WSL user's Windows home is a home, as the
-// Windows name often differs from the Linux one.
+// windowsProfiles are the matches in s of a Windows user's profile,
+// <drive>:\Users\<name> or /mnt/<drive>/Users/<name>, that name a person's:
+// any Windows home is a home, as the Windows name often differs from the
+// Linux one. A name holding spaces is taken up to the separator after
+// it; one without, up to the first character no name holds.
 func windowsProfiles(s string) [][]int {
 	var out [][]int
-	for _, m := range windowsProfile.FindAllStringSubmatchIndex(s, -1) {
+	taken := func(a, b int) bool {
+		for _, m := range out {
+			if a < m[1] && m[0] < b {
+				return true
+			}
+		}
+		return false
+	}
+	for _, m := range spacedProfile.FindAllStringSubmatchIndex(s, -1) {
 		if !sharedProfiles[strings.ToLower(s[m[2]:m[3]])] {
+			out = append(out, []int{m[0], m[3]})
+		}
+	}
+	for _, m := range windowsProfile.FindAllStringSubmatchIndex(s, -1) {
+		if !sharedProfiles[strings.ToLower(s[m[2]:m[3]])] && !taken(m[0], m[1]) {
 			out = append(out, m[:2])
 		}
 	}
+	slices.SortFunc(out, func(a, b []int) int { return a[0] - b[0] })
 	return out
 }
 
@@ -448,12 +469,15 @@ func ExtraSecretPatterns() []guard.Pattern {
 		{Name: "slack_webhook", Regexp: regexp.MustCompile(`https:(?:\\?/){2}hooks\.slack\.com(?:\\?/)services(?:\\?/)[A-Za-z0-9_-]+(?:(?:\\?/)[A-Za-z0-9_-]+)*`)},
 		{Name: "google_oauth_token", Regexp: regexp.MustCompile(`\bya29\.[A-Za-z0-9_-]{20,}`)},
 		{Name: "google_client_secret", Regexp: regexp.MustCompile(`\bGOCSPX-[A-Za-z0-9_-]{20,}`)},
-		{Name: "pem_base64", Regexp: regexp.MustCompile(`\bLS0tLS1CRUdJT[A-Za-z0-9+/]{16,}={0,2}`)},
+		{Name: "pem_base64", Regexp: regexp.MustCompile(`\bLS0tLS1CRUdJT[A-Za-z0-9+/]{16,}={0,2}(?:(?:\r?\n|\\n)(?:[A-Za-z0-9+/]{16,}={0,2}|[A-Za-z0-9+/]{2,}={1,2}))*`)},
 		{Name: "aws_secret_key", Regexp: regexp.MustCompile(`(?i)(?:aws_?secret_?(?:access_?)?key|secret_?access_?key)["']?\s*[:=]\s*["']?(?P<secret>[A-Za-z0-9/+]{40})\b`)},
 		{Name: "aws_secret_key", Regexp: regexp.MustCompile(`(?i)aws_secret_access_key\\?"\s*,\s*\\?"value\\?"\s*:\s*\\?"(?P<secret>[A-Za-z0-9/+]{40})`)},
+		{Name: "aws_secret_key", Regexp: regexp.MustCompile(`(?i)name:[ \t]*["']?aws_secret_access_key["']?[ \t]*\r?\n[ \t-]*value:[ \t]*["']?(?P<secret>[A-Za-z0-9/+]{40})`)},
 		{Name: "aws_session_token", Regexp: regexp.MustCompile(`(?i)(?:\\?"session_?token\\?"\s*:\s*\\?"|aws_session_token["']?\s*[:=]\s*["']?)(?P<secret>[A-Za-z0-9/+=]{16,})`)},
 		{Name: "url_password", Regexp: regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@"'\\]*:(?P<secret>[^\s@/"'\\]+)@`)},
-		{Name: "password", Regexp: regexp.MustCompile(`(?i)\b(?:password|passwd|pwd)=(?P<secret>[^;\s"'&,)]+)`)},
+		{Name: "password", Regexp: regexp.MustCompile(`(?i)\b[A-Za-z0-9_]*(?:password|passwd|pwd)=(?P<secret>[^=;\s"'&,)][^;\s"'&,)]*)`)},
+		{Name: "password", Regexp: regexp.MustCompile(`(?i)\\?"[A-Za-z0-9_]*(?:password|passwd|pwd)\\?"\s*:\s*\\?"(?P<secret>[^"\\]+)\\?"`)},
+		{Name: "password", Regexp: regexp.MustCompile(`(?im)^[ \t-]*[A-Za-z0-9_]*(?:password|passwd)[ \t]*:[ \t]+["']?(?P<secret>[^\s"'#][^\n"'#]*?)["']?[ \t]*$`)},
 		{Name: "basic_auth", Regexp: regexp.MustCompile(`(?:^|\s)(?:-u|--user)\s+["']?[^\s:"']+:(?P<secret>[^\s"']+)`)},
 		{Name: "basic_auth", Regexp: regexp.MustCompile(`(?i)\bbasic\s+(?P<secret>[A-Za-z0-9+/]{8,}={0,2})`)},
 	}

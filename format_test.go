@@ -716,3 +716,20 @@ func TestIdentityOverHarvest(t *testing.T) {
 		}
 	}
 }
+
+// TestIdentityRound4: a prompt with no ~ or / after its host, and a
+// macOS home whose name holds a space, are harvested (round 4, 2).
+func TestIdentityRound4(t *testing.T) {
+	c := &clock{}
+	s := agentsession.New(agentsession.Header{ID: "orig-identity-r4", CreatedAt: t0, CWD: "/Users/Fake Spaced/proj"})
+	appendAt(t, s, c, user("fakelogin3@fakehost3 agentredact % ls"))
+	appendAt(t, s, c, user("worked in /Users/Fake Spaced/proj; fakelogin3 on fakehost3; again /Users/Fake Spaced/x"))
+	p := Profile{Name: "test.identity-r4@1", Identity: ClaudeCodeIdentity()}
+	res := redact(t, p, s, nil)
+	file := string(fileOf(t, res.Session))
+	for _, v := range []string{"fakelogin3", "fakehost3", "Fake Spaced", "Spaced"} {
+		if strings.Contains(file, v) {
+			t.Errorf("the redaction keeps %q", v)
+		}
+	}
+}

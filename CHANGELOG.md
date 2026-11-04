@@ -262,6 +262,13 @@ versions may break the API.
   `user@host:~$` keeps its roles and `Committer: GitHub` its github.com
   URLs. A call's output is harvested only for the identity commands it
   runs first (`whoami && ls` takes the login, not the files).
+- **Round 4 forms.** `HomePaths` takes any `<drive>:\Users\<name>`
+  (JSON-escaped too) as a home, and a profile name holding spaces up to
+  the separator after it; `Home` identity members find such homes.
+  Prompts `user@host dir %` with no `~` or `/`, `*PASSWORD=`/`*_PWD=`
+  keys, JSON `"password": "x"` and YAML `password: x`, AWS secret keys
+  in YAML `name:`/`value:` pairs, and every line of a wrapped base64
+  PEM block are found.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such
