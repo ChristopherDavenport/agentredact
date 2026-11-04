@@ -24,15 +24,20 @@ versions may break the API.
     which the store pass gives, once per blob, and decides it by its
     bytes, not its declared type or member: UTF-8 with no NUL is text,
     given whole to the profile's string redactors and written as a
-    replacement blob; a known image signature is an image (`image`),
-    other known media (PDF, archives, audio, video) is media
-    (`sidecar-media`), both kept whole; anything else, a blob over the
+    replacement blob; a PNG, JPEG or GIF is an image (`image`), kept as
+    its pixels alone, decoded and encoded again, so its metadata and any
+    bytes after it do not leave; a PDF, audio or video is media
+    (`sidecar-media`), kept whole; anything else (an archive or
+    compressed stream, an image it cannot re-encode), a blob over the
     profile's new `BlobLimits` (8 MiB of text, 32 MiB of media by
     default; `FindingBlobTooLarge`), or any blob with no reader given
     is kept and reported as the new `FindingUnredactedBlob`;
   - a blob the reader cannot read, one not held yet included, stops the
     redaction with the new `ErrBlobUnread`, writing nothing, so the next
-    pass decides it afresh;
+    pass decides it afresh; the error names the reference by position
+    and pointer, not hash, and `Publish` holds the session saying the
+    blob is missing; `StoreReport.Public` elides every hash from an
+    error and leaves nothing to unwrap;
   - a hash written inside text, in any case, or a sidecar URL in the
     header, is replaced with `[REDACTED blob#<n>]`, numbered by hash and
     counted under `blob`, and is never followed;

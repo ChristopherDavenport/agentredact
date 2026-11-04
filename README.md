@@ -70,14 +70,19 @@ it by its bytes, never by its declared type or the member naming it.
   given whole to the profile's string redactors and written as a
   replacement blob of the declared type, or `text/plain` where that
   type names an image, audio, video or binary document;
-- `kept-image`: bytes that start as an image format it knows (PNG,
-  JPEG, GIF, WebP, TIFF, ICO, AVIF, HEIC) the profile does not replace,
-  kept whole and reported as `image`;
-- `kept-media`: bytes that start as other media it knows (PDF, an
-  archive, audio, video), kept whole and reported as `sidecar-media`;
+- `kept-image`: a PNG, JPEG or GIF the profile does not replace, kept
+  as its pixels: decoded and encoded again with the standard library
+  into a replacement blob, so no metadata (PNG text chunks, EXIF) and
+  no bytes after the image leave; reported as `image`;
+- `kept-media`: bytes that start as a PDF, audio or video, kept whole
+  and reported as `sidecar-media` (accepting it accepts a PDF's text
+  unread);
   a kept blob leaves only where its own kind is accepted, a fork's
   prefix blob included;
-- `unredacted`: any other bytes (UTF-16 among them), a blob read with
+- `unredacted`: any other bytes (UTF-16 among them), an archive or
+  compressed stream (zip and docx, xlsx, odt on it, gzip, bzip2, xz,
+  7z, zstd, tar, rar), an image it cannot re-encode (WebP, TIFF, ICO,
+  AVIF, HEIC) or that does not decode, a blob read with
   no `WithBlobs` given, or one over the profile's cap
   (`Profile.BlobLimits`: 8 MiB of text, 32 MiB of media by default;
   `blob-too-large`), kept and reported as `unredacted-blob`; it never
@@ -86,7 +91,10 @@ it by its bytes, never by its declared type or the member naming it.
 A blob the reader cannot read, one the store does not hold yet
 included, stops the redaction with `ErrBlobUnread`: nothing is written,
 and the next pass tries again, so what is written never depends on a
-read that failed. agentsession serves a blob whole, so the cap bounds
+read that failed. Its error names the reference by its entry's
+position and pointer, never the hash, and `Publish` holds the session
+saying the blob is missing: restore it, or remove the reference from
+the original. agentsession serves a blob whole, so the cap bounds
 what the redaction holds, not the store's read.
 
 A hash written inside text, in any case, such as a tool's note naming

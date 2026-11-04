@@ -277,10 +277,11 @@ the same store, and append to it as its original grows.
   session, the redaction is given the types of the blobs it names.
   The pass covers every blob the session references by a sidecar URL
   (#23), decided by its bytes: text is redacted by the profile's
-  string redactors and written as a typed replacement; a known image
-  follows the image rule; other known media is kept and reported; any
-  other bytes, or a blob over the profile's cap, are kept, reported and
-  never published; a blob that cannot be read stops the redaction. Each
+  string redactors and written as a typed replacement; a PNG, JPEG or
+  GIF follows the image rule, re-encoded from its pixels; a PDF, audio
+  or video is kept and reported; an archive, any other bytes, or a blob
+  over the profile's cap is kept, reported and never published; a blob
+  that cannot be read stops the redaction. Each
   reference's fate is in the report, and a publisher carries only what
   it allows. A hash written in text is not a reference: it is replaced
   by a placeholder and never followed.
