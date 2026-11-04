@@ -8,6 +8,13 @@
 // cannot read and a review that would pass the cap are errors, and no
 // verdict clears the session.
 //
+// The review is advisory. The text it reads is the session's, which an
+// agent's inputs wrote, a web page or a tool's output among them, and
+// such text can steer the model, to flag nothing among other things. A
+// passing review is therefore no evidence that a session is clean: the
+// scan stays the gate publishing requires by default, and a review is a
+// further judge a publisher may require beside it.
+//
 // What the model reads is the redacted session, which may leave the
 // machine for a provider, and the project context the caller gives,
 // which should be text the caller is content to send there: the
@@ -44,10 +51,11 @@ type Reviewer struct {
 	Model     Model
 	ModelName string
 	// MaxTokens caps the tokens, input and output together, the review
-	// of one session may spend, as the responses' usage reports them
-	// (or, where a response reports none, as estimated from the text
-	// sent, four bytes a token). Required: a review that would pass it
-	// stops and fails.
+	// of one session may spend. It is counted conservatively, every byte
+	// sent or received a token, or the response's usage where that is
+	// more, and before each request the bytes it sends are counted and
+	// its output capped to what is left, so no request can pass it.
+	// Required: a review that would pass it stops and fails.
 	MaxTokens int
 	// Context is the project's context the model is given, such as the
 	// AGENTS.md text [AgentsMD] reads.
@@ -125,7 +133,7 @@ func (rv Reviewer) Review(ctx context.Context, red *agentsession.Session) (*Resu
 	}
 	for _, c := range chunks {
 		prompt := "Project context:\n" + rv.Context + "\n\nEntries, one JSON object a line:\n" + c.text
-		estimate := (len(instructions) + len(prompt)) / 4
+		estimate := len(instructions) + len(prompt) // a token a byte: no tokenizer counts more
 		if res.Tokens+estimate > rv.MaxTokens {
 			return nil, fmt.Errorf("%w: %d spent, %d more to send, cap %d", ErrBudget, res.Tokens, estimate, rv.MaxTokens)
 		}
@@ -142,8 +150,8 @@ func (rv Reviewer) Review(ctx context.Context, red *agentsession.Session) (*Resu
 		if resp == nil || resp.Status != openresponses.ResponseStatusCompleted {
 			return nil, fmt.Errorf("%w: the response did not complete", ErrAnswer)
 		}
-		spent := estimate + len(resp.OutputText())/4
-		if resp.Usage != nil && resp.Usage.TotalTokens > 0 {
+		spent := estimate + len(resp.OutputText())
+		if resp.Usage != nil && resp.Usage.TotalTokens > spent {
 			spent = resp.Usage.TotalTokens
 		}
 		res.Tokens += spent

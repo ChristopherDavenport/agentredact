@@ -73,7 +73,7 @@ func TestReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := res.Verdict()
-	if v.Pass || v.Findings["organization"] != 1 || len(v.Entries) != 1 || v.Entries[0] != first || res.Tokens != 50 {
+	if v.Pass || v.Findings["organization"] != 1 || len(v.Entries) != 1 || v.Entries[0] != first || res.Tokens <= 50 {
 		t.Errorf("verdict %+v, result %+v", v, res)
 	}
 	if req := m.reqs[0]; req.Model != "fake-model" || req.MaxOutputTokens == nil || !strings.Contains(req.Input[1].(*openresponses.Message).Content[0].(*openresponses.InputText).Text, "a fake project") {
@@ -101,5 +101,17 @@ func TestReview(t *testing.T) {
 		if err == nil || res != nil || tt.want != nil && !errors.Is(err, tt.want) {
 			t.Errorf("%s: %+v, %v; want %v", tt.name, res, err, tt.want)
 		}
+	}
+}
+
+// TestReviewCapConservative: the cap counts a byte sent as a token, so a
+// cap a quarter-byte estimate would let through stops the review before
+// any request (N4).
+func TestReviewCapConservative(t *testing.T) {
+	red := redacted(t)
+	m := &scripted{answers: []string{`{"flags":[]}`}, tokens: 1}
+	_, err := Reviewer{Model: m, ModelName: "fake-model", MaxTokens: 700}.Review(context.Background(), red)
+	if !errors.Is(err, ErrBudget) || len(m.reqs) != 0 {
+		t.Errorf("%v after %d requests; want ErrBudget before any", err, len(m.reqs))
 	}
 }

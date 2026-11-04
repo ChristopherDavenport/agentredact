@@ -398,7 +398,10 @@ text; `Result.Verdict` is recorded with `WriteVerdict` like the scan's,
 and `publish.Options{Judges: []string{"scan", "review"}}` requires
 both. What the model reads may leave the machine: give it the
 redaction's own context (`review.AgentsMD`), not the original's. A
-model error, an unreadable answer or the cap fails the review.
+model error, an unreadable answer or the cap fails the review. The
+review is advisory: text in the session, a web page or a tool's output,
+can steer the model, so the scan stays the gate; the cap counts every
+byte as a token so no request passes it.
 
 ## Publish
 

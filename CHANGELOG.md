@@ -227,6 +227,10 @@ versions may break the API.
   review's `Result.State` is the session's state as read, their
   `Verdict` carries it, and `WriteVerdict` requires it and refuses, with
   `ErrStateChanged`, a session in another state.
+- **The review's cap counts a byte as a token**, or the response's
+  usage where that is more, and caps each request's output to what is
+  left, so no request passes it. The review is documented as advisory:
+  text in a session can steer the model, and the scan stays the gate.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such
