@@ -647,6 +647,9 @@ func (r *redaction) header() (agentsession.Header, []Finding, error) {
 	if err != nil {
 		return agentsession.Header{}, nil, err
 	}
+	if h, err = blobsInHeader(h, r.ph); err != nil {
+		return agentsession.Header{}, nil, err
+	}
 	return h, headerNames(r.original.Header(), r.probe), nil
 }
 

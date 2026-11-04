@@ -178,22 +178,77 @@ func walkSidecars(e agentsession.Entry, f func(url, at, member string) (string, 
 	return agentsession.UnmarshalEntry(bytes.TrimRight(buf.Bytes(), "\n"))
 }
 
-// sidecarInText matches a sidecar reference written inside text.
-var sidecarInText = regexp.MustCompile(`sidecar:sha256:[0-9a-f]{64}`)
+// sidecarInText matches a sidecar reference written inside text, in
+// any case.
+var sidecarInText = regexp.MustCompile(`(?i)sidecar:sha256:[0-9a-f]{64}`)
 
-// blobsInText replaces every sidecar reference inside a string with a
-// placeholder numbered by its hash, "[REDACTED blob#<n>]": text names
-// no blob in a redacted session, so neither a store nor a publisher
-// reads it as one, and no hash of an original's blob is published. A
-// string that is wholly a sidecar URL never reaches it: it is a
-// reference, which the redaction's blob step decides on.
+// blobsInText replaces every sidecar reference inside a string, in any
+// case, with a placeholder numbered by its hash, "[REDACTED blob#<n>]":
+// text names no blob in a redacted session, so neither a store nor a
+// publisher reads it as one, and no hash of an original's blob is
+// published. A string that is wholly a sidecar URL in an entry never
+// reaches it: it is a reference, which the redaction's blob step
+// decides on. A member name holding one, which the format keeps as
+// written, is reported ([FindingMemberName], [FindingHeaderName]).
 func blobsInText(s string, ph *Placeholders) string {
-	if !strings.Contains(s, "sidecar:sha256:") {
+	if !strings.Contains(strings.ToLower(s), "sidecar:sha256:") {
 		return s
 	}
 	return sidecarInText.ReplaceAllStringFunc(s, func(m string) string {
-		return ph.For("blob", strings.TrimPrefix(m, "sidecar:"))
+		return ph.For("blob", strings.ToLower(m[len("sidecar:"):]))
 	})
+}
+
+// blobsInHeader replaces each string of h that is wholly a sidecar URL,
+// which the Rewriter keeps from the string redactors as a reference,
+// with the placeholder [blobsInText] writes for its hash: a header
+// references no blob (RFC 0001 has items name blobs), so a URL there
+// is a hash name, which would publish the original blob's hash. The
+// envelope of an entry holds IDs, hashes of entries and timestamps,
+// never a sidecar URL.
+func blobsInHeader(h agentsession.Header, ph *Placeholders) (agentsession.Header, error) {
+	data, err := json.Marshal(h)
+	if err != nil || !bytes.Contains(data, []byte("sidecar:")) {
+		return h, err
+	}
+	var tree any
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&tree); err != nil {
+		return h, err
+	}
+	changed := false
+	var walk func(v any) any
+	walk = func(v any) any {
+		switch x := v.(type) {
+		case string:
+			if isSidecarURL(x) {
+				changed = true
+				return blobsInText(x, ph)
+			}
+		case []any:
+			for i := range x {
+				x[i] = walk(x[i])
+			}
+		case map[string]any:
+			for _, k := range sortedMembers(x) {
+				x[k] = walk(x[k])
+			}
+		}
+		return v
+	}
+	tree = walk(tree)
+	if !changed {
+		return h, nil
+	}
+	if data, err = json.Marshal(tree); err != nil {
+		return h, err
+	}
+	var out agentsession.Header
+	if err := json.Unmarshal(data, &out); err != nil {
+		return h, err
+	}
+	return out, nil
 }
 
 // sidecars is the redaction's blob step over n, an entry about to be
