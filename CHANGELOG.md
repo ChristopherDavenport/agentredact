@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.2 - 2026-11-03
 
 - **Breaking: agentsession v0.0.37, format 0.20** (#19), with
   agentpolicy v0.0.19, openresponses v0.0.18, agentturn v0.0.35 and
