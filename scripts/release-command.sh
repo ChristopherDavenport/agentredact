@@ -42,6 +42,9 @@ export GOFLAGS
 VERSION="${1:-}"; shift || true
 [ -n "$VERSION" ] && [ $# -gt 0 ] || die "usage: $0 <version> <command-dir>..."
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Scratch space for the proxy questions and the build, gone on any exit.
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
 [ -z "$(git status --porcelain)" ] || die "working tree is not clean"
 
 # Everything below is checked before anything is changed.
@@ -61,7 +64,7 @@ done
 # tidy below fails half way.
 on_proxy() {
   local err
-  err="$(cd "$(mktemp -d)" && GOWORK=off go list -m -e -f '{{with .Error}}{{.Err}}{{end}}' "$1@$VERSION" 2>&1)"
+  err="$(cd "$TMP" && GOWORK=off go list -m -e -f '{{with .Error}}{{.Err}}{{end}}' "$1@$VERSION" 2>&1)"
   [ -z "$err" ] || die "$1@$VERSION is not on the proxy yet: $err"
 }
 on_proxy "$(sed -n 's/^module[[:space:]]*//p' go.mod | head -1)"
@@ -95,7 +98,7 @@ for c in "$@"; do
   # The build writes into a directory of its own: go build of a single
   # main package writes its binary into the working directory, which the
   # release commit must not take in.
-  bin="$(mktemp -d)"
+  bin="$TMP/bin"
   (cd "$c" && GOWORK=off GOFLAGS=-mod=mod go mod tidy && GOWORK=off GOFLAGS=-mod=readonly go build -o "$bin/" ./... && GOWORK=off GOFLAGS=-mod=readonly go test ./...)
   rm -rf "$bin"
 done
@@ -104,7 +107,7 @@ done
 # refused by name rather than committed; git reset --hard does not
 # remove an untracked file, so the refusal says to.
 add_mods() {
-  local c mods=()
+  local c stray mods=()
   for c in "$@"; do
     git add -- "$c/go.mod"; mods+=(":(exclude)$c/go.mod")
     if [ -f "$c/go.sum" ]; then git add -- "$c/go.sum"; mods+=(":(exclude)$c/go.sum"); fi
