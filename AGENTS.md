@@ -123,11 +123,13 @@ make release-command VERSION=v0.1.0
 ```
 
 `scripts/release-command.sh` first fetches origin and refuses, before
-changing anything, unless HEAD contains `origin/main`, no command tag of
+changing anything, unless it is on `main`, HEAD contains `origin/main`, no command tag of
 the version exists locally or on origin, and the proxy serves the root
 and every library at the version; it asks `https://proxy.golang.org`
 alone, with `GOPRIVATE`, `GONOPROXY` and `GONOSUMDB` cleared and no
-`-mod` flag, as `go install` would. On a failure after that it prints
+`-mod` flag, as `go install` would. `RELEASE_PROXY`, which its tests point at a
+file proxy, is honoured only with `RELEASE_COMMAND_TEST=1` and a
+`file://` origin, and refused otherwise. On a failure after that it prints
 the `git reset --hard` and `git tag -d` that undo it. It then drops
 each command's replace directives,
 points its first-party requires at the version, tidies it against the

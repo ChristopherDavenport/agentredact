@@ -19,7 +19,18 @@ die() { echo "release-command: $*" >&2; exit 1; }
 
 # The public proxy alone answers, as it answers go install: a GOPRIVATE
 # or GONOPROXY match would otherwise read origin directly and pass a
-# version the proxy does not serve. RELEASE_PROXY is for the tests.
+# version the proxy does not serve. RELEASE_PROXY is for the tests
+# alone: it is honoured only with RELEASE_COMMAND_TEST=1 and an origin
+# that is a file:// remote, a throwaway repository, and refused
+# otherwise, so one leaking in from the environment cannot have go.sum
+# written from an unverified source.
+if [ -n "${RELEASE_PROXY:-}" ]; then
+  [ "${RELEASE_COMMAND_TEST:-}" = 1 ] || die "RELEASE_PROXY is set outside a test (RELEASE_COMMAND_TEST=1); unset it"
+  case "$(git remote get-url origin 2>/dev/null)" in
+    file://*) ;;
+    *) die "RELEASE_PROXY is honoured only for a file:// origin, a test's" ;;
+  esac
+fi
 export GOPROXY="${RELEASE_PROXY:-https://proxy.golang.org}" GOPRIVATE= GONOPROXY= GOFLAGS="${GOFLAGS:+$GOFLAGS }"
 [ -n "${RELEASE_PROXY:-}" ] || export GONOSUMDB= GOSUMDB=sum.golang.org
 GOFLAGS="$(printf '%s' "$GOFLAGS" | sed -E 's/-mod=[a-z]+//g')"
@@ -31,6 +42,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 [ -z "$(git status --porcelain)" ] || die "working tree is not clean"
 
 # Everything below is checked before anything is changed.
+[ "$(git symbolic-ref -q --short HEAD)" = main ] || die "not on main: a release is cut from main alone"
 git fetch -q origin main --tags || die "cannot fetch origin"
 git merge-base --is-ancestor origin/main HEAD \
   || die "HEAD does not contain origin/main: pull first"
@@ -59,7 +71,9 @@ done
 
 START="$(git rev-parse HEAD)"
 written=""
-trap 'echo "release-command: failed; undo with: git reset --hard $START${written:+; git tag -d$written}" >&2' ERR
+# Printed once, by the script's own shell, not again by each subshell
+# that failed inside it.
+trap '[ "$BASH_SUBSHELL" = 0 ] && echo "release-command: failed; undo with: git reset --hard $START${written:+; git tag -d$written}" >&2' ERR
 
 # Each dropped replace, as dir|old=new, to restore after the tag; a list
 # rather than an associative array, which the bash macOS ships lacks.

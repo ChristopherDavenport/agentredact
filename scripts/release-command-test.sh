@@ -9,7 +9,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 M=example.com/m
 fails=0
 
-# refuse <name> <setup: tagged|unserved-lib|behind-origin> <what it says>
+# refuse <name> <setup: tagged|unserved-lib|behind-origin|no-test-flag|path-origin|branch> <what it says>
 refuse() {
   name="$1"; setup="$2"; says="$3"
   d="$(mktemp -d)"
@@ -33,7 +33,11 @@ refuse() {
     printf '# Changelog\n\n## v0.0.2 - 2026-01-01\n\n- x\n' > CHANGELOG.md
     git add . && git -c user.email=t@t -c user.name=t commit -qm init
     git tag v0.0.2 && git tag lib/v0.0.2
-    git remote add origin "$d/origin.git"
+    if [ "$setup" = path-origin ]; then
+      git remote add origin "$d/origin.git"
+    else
+      git remote add origin "file://$d/origin.git"
+    fi
     git push -q origin main --tags 2>/dev/null
     case "$setup" in
       tagged) git tag cmd/x/v0.0.2 ;;
@@ -41,9 +45,11 @@ refuse() {
         git -c user.email=t@t -c user.name=t commit -q --allow-empty -m later
         git push -q origin main 2>/dev/null
         git reset -q --hard HEAD~1 ;;
+      branch) git checkout -q -b topic ;;
     esac
+    flag=1; [ "$setup" = no-test-flag ] && flag=
     before="$(git rev-parse HEAD)"
-    GOMODCACHE="$d/modcache" GOFLAGS=-modcacherw RELEASE_PROXY="file://$d/proxy" GONOSUMDB="$M" GOSUMDB=off GOWORK=off \
+    GOMODCACHE="$d/modcache" GOFLAGS=-modcacherw RELEASE_COMMAND_TEST="$flag" RELEASE_PROXY="file://$d/proxy" GONOSUMDB="$M" GOSUMDB=off GOWORK=off \
       bash scripts/release-command.sh v0.0.2 cmd/x >/dev/null 2>"$d/err" && exit 10
     [ "$(git rev-parse HEAD)" = "$before" ] || exit 11
     [ -z "$(git status --porcelain)" ] || exit 12
@@ -61,6 +67,9 @@ refuse() {
 refuse "a command tag that exists" tagged "cmd/x/v0.0.2 is tagged already"
 refuse "a library the proxy does not serve" unserved-lib "$M/lib@v0.0.2 is not on the proxy"
 refuse "HEAD behind origin/main" behind-origin "does not contain origin/main"
+refuse "RELEASE_PROXY outside a test" no-test-flag "RELEASE_PROXY"
+refuse "RELEASE_PROXY with an origin not file://" path-origin "RELEASE_PROXY"
+refuse "a branch other than main" branch "not on main"
 
 [ "$fails" = 0 ] && echo "release-command tests passed"
 exit "$fails"

@@ -278,6 +278,9 @@ versions may break the API.
   and the public proxy serves the root and every library at the version
   (`GOPROXY` forced, `GOPRIVATE`/`GONOPROXY`/`GONOSUMDB` cleared); a
   later failure prints how to undo it. `make guard-test` runs its tests.
+- `make release-command` refuses a branch other than `main`, and
+  honours `RELEASE_PROXY` only under `RELEASE_COMMAND_TEST=1` with a
+  `file://` origin, refusing it otherwise; its undo line prints once.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such
