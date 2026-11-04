@@ -3,6 +3,7 @@ package agentredact
 import (
 	"bytes"
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -64,7 +65,6 @@ func TestRedactSidecarBlobs(t *testing.T) {
 		{name: "pdf", data: "%PDF " + fakePassword, typ: "application/pdf", reader: true, fate: BlobKeptMedia, finding: FindingSidecarMedia},
 		{name: "text not utf-8", data: "\xff\xfe" + fakePassword, typ: "text/plain", reader: true, fate: BlobUnredacted, finding: FindingUnredactedBlob},
 		{name: "no reader", data: secretText, typ: "text/plain", fate: BlobUnredacted, finding: FindingUnredactedBlob},
-		{name: "not held", typ: "text/plain", reader: true, fate: BlobUnredacted, finding: FindingUnredactedBlob},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -125,6 +125,17 @@ func TestRedactSidecarBlobs(t *testing.T) {
 				t.Errorf("an up-to-date resume: %v, blobs %v, fates %v", err, up.Blobs, up.Sidecar)
 			}
 		})
+	}
+}
+
+// TestRedactBlobUnread: a blob the reader cannot read, one not held
+// included, stops the redaction, which writes nothing for it, rather
+// than writing a reference a later run would write otherwise.
+func TestRedactBlobUnread(t *testing.T) {
+	s := callOutput(t, "orig-blob-unread", "sidecar:"+agentsession.HashText("not-held"))
+	_, err := Redact(testProfile(), testKey, s, nil, WithBlobs(blobStore{}.read))
+	if !errors.Is(err, ErrBlobUnread) || !errors.Is(err, agentsession.ErrNoBlob) {
+		t.Errorf("Redact: %v, want ErrBlobUnread wrapping ErrNoBlob", err)
 	}
 }
 

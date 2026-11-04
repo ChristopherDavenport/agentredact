@@ -3,6 +3,7 @@ package agentredact
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -36,9 +37,8 @@ const (
 	BlobKeptMedia BlobFate = "kept-media"
 	// BlobUnredacted: a blob that may hold text the redaction could not
 	// read, kept as the original's and reported as a
-	// [FindingUnredactedBlob]: no blob reader was given, the store does
-	// not hold it, or a text type's bytes are not UTF-8. It never
-	// leaves.
+	// [FindingUnredactedBlob]: no blob reader was given, or a text
+	// type's bytes are not UTF-8. It never leaves.
 	BlobUnredacted BlobFate = "unredacted"
 )
 
@@ -56,12 +56,21 @@ func mergeFate(m map[string]BlobFate, hash string, f BlobFate) {
 	}
 }
 
+// ErrBlobUnread is returned by [Redact] for a blob the original
+// references that the reader given by [WithBlobs] could not read, one
+// the store does not hold yet included: nothing is written, since what
+// the redaction writes for a reference must not depend on whether the
+// blob could be read at that moment, and a later run, once the blob
+// reads, redacts the session. The store pass reports it in the
+// session's Err.
+var ErrBlobUnread = errors.New("agentredact: a blob the session references could not be read")
+
 // WithBlobs gives [Redact] the original's blobs: read returns the
 // bytes of the blob hash and the media type the original holds it
 // with, "" for none, as [agentsession.ReadSessionBlob] reads it for the
-// original, and an error for one it cannot read. Without it, a blob
-// that may hold text is not read, and the redaction keeps it as
-// [BlobUnredacted]. [RedactStore] gives it the store's.
+// original, and an error for one it cannot read, which stops the
+// redaction ([ErrBlobUnread]). Without it, a blob that may hold text is
+// not read, and the redaction keeps it as [BlobUnredacted]. [RedactStore] gives it the store's.
 func WithBlobs(read func(hash string) ([]byte, string, error)) Option {
 	return func(o *options) { o.blobs = read }
 }
@@ -206,8 +215,10 @@ func blobsInText(s string, ph *Placeholders) string {
 //     replacement blob with the original's type; the reference names
 //     the replacement ([BlobRedacted]). An untyped blob that is not text
 //     is kept as media.
-//   - A blob that may be text and cannot be read is kept and reported
-//     as a [FindingUnredactedBlob] ([BlobUnredacted]).
+//   - A blob that may be text, with no blob reader given, is kept and
+//     reported as a [FindingUnredactedBlob] ([BlobUnredacted]).
+//   - A blob the reader fails to read, one the store does not hold
+//     included, is [ErrBlobUnread], and the redaction writes nothing.
 func (r *redaction) sidecars(pos int, n agentsession.Entry, made map[string]Blob) (agentsession.Entry, error) {
 	report := func(kind FindingKind, at, message string) {
 		r.res.Findings = append(r.res.Findings, Finding{Kind: kind, Position: pos, At: at, Redactor: "redact", Message: message})
@@ -224,7 +235,12 @@ func (r *redaction) sidecars(pos int, n agentsession.Entry, made map[string]Blob
 			readErr error
 		)
 		if r.readBlob != nil {
-			data, typ, readErr = r.readBlob(h)
+			if data, typ, readErr = r.readBlob(h); readErr != nil {
+				// Whether a blob can be read now is no input of the
+				// redaction: nothing is written, and the next pass
+				// decides the reference again.
+				return "", fmt.Errorf("%w: %w", ErrBlobUnread, readErr)
+			}
 		}
 		if typ == "" && r.mediaType != nil {
 			typ = r.mediaType(h)
@@ -249,8 +265,6 @@ func (r *redaction) sidecars(pos int, n agentsession.Entry, made map[string]Blob
 			return keep(BlobKeptMedia, FindingSidecarMedia, "sidecar media that is not an image or text left as it is: no redactor replaces it, and text in it is not found")
 		case r.readBlob == nil:
 			return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar blob that may hold text kept unredacted: no blob reader was given, so it was not read")
-		case readErr != nil:
-			return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar blob that may hold text kept unredacted: it could not be read")
 		case typ == "" && !isText(data):
 			return keep(BlobKeptMedia, FindingSidecarMedia, "an untyped sidecar blob that is not text left as it is: no redactor replaces it, and text in it is not found")
 		case !utf8.Valid(data):
