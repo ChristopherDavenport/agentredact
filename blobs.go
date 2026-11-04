@@ -278,9 +278,14 @@ func blobsInHeader(h agentsession.Header, ph *Placeholders) (agentsession.Header
 //     AVIF, HEIC), or one that does not decode, is kept unredacted and
 //     reported as a [FindingUnredactedBlob] ([BlobUnredacted]); one
 //     with more pixels than the media limit as a [FindingBlobTooLarge].
-//   - Bytes that start as other media it knows (PDF, an archive or
-//     compressed stream, audio, video) are kept whole ([BlobKeptMedia])
-//     and reported as a [FindingSidecarMedia].
+//   - Bytes that start as an archive or compressed stream it knows
+//     (zip and docx, xlsx, odt built on it, gzip, bzip2, xz, 7z, zstd,
+//     tar, rar) hold text it does not read: kept unredacted and
+//     reported as a [FindingUnredactedBlob] ([BlobUnredacted]).
+//   - Bytes that start as other media it knows (PDF, audio, video) are
+//     kept whole ([BlobKeptMedia]) and reported as a
+//     [FindingSidecarMedia]: accepting the kind accepts a PDF's text
+//     unread.
 //   - Any other bytes, UTF-16 text among them, are neither: kept and
 //     reported as a [FindingUnredactedBlob] ([BlobUnredacted]), which no
 //     publisher carries. So is every blob when no reader was given.
@@ -375,6 +380,8 @@ func (r *redaction) decide(h string) (blobDecision, error) {
 			message = "a sidecar image Images does not replace, kept as its pixels, re-encoded: it replaces those an image_url names, and no string redactor reads the text in its pixels"
 		}
 		return blobDecision{hash: agentsession.HashBytes(out), fate: BlobKeptImage, blob: &Blob{Data: out, MediaType: mediaType}, kind: FindingImage, message: message}, nil
+	case matches(data, archiveMagic):
+		return keep(BlobUnredacted, FindingUnredactedBlob, "an archive or compressed stream kept unredacted: the redaction does not read the files or text inside it")
 	case sniffMedia(data):
 		if int64(len(data)) > limits.Media {
 			return tooLarge(limits.Media)
@@ -453,11 +460,20 @@ var imageMagic = []magic{
 }
 
 // mediaMagic are the other media formats it knows by their bytes.
+// A PDF is among them, kept by the sidecar-media rule: its text is not
+// read, and a publisher accepting the kind accepts that.
 var mediaMagic = []magic{
-	{0, "%PDF-"}, {0, "PK\x03\x04"}, {0, "\x1f\x8b"}, {0, "BZh"}, {0, "\xfd7zXZ\x00"},
-	{0, "7z\xbc\xaf\x27\x1c"}, {0, "\x28\xb5\x2f\xfd"}, {4, "ftyp"}, {0, "\x1a\x45\xdf\xa3"},
-	{0, "OggS"}, {0, "fLaC"}, {0, "ID3"}, {0, "\xff\xfb"}, {0, "\xff\xf3"}, {0, "\xff\xf2"},
-	{8, "WAVE"}, {8, "AVI "},
+	{0, "%PDF-"}, {4, "ftyp"}, {0, "\x1a\x45\xdf\xa3"},
+	{0, "OggS"}, {0, "fLaC"}, {0, "ID3"}, {8, "WAVE"}, {8, "AVI "},
+}
+
+// archiveMagic are the archives and compressed streams it knows by
+// their bytes: zip and what is built on it (docx, xlsx, odt, jar),
+// gzip, bzip2, xz, 7z, zstd, tar. They hold files and text the
+// redaction does not read, so none is media: each is held.
+var archiveMagic = []magic{
+	{0, "PK\x03\x04"}, {0, "PK\x05\x06"}, {0, "\x1f\x8b"}, {0, "BZh"}, {0, "\xfd7zXZ\x00"},
+	{0, "7z\xbc\xaf\x27\x1c"}, {0, "\x28\xb5\x2f\xfd"}, {257, "ustar"}, {0, "Rar!\x1a\x07"},
 }
 
 func matches(data []byte, ms []magic) bool {
