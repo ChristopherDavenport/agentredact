@@ -2,3 +2,4 @@
 /agentredact
 *.test
 *.prof
+/cmd/agentredact/agentredact

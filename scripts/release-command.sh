@@ -91,9 +91,29 @@ for c in "$@"; do
     (cd "$c" && GOWORK=off go mod edit -dropreplace="${p%%=*}")
   done
   "$HERE/versions.sh" set "$VERSION" "$c"
-  (cd "$c" && GOWORK=off GOFLAGS=-mod=mod go mod tidy && GOWORK=off GOFLAGS=-mod=readonly go build ./... && GOWORK=off GOFLAGS=-mod=readonly go test ./...)
+  # The build writes into a directory of its own: go build of a single
+  # main package writes its binary into the working directory, which the
+  # release commit must not take in.
+  bin="$(mktemp -d)"
+  (cd "$c" && GOWORK=off GOFLAGS=-mod=mod go mod tidy && GOWORK=off GOFLAGS=-mod=readonly go build -o "$bin/" ./... && GOWORK=off GOFLAGS=-mod=readonly go test ./...)
+  rm -rf "$bin"
 done
-git add -A
+# Only the commands' go.mod and go.sum change in a release commit;
+# anything else in the tree is refused rather than committed.
+add_mods() {
+  local c mods=()
+  for c in "$@"; do
+    git add -- "$c/go.mod"; mods+=(":(exclude)$c/go.mod")
+    if [ -f "$c/go.sum" ]; then git add -- "$c/go.sum"; mods+=(":(exclude)$c/go.sum"); fi
+  done
+  stray="$(git status --porcelain --untracked-files=all -- . "${mods[@]}")"
+  if [ -n "$stray" ]; then
+    echo "release-command: the tree holds changes beyond the commands' go.mod and go.sum:" >&2
+    echo "$stray" >&2
+    return 1
+  fi
+}
+add_mods "$@"
 git commit -q -m "Release $* $VERSION"
 
 tags=""
@@ -111,7 +131,7 @@ done
 for c in "$@"; do
   (cd "$c" && GOWORK=off GOFLAGS=-mod=mod go mod tidy)
 done
-git add -A
+add_mods "$@"
 git commit -q -m "Point $* at the tree again after $VERSION"
 
 # shellcheck disable=SC2086

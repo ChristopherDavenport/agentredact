@@ -5,6 +5,20 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Fixed
+
+- The command release committed the built `cmd/agentredact` binary
+  into the `cmd/agentredact/v0.0.2` tag commit, and so into that
+  version's module zip: `go build ./...` on the command's main package
+  wrote it into the tree and the release took in every change.
+  `scripts/release-command.sh` now builds into a temporary directory,
+  commits only the commands' go.mod and go.sum, and refuses, before
+  committing, when anything else in the tree changed. The next command
+  release (v0.0.3) ships without the binary, and it is removed from
+  main.
+
 ## v0.0.2 - 2026-11-03
 
 - **Breaking: agentsession v0.0.37, format 0.20** (#19), with
