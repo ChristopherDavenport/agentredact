@@ -26,12 +26,14 @@ const (
 	// original's type. Its hash is the original's only when the
 	// redactors changed nothing.
 	BlobRedacted BlobFate = "redacted"
-	// BlobKept: the original's blob, kept whole by rule and reported:
-	// an image a profile does not replace ([FindingImage], or
-	// [FindingSidecarMedia] for one [Images] does not reach), or media
-	// that is not text ([FindingSidecarMedia]). It may leave only as its
-	// finding's kind is accepted.
-	BlobKept BlobFate = "kept"
+	// BlobKeptImage: the original's blob, an image a profile does not
+	// replace, kept whole and reported as a [FindingImage]. It leaves
+	// only where that kind is accepted.
+	BlobKeptImage BlobFate = "kept-image"
+	// BlobKeptMedia: the original's blob, media that is not text, kept
+	// whole and reported as a [FindingSidecarMedia]. It leaves only
+	// where that kind is accepted.
+	BlobKeptMedia BlobFate = "kept-media"
 	// BlobUnredacted: a blob that may hold text the redaction could not
 	// read, kept as the original's and reported as a
 	// [FindingUnredactedBlob]: no blob reader was given, the store does
@@ -42,7 +44,7 @@ const (
 
 // worse reports whether a is a fate a publisher trusts less than b.
 func (a BlobFate) worse(b BlobFate) bool {
-	rank := map[BlobFate]int{BlobMade: 0, BlobRedacted: 0, BlobKept: 1, BlobUnredacted: 2}
+	rank := map[BlobFate]int{BlobMade: 0, BlobRedacted: 0, BlobKeptImage: 1, BlobKeptMedia: 2, BlobUnredacted: 3}
 	return rank[a] > rank[b]
 }
 
@@ -193,11 +195,11 @@ func blobsInText(s string, ph *Placeholders) string {
 //
 //   - A blob an entry redactor made is [BlobMade].
 //   - An image, one an image_url names or of an image type, is kept
-//     ([BlobKept]); a profile without [Images] reports it as a
+//     ([BlobKeptImage]); a profile without [Images] reports it as a
 //     [FindingImage] when the entry is inspected, and one with Images,
-//     which reaches only image_url, as [FindingSidecarMedia].
+//     which reaches only image_url, reports it so here.
 //   - Media of a known type that is not text is kept and reported as a
-//     [FindingSidecarMedia].
+//     [FindingSidecarMedia] ([BlobKeptMedia]).
 //   - A text blob, of a text type, or of none whose bytes are UTF-8 and
 //     hold no NUL, is read, given whole to the profile's string
 //     redactors, as the entry's strings are, and written as a
@@ -240,17 +242,17 @@ func (r *redaction) sidecars(pos int, n agentsession.Entry, made map[string]Blob
 		switch {
 		case member == "image_url" || isImageType(typ):
 			if r.images {
-				return keep(BlobKept, FindingSidecarMedia, "a sidecar image Images does not replace, kept as it is: it replaces those an image_url names, and text in it is not found")
+				return keep(BlobKeptImage, FindingImage, "a sidecar image Images does not replace, kept whole: it replaces those an image_url names, and no string redactor reads the text in its pixels")
 			}
-			return keep(BlobKept, "", "") // inspect reports it as an image kept
+			return keep(BlobKeptImage, "", "") // inspect reports it as an image kept
 		case typ != "" && !isTextType(typ):
-			return keep(BlobKept, FindingSidecarMedia, "sidecar media that is not an image or text left as it is: no redactor replaces it, and text in it is not found")
+			return keep(BlobKeptMedia, FindingSidecarMedia, "sidecar media that is not an image or text left as it is: no redactor replaces it, and text in it is not found")
 		case r.readBlob == nil:
 			return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar blob that may hold text kept unredacted: no blob reader was given, so it was not read")
 		case readErr != nil:
 			return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar blob that may hold text kept unredacted: it could not be read")
 		case typ == "" && !isText(data):
-			return keep(BlobKept, FindingSidecarMedia, "an untyped sidecar blob that is not text left as it is: no redactor replaces it, and text in it is not found")
+			return keep(BlobKeptMedia, FindingSidecarMedia, "an untyped sidecar blob that is not text left as it is: no redactor replaces it, and text in it is not found")
 		case !utf8.Valid(data):
 			return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar blob of a text type that is not UTF-8 kept unredacted: the string redactors read UTF-8 text")
 		}

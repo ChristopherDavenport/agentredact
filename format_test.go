@@ -311,7 +311,8 @@ func TestForkContinuesNumbering(t *testing.T) {
 // TestKeptImageFinding: a profile with no Images keeps every image and
 // reports each, inline, sidecar under an image_url, and a sidecar blob
 // of an image type under any item, as an image finding with no value
-// (#17); a profile with Images reports none.
+// (#17); a profile with Images reports only the image it does not
+// reach, one an image_url does not name (#23).
 func TestKeptImageFinding(t *testing.T) {
 	c := &clock{}
 	s := agentsession.New(agentsession.Header{ID: "orig-images", CreatedAt: t0, Media: agentsession.MediaSidecar})
@@ -360,8 +361,15 @@ func TestKeptImageFinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hasKind(with, FindingImage) {
-		t.Errorf("a profile with Images reports %+v", with.Findings)
+	// Images replaces what an image_url names; an image any other
+	// member names is kept whole and reported, as without it.
+	for _, f := range with.Findings {
+		if f.Kind == FindingImage && f.At != "/item/content/3/file_data" {
+			t.Errorf("a profile with Images reports %+v", f)
+		}
+	}
+	if !hasKind(with, FindingImage) {
+		t.Error("a profile with Images does not report the image it keeps")
 	}
 }
 

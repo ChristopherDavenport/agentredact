@@ -60,8 +60,8 @@ func TestRedactSidecarBlobs(t *testing.T) {
 		{name: "text", data: secretText, typ: "text/plain;charset=utf-8", reader: true, fate: BlobRedacted, redacted: true},
 		{name: "json", data: `{"pw":"` + fakePassword + `"}`, typ: "application/json", reader: true, fate: BlobRedacted, redacted: true},
 		{name: "untyped text", data: secretText, reader: true, fate: BlobRedacted, redacted: true},
-		{name: "untyped binary", data: "\x00\x01" + fakePassword, reader: true, fate: BlobKept, finding: FindingSidecarMedia},
-		{name: "pdf", data: "%PDF " + fakePassword, typ: "application/pdf", reader: true, fate: BlobKept, finding: FindingSidecarMedia},
+		{name: "untyped binary", data: "\x00\x01" + fakePassword, reader: true, fate: BlobKeptMedia, finding: FindingSidecarMedia},
+		{name: "pdf", data: "%PDF " + fakePassword, typ: "application/pdf", reader: true, fate: BlobKeptMedia, finding: FindingSidecarMedia},
 		{name: "text not utf-8", data: "\xff\xfe" + fakePassword, typ: "text/plain", reader: true, fate: BlobUnredacted, finding: FindingUnredactedBlob},
 		{name: "no reader", data: secretText, typ: "text/plain", fate: BlobUnredacted, finding: FindingUnredactedBlob},
 		{name: "not held", typ: "text/plain", reader: true, fate: BlobUnredacted, finding: FindingUnredactedBlob},
@@ -216,7 +216,7 @@ func TestRedactStoreSidecarFates(t *testing.T) {
 // never.
 func TestCarriesBlob(t *testing.T) {
 	r := SessionReport{
-		Sidecar:  map[string]BlobFate{"sha256:k": BlobKept, "sha256:u": BlobUnredacted, "sha256:m": BlobMade},
+		Sidecar:  map[string]BlobFate{"sha256:k": BlobKeptMedia, "sha256:u": BlobUnredacted, "sha256:m": BlobMade},
 		Findings: []Finding{{Kind: FindingSidecarMedia}, {Kind: FindingUnredactedBlob}},
 		accept:   map[FindingKind]bool{},
 	}

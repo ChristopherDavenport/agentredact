@@ -174,15 +174,21 @@ func (r SessionReport) Publishable() bool {
 // CarriesBlob reports whether a publisher may carry the blob hash, one
 // the redaction references, with it (agentredact#23): one the redaction
 // made or redacted ([BlobMade], [BlobRedacted]), or one it kept by rule
-// ([BlobKept]) while the redaction is publishable, its finding's kind
-// accepted. A blob it could not redact ([BlobUnredacted]) and one the
-// report does not name never leave.
+// while the redaction is publishable and the rule's finding kind is
+// accepted: [FindingImage] for [BlobKeptImage], [FindingSidecarMedia]
+// for [BlobKeptMedia]. The kind is checked here, not only through the
+// report's own findings, since a fork's prefix is redacted in its
+// origin's redaction, whose findings the fork's report does not hold.
+// A blob it could not redact ([BlobUnredacted]) and one the report does
+// not name never leave.
 func (r SessionReport) CarriesBlob(hash string) bool {
 	switch r.Sidecar[hash] {
 	case BlobMade, BlobRedacted:
 		return true
-	case BlobKept:
-		return r.Publishable()
+	case BlobKeptImage:
+		return r.Publishable() && r.accept[FindingImage]
+	case BlobKeptMedia:
+		return r.Publishable() && r.accept[FindingSidecarMedia]
 	}
 	return false
 }
@@ -645,12 +651,20 @@ func (ps *pass) one(ctx context.Context, id string) SessionReport {
 	rp.Counts = res.Counts
 	rp.Sidecar = res.Sidecar
 	if origin != nil {
-		// The prefix is the origin's redaction's, decided there.
-		for hash, f := range ps.fates[h.ParentSession] {
-			if rp.Sidecar == nil {
-				rp.Sidecar = map[string]BlobFate{}
+		// The prefix is the origin's redaction's, decided there: the
+		// fates of the blobs the fork references come from it.
+		refs, err := SidecarRefs(red)
+		if err != nil {
+			rp.Err = err
+			return rp
+		}
+		for _, hash := range refs {
+			if f, ok := ps.fates[h.ParentSession][hash]; ok {
+				if rp.Sidecar == nil {
+					rp.Sidecar = map[string]BlobFate{}
+				}
+				mergeFate(rp.Sidecar, hash, f)
 			}
-			mergeFate(rp.Sidecar, hash, f)
 		}
 	}
 	for _, e := range red.Entries() {
