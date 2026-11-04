@@ -13,24 +13,58 @@
 # command against itself again, and pushes the branch and the tags in
 # one atomic push. Nothing is pushed if any step fails: git reset --hard
 # to the commit before, and git tag -d the tags written.
-set -euo pipefail
+set -Eeuo pipefail
 
 die() { echo "release-command: $*" >&2; exit 1; }
+
+# The public proxy alone answers, as it answers go install: a GOPRIVATE
+# or GONOPROXY match would otherwise read origin directly and pass a
+# version the proxy does not serve. RELEASE_PROXY is for the tests.
+export GOPROXY="${RELEASE_PROXY:-https://proxy.golang.org}" GOPRIVATE= GONOPROXY= GOFLAGS="${GOFLAGS:+$GOFLAGS }"
+[ -n "${RELEASE_PROXY:-}" ] || export GONOSUMDB= GOSUMDB=sum.golang.org
+GOFLAGS="$(printf '%s' "$GOFLAGS" | sed -E 's/-mod=[a-z]+//g')"
+export GOFLAGS
 
 VERSION="${1:-}"; shift || true
 [ -n "$VERSION" ] && [ $# -gt 0 ] || die "usage: $0 <version> <command-dir>..."
 HERE="$(cd "$(dirname "$0")" && pwd)"
 [ -z "$(git status --porcelain)" ] || die "working tree is not clean"
+
+# Everything below is checked before anything is changed.
+git fetch -q origin main --tags || die "cannot fetch origin"
+git merge-base --is-ancestor origin/main HEAD \
+  || die "HEAD does not contain origin/main: pull first"
 git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null || die "the root is not tagged $VERSION: run make release first"
-MODULE="$(GOWORK=off go list -m)"
-err="$(cd "$(mktemp -d)" && GOWORK=off GOFLAGS= go list -m -e -f '{{with .Error}}{{.Err}}{{end}}' "$MODULE@$VERSION" 2>&1)"
-[ -z "$err" ] || die "$MODULE@$VERSION is not on the proxy yet: $err"
+remote_tags="$(git ls-remote --tags origin 2>/dev/null | sed -e 's|.*refs/tags/||' -e '/\^{}$/d')"
+for c in "$@"; do
+  [ -f "$c/go.mod" ] || die "no module at $c"
+  ! git rev-parse -q --verify "refs/tags/$c/$VERSION" >/dev/null || die "$c/$VERSION is tagged already"
+  ! printf '%s\n' "$remote_tags" | grep -qxF "$c/$VERSION" || die "$c/$VERSION is on origin already"
+done
+
+# The root and every library at VERSION must be on the proxy, or the
+# tidy below fails half way.
+on_proxy() {
+  local err
+  err="$(cd "$(mktemp -d)" && GOWORK=off go list -m -e -f '{{with .Error}}{{.Err}}{{end}}' "$1@$VERSION" 2>&1)"
+  [ -z "$err" ] || die "$1@$VERSION is not on the proxy yet: $err"
+}
+on_proxy "$(sed -n 's/^module[[:space:]]*//p' go.mod | head -1)"
+for lib in $(git ls-files '*/go.mod'); do
+  dir="${lib%/go.mod}"
+  skip=""
+  for c in "$@"; do [ "$dir" = "$c" ] && skip=1; done
+  [ -n "$skip" ] || on_proxy "$(sed -n 's/^module[[:space:]]*//p' "$lib" | head -1)"
+done
+
+START="$(git rev-parse HEAD)"
+written=""
+trap 'echo "release-command: failed; undo with: git reset --hard $START${written:+; git tag -d$written}" >&2' ERR
 
 # Each dropped replace, as dir|old=new, to restore after the tag; a list
 # rather than an associative array, which the bash macOS ships lacks.
 restore=""
 for c in "$@"; do
-  [ -f "$c/go.mod" ] || die "no module at $c"
   pairs="$(cd "$c" && GOWORK=off go mod edit -json | awk '
     /"Replace"/ { in_r = 1 }
     in_r && /"Old"/ { want = "old" }
@@ -54,6 +88,7 @@ for c in "$@"; do
   notes="$("$HERE/release-notes.sh" "$VERSION")"
   git tag -a "$c/$VERSION" -m "$notes"
   tags="$tags $c/$VERSION"
+  written="$tags"
 done
 
 for r in $restore; do

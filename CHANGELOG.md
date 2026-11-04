@@ -273,6 +273,11 @@ versions may break the API.
   `Authorization`, so "a basic implementation" is kept; a password that
   is the word itself (`password=password`) and a comparison
   (`password==""`) are kept.
+- `make release-command` refuses before changing anything unless HEAD
+  contains `origin/main`, the command tag is new locally and on origin,
+  and the public proxy serves the root and every library at the version
+  (`GOPROXY` forced, `GOPRIVATE`/`GONOPROXY`/`GONOSUMDB` cleared); a
+  later failure prints how to undo it. `make guard-test` runs its tests.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

@@ -90,9 +90,11 @@ check: fmt tidy-check vet deps replaces lint vuln test guard-test
 extracted:
 	@scripts/check-extracted.sh $(MODULES)
 
-# The release guard's own tests, against throwaway repositories.
+# The release guard's and release-command's own tests, against
+# throwaway repositories.
 guard-test:
 	@scripts/release-guard-test.sh
+	@scripts/release-command-test.sh
 
 # Checks one tag is safe to push, before it is pushed. A pushed tag is
 # permanent — the proxy and the checksum database keep the version
