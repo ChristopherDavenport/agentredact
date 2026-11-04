@@ -39,9 +39,12 @@ type Verdict struct {
 	// found in, by their IDs in the redacted session, which name no
 	// original.
 	Entries []string
-	// Covered is the state of the redacted session the verdict judged
-	// ([StateOf]), which [WriteVerdict] records: a verdict clears that
-	// state and no other.
+	// Covered is the state of the redacted session the judge read
+	// ([StateOf]), which [WriteVerdict] records, and refuses when the
+	// session it is given is in another: a verdict clears that state and
+	// no other. A judge sets it when it reads the session (the scan's
+	// and the review's Result.Verdict do), never from the session the
+	// verdict is written on.
 	Covered State
 }
 
@@ -92,6 +95,11 @@ type verdictDetails struct {
 	Entries  []string       `json:"agentredact:entries,omitempty"`
 	Covered  *State         `json:"agentredact:covered,omitempty"`
 }
+
+// ErrStateChanged is returned by [WriteVerdict] for a verdict whose
+// judge read the session in another state than the one it is given:
+// the session changed since it was judged.
+var ErrStateChanged = errors.New("agentredact: the session changed since it was judged")
 
 // ErrNotRedacted is returned by [WriteVerdict] for a session that is
 // not a redacted one.
@@ -166,7 +174,13 @@ func WriteVerdict(red *agentsession.Session, judged string, v Verdict, at time.T
 	}
 	entries := slices.Clone(v.Entries)
 	slices.Sort(entries)
-	covered := StateOf(red)
+	if v.Covered.Digest == "" {
+		return nil, errors.New("agentredact: a verdict says the state it judged (Verdict.Covered)")
+	}
+	if now := StateOf(red); now != v.Covered {
+		return nil, fmt.Errorf("%w: %s", ErrStateChanged, red.ID())
+	}
+	covered := v.Covered
 	if covered.Head != judged {
 		return nil, fmt.Errorf("agentredact: a verdict judges a session up to its head, %s, not %s", covered.Head, judged)
 	}

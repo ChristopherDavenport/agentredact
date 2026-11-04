@@ -66,8 +66,11 @@ type Flag struct {
 
 // Result is what one review found.
 type Result struct {
-	// Judged is the redacted session's entry the review covers up to.
+	// Judged is the redacted session's entry the review covers up to,
+	// and State the session's state the model read, which its verdict
+	// records.
 	Judged string
+	State  agentredact.State
 	Flags  []Flag
 	// Tokens are what the review spent.
 	Tokens int
@@ -76,7 +79,7 @@ type Result struct {
 // Verdict is the review's verdict for [agentredact.WriteVerdict]: kind
 // "eval", passing when nothing was flagged.
 func (r *Result) Verdict() agentredact.Verdict {
-	v := agentredact.Verdict{Judge: Judge, Kind: "eval", Pass: len(r.Flags) == 0, Findings: map[string]int{}}
+	v := agentredact.Verdict{Judge: Judge, Kind: "eval", Pass: len(r.Flags) == 0, Findings: map[string]int{}, Covered: r.State}
 	for _, f := range r.Flags {
 		v.Findings[f.Kind]++
 		v.Entries = append(v.Entries, f.Entry)
@@ -115,7 +118,7 @@ func (rv Reviewer) Review(ctx context.Context, red *agentsession.Session) (*Resu
 	if limit <= 0 {
 		limit = 32 << 10
 	}
-	res := &Result{Judged: agentredact.JudgedEntry(red)}
+	res := &Result{Judged: agentredact.JudgedEntry(red), State: agentredact.StateOf(red)}
 	chunks, err := chunk(red, limit)
 	if err != nil {
 		return nil, err

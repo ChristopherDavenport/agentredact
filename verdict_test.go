@@ -26,7 +26,7 @@ func TestVerdict(t *testing.T) {
 	red := read(t, st, redIDOf(orig.ID(), p.Name))
 	judged := JudgedEntry(red)
 	found := red.Entries()[2].Base().ID
-	v, err := WriteVerdict(red, judged, Verdict{Judge: "scan", Kind: "test", Findings: map[string]int{"AWS": 1}, Entries: []string{found, found}}, t0)
+	v, err := WriteVerdict(red, judged, Verdict{Judge: "scan", Kind: "test", Findings: map[string]int{"AWS": 1}, Entries: []string{found, found}, Covered: StateOf(red)}, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestVerdict(t *testing.T) {
 	if Cleared(got, red, "scan") {
 		t.Error("a failed scan clears the session")
 	}
-	pass, err := WriteVerdict(red, judged, Verdict{Judge: "scan", Kind: "test", Pass: true}, t0.Add(time.Hour))
+	pass, err := WriteVerdict(red, judged, Verdict{Judge: "scan", Kind: "test", Pass: true, Covered: StateOf(red)}, t0.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestVerdictLabelPrefix(t *testing.T) {
 	p := testProfile()
 	redactStore(t, st, p, StoreOptions{})
 	red := read(t, st, redIDOf(orig.ID(), p.Name))
-	v, err := WriteVerdict(red, JudgedEntry(red), Verdict{Judge: "scan", Kind: "test", Pass: true}, t0)
+	v, err := WriteVerdict(red, JudgedEntry(red), Verdict{Judge: "scan", Kind: "test", Pass: true, Covered: StateOf(red)}, t0)
 	if err != nil {
 		t.Fatal(err)
 	}

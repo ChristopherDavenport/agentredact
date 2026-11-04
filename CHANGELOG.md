@@ -223,6 +223,10 @@ versions may break the API.
   records verdicts; `publish` pushes to a redacted-only store and writes
   the manifest; `export` writes a local dataset. Every command but
   `export` needs `-key`.
+- **A verdict records the state its judge read.** The scan's and the
+  review's `Result.State` is the session's state as read, their
+  `Verdict` carries it, and `WriteVerdict` requires it and refuses, with
+  `ErrStateChanged`, a session in another state.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

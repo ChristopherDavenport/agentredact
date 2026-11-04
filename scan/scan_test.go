@@ -138,3 +138,24 @@ func TestScanFailsClosed(t *testing.T) {
 		t.Errorf("a session naming blobs, scanned without them: %+v, %v; want ErrScan", res, err)
 	}
 }
+
+// TestVerdictOfScannedState: a scan's verdict records the state the scan
+// read, and is refused for a session that changed since (N3).
+func TestVerdictOfScannedState(t *testing.T) {
+	red := redactWith(t, agentredact.Profile{Name: "scan.default@1", Strings: []agentredact.StringRedactor{agentredact.DefaultPatterns()}})
+	res, err := stub.Scan(context.Background(), red, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.State != agentredact.StateOf(red) || res.Verdict().Covered != res.State {
+		t.Errorf("state %+v, verdict covers %+v", res.State, res.Verdict().Covered)
+	}
+	grown := agentsession.NewItemEntry(openresponses.UserText("appended after the scan"))
+	grown.Timestamp = t0.Add(time.Hour)
+	if _, err := red.Append(grown); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agentredact.WriteVerdict(red, agentredact.JudgedEntry(red), res.Verdict(), t0); !errors.Is(err, agentredact.ErrStateChanged) {
+		t.Errorf("a verdict on a session changed since the scan: %v, want ErrStateChanged", err)
+	}
+}

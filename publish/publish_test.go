@@ -107,7 +107,7 @@ func TestPublish(t *testing.T) {
 		t.Fatal(err)
 	}
 	verdict := func(at time.Time) {
-		v, err := agentredact.WriteVerdict(red, agentredact.JudgedEntry(red), agentredact.Verdict{Judge: "scan", Kind: "test", Pass: true}, at)
+		v, err := agentredact.WriteVerdict(red, agentredact.JudgedEntry(red), agentredact.Verdict{Judge: "scan", Kind: "test", Pass: true, Covered: agentredact.StateOf(red)}, at)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -185,7 +185,7 @@ func TestPublishBranchAfterVerdict(t *testing.T) {
 		t.Fatal(err)
 	}
 	judged := agentredact.JudgedEntry(red)
-	v, err := agentredact.WriteVerdict(red, judged, agentredact.Verdict{Judge: "scan", Kind: "test", Pass: true}, t0.Add(time.Hour))
+	v, err := agentredact.WriteVerdict(red, judged, agentredact.Verdict{Judge: "scan", Kind: "test", Pass: true, Covered: agentredact.StateOf(red)}, t0.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestPublishStaleReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := agentredact.WriteVerdict(red, agentredact.JudgedEntry(red), agentredact.Verdict{Judge: "scan", Kind: "test", Pass: true}, t0.Add(time.Hour))
+	v, err := agentredact.WriteVerdict(red, agentredact.JudgedEntry(red), agentredact.Verdict{Judge: "scan", Kind: "test", Pass: true, Covered: agentredact.StateOf(red)}, t0.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

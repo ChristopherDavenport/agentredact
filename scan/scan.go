@@ -72,8 +72,10 @@ type Finding struct {
 // Result is what one scan found.
 type Result struct {
 	// Judged is the redacted session's entry the scan covers up to
-	// ([agentredact.JudgedEntry]).
+	// ([agentredact.JudgedEntry]), and State the session's state the
+	// scan read, which its verdict records.
 	Judged   string
+	State    agentredact.State
 	Findings []Finding
 }
 
@@ -84,7 +86,7 @@ func (r *Result) Pass() bool { return len(r.Findings) == 0 }
 // "test", passing when nothing was found, its findings counted by
 // detector and the entries named.
 func (r *Result) Verdict() agentredact.Verdict {
-	v := agentredact.Verdict{Judge: Judge, Kind: "test", Pass: r.Pass(), Findings: map[string]int{}}
+	v := agentredact.Verdict{Judge: Judge, Kind: "test", Pass: r.Pass(), Findings: map[string]int{}, Covered: r.State}
 	for _, f := range r.Findings {
 		v.Findings[f.Detector] += f.Count
 		if f.Entry != "" {
@@ -111,6 +113,7 @@ func (s Scanner) Scan(ctx context.Context, red *agentsession.Session, blobs agen
 	if !red.Header().Redacted {
 		return nil, fmt.Errorf("%w: %s", agentredact.ErrNotRedacted, red.ID())
 	}
+	state := agentredact.StateOf(red) // what is staged below, before anything else can change it
 	dir, err := os.MkdirTemp("", "agentredact-scan-")
 	if err != nil {
 		return nil, err
@@ -137,7 +140,7 @@ func (s Scanner) Scan(ctx context.Context, red *agentsession.Session, blobs agen
 		}
 		return nil, fmt.Errorf("%w: %v", ErrScan, err)
 	}
-	res := &Result{Judged: agentredact.JudgedEntry(red)}
+	res := &Result{Judged: agentredact.JudgedEntry(red), State: state}
 	counts := map[Finding]int{}
 	sc := bufio.NewScanner(&out)
 	sc.Buffer(make([]byte, 64*1024), 16<<20)
