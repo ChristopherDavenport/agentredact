@@ -317,8 +317,8 @@ func TestKeptImageFinding(t *testing.T) {
 	c := &clock{}
 	s := agentsession.New(agentsession.Header{ID: "orig-images", CreatedAt: t0, Media: agentsession.MediaSidecar})
 	blobs := blobStore{}
-	shot := "sidecar:" + blobs.put("\x89PNG\r\n\x1a\nFAKE-SCREENSHOT-0001", "image/png")
-	file := "sidecar:" + blobs.put("\x89PNG\r\n\x1a\nFAKE-PNG-AS-FILE-0002", "")
+	shot := "sidecar:" + blobs.put(testPNG("FAKE-SCREENSHOT-0001"), "image/png")
+	file := "sidecar:" + blobs.put(testPNG("FAKE-PNG-AS-FILE-0002"), "")
 	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.UserMessage(
 		&openresponses.InputText{Text: "three pictures"},
 		&openresponses.InputImage{ImageURL: fakeImage},

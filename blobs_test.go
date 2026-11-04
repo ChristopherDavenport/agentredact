@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"slices"
 	"strings"
 	"testing"
@@ -64,8 +67,10 @@ func TestRedactSidecarBlobs(t *testing.T) {
 		{name: "untyped text", data: secretText, reader: true, fate: BlobRedacted, redacted: true},
 		{name: "untyped binary", data: "\x00\x01" + fakePassword, reader: true, fate: BlobUnredacted, finding: FindingUnredactedBlob},
 		{name: "pdf", data: "%PDF-1.7\n%\xe2\xe3\xcf\xd3 " + fakePassword, typ: "application/pdf", reader: true, fate: BlobKeptMedia, finding: FindingSidecarMedia},
-		{name: "png", data: "\x89PNG\r\n\x1a\n" + fakePassword, typ: "image/png", reader: true, fate: BlobKeptImage, finding: FindingImage},
-		{name: "png as text/plain", data: "\x89PNG\r\n\x1a\n" + fakePassword, typ: "text/plain", reader: true, fate: BlobKeptImage, finding: FindingImage},
+		{name: "png", data: testPNG("png") + fakePassword, typ: "image/png", reader: true, fate: BlobKeptImage, finding: FindingImage},
+		{name: "png as text/plain", data: testPNG("as-text") + fakePassword, typ: "text/plain", reader: true, fate: BlobKeptImage, finding: FindingImage},
+		{name: "png signature alone", data: "\x89PNG\r\n\x1a\n" + fakePassword, typ: "image/png", reader: true, fate: BlobUnredacted, finding: FindingUnredactedBlob},
+		{name: "webp", data: "RIFF\x10\x00\x00\x00WEBPVP8 " + fakePassword, typ: "image/webp", reader: true, fate: BlobUnredacted, finding: FindingUnredactedBlob},
 		{name: "pdf that is text", data: "%PDF-1.7 " + fakePassword, typ: "application/pdf", reader: true, fate: BlobRedacted, redacted: true, wantType: "text/plain;charset=utf-8"},
 		{name: "script", data: "export PW=" + fakePassword, typ: "application/x-sh-fake", reader: true, fate: BlobRedacted, redacted: true},
 		{name: "text not utf-8", data: "\xff\xfe" + fakePassword, typ: "text/plain", reader: true, fate: BlobUnredacted, finding: FindingUnredactedBlob},
@@ -105,6 +110,16 @@ func TestRedactSidecarBlobs(t *testing.T) {
 			if want := []FindingKind{tc.finding}; tc.finding != "" && !slices.Equal(kinds, want) || tc.finding == "" && len(kinds) != 0 {
 				t.Errorf("findings %v, want %v", kinds, tc.finding)
 			}
+			if tc.fate == BlobKeptImage {
+				b, ok := res.Blobs[got]
+				if got == h || !ok || bytes.Contains(b.Data, []byte(fakePassword)) || b.MediaType != "image/png" {
+					t.Fatalf("the re-encoded image %s: %q, %q", got, b.Data, b.MediaType)
+				}
+				if _, err := png.Decode(bytes.NewReader(b.Data)); err != nil {
+					t.Errorf("the re-encoded image does not decode: %v", err)
+				}
+				return
+			}
 			if !tc.redacted {
 				if got != h || len(res.Blobs) != 0 {
 					t.Errorf("the reference names %s and the blobs are %v: want the original's kept, none made", got, res.Blobs)
@@ -131,6 +146,18 @@ func TestRedactSidecarBlobs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testPNG is a real 1x1 PNG whose pixel tag colours, so each tag has
+// its own bytes.
+func testPNG(tag string) string {
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: uint8(len(tag)), G: tag[0], A: 255})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		panic(err)
+	}
+	return buf.String()
 }
 
 func cmpOr(a, b string) string {

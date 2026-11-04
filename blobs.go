@@ -27,9 +27,10 @@ const (
 	// original's type. Its hash is the original's only when the
 	// redactors changed nothing.
 	BlobRedacted BlobFate = "redacted"
-	// BlobKeptImage: the original's blob, an image a profile does not
-	// replace, kept whole and reported as a [FindingImage]. It leaves
-	// only where that kind is accepted.
+	// BlobKeptImage: an image of the original a profile does not
+	// replace, kept as its pixels, decoded and encoded again into a
+	// replacement blob, and reported as a [FindingImage]. It leaves only
+	// where that kind is accepted.
 	BlobKeptImage BlobFate = "kept-image"
 	// BlobKeptMedia: the original's blob, media that is not text, kept
 	// whole and reported as a [FindingSidecarMedia]. It leaves only
@@ -268,10 +269,15 @@ func blobsInHeader(h agentsession.Header, ph *Placeholders) (agentsession.Header
 //     type, or text/plain where that type names an image, audio, video
 //     or a binary document: an SVG, a script under a vendor type, text
 //     an image_url names.
-//   - Bytes that start as an image format it knows (PNG, JPEG, GIF,
-//     WebP, TIFF, ICO, AVIF, HEIC) are an image, kept whole
-//     ([BlobKeptImage]) and reported as a [FindingImage]: [Images]
-//     replaces those an image_url names before this step.
+//   - Bytes that start as PNG, JPEG or GIF and decode as one are an
+//     image, kept as its pixels alone, decoded and encoded again, so no
+//     metadata and no bytes after its end leave with it
+//     ([BlobKeptImage], a replacement blob), and reported as a
+//     [FindingImage]: [Images] replaces those an image_url names before
+//     this step. An image in another format it knows (WebP, TIFF, ICO,
+//     AVIF, HEIC), or one that does not decode, is kept unredacted and
+//     reported as a [FindingUnredactedBlob] ([BlobUnredacted]); one
+//     with more pixels than the media limit as a [FindingBlobTooLarge].
 //   - Bytes that start as other media it knows (PDF, an archive or
 //     compressed stream, audio, video) are kept whole ([BlobKeptMedia])
 //     and reported as a [FindingSidecarMedia].
@@ -355,11 +361,20 @@ func (r *redaction) decide(h string) (blobDecision, error) {
 		if int64(len(data)) > limits.Media {
 			return tooLarge(limits.Media)
 		}
-		message := "a sidecar image kept whole: the profile replaces no image, and no string redactor reads the text in its pixels"
-		if r.images {
-			message = "a sidecar image Images does not replace, kept whole: it replaces those an image_url names, and no string redactor reads the text in its pixels"
+		out, mediaType, err := reencode(data, limits.Media)
+		switch {
+		case errors.Is(err, errNoCodec):
+			return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar image in a format the redaction cannot re-encode (PNG, JPEG and GIF alone) kept unredacted: its metadata and any bytes after it would leave with it")
+		case errors.Is(err, errTooManyPixels):
+			return keep(BlobUnredacted, FindingBlobTooLarge, "a sidecar image with more pixels than the profile's media limit kept unredacted")
+		case err != nil:
+			return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar blob that starts as an image and does not decode as one kept unredacted")
 		}
-		return keep(BlobKeptImage, FindingImage, message)
+		message := "a sidecar image kept as its pixels, re-encoded: the profile replaces no image, and no string redactor reads the text in its pixels"
+		if r.images {
+			message = "a sidecar image Images does not replace, kept as its pixels, re-encoded: it replaces those an image_url names, and no string redactor reads the text in its pixels"
+		}
+		return blobDecision{hash: agentsession.HashBytes(out), fate: BlobKeptImage, blob: &Blob{Data: out, MediaType: mediaType}, kind: FindingImage, message: message}, nil
 	case sniffMedia(data):
 		if int64(len(data)) > limits.Media {
 			return tooLarge(limits.Media)
