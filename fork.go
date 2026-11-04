@@ -156,6 +156,9 @@ func originState(fork *redaction, o *Origin, base string) (map[string]*placed, o
 	if err != nil {
 		return nil, originRead{}, err
 	}
+	// The origin's blobs are read as the fork's redaction reads them, so
+	// the replay builds the bytes the origin's redaction wrote.
+	r.mediaType, r.readBlob = fork.mediaType, fork.readBlob
 	if o.Origin != nil {
 		if err := r.forkFrom(o.Origin); err != nil {
 			return nil, originRead{}, err
@@ -178,7 +181,7 @@ func originState(fork *redaction, o *Origin, base string) (map[string]*placed, o
 		return nil, originRead{}, err
 	}
 	r.red = o.Redaction
-	r.res = &Result{Session: r.red, Blobs: map[string]Blob{}}
+	r.res = &Result{Session: r.red, Blobs: map[string]Blob{}, Sidecar: map[string]BlobFate{}}
 	if r.out, err = r.sessions(); err != nil {
 		return nil, originRead{}, err
 	}

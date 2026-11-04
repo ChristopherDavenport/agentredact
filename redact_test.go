@@ -559,8 +559,9 @@ func TestRedactUnverifiedHash(t *testing.T) {
 
 // TestRedactSidecarImage: a sidecar image is replaced by a sidecar
 // reference to the placeholder's bytes, returned as a blob under its
-// hash; an inline image in the same session stays inline; sidecar media
-// that is not an image is kept and reported.
+// hash; an inline image in the same session stays inline; a sidecar
+// file the redaction has no reader for is kept, reported and marked
+// unredacted, which no publisher carries.
 func TestRedactSidecarImage(t *testing.T) {
 	c := &clock{}
 	s := agentsession.New(agentsession.Header{ID: "orig-sidecar", CreatedAt: t0, Media: agentsession.MediaSidecar})
@@ -598,8 +599,11 @@ func TestRedactSidecarImage(t *testing.T) {
 		t.Fatalf("findings %+v, want one, for the file", res.Findings)
 	}
 	f := res.Findings[0]
-	if f.Position != 1 || f.Redactor != "images" || !strings.Contains(f.At, "file_data") || strings.Contains(f.Message, fileURL) {
+	if f.Kind != FindingUnredactedBlob || f.Position != 1 || f.Redactor != "redact" || !strings.Contains(f.At, "file_data") || strings.Contains(f.Message, "sha256:") {
 		t.Errorf("finding %+v", f)
+	}
+	if fileHash := strings.TrimPrefix(fileURL, "sidecar:"); len(res.Sidecar) != 2 || res.Sidecar[hash] != BlobMade || res.Sidecar[fileHash] != BlobUnredacted {
+		t.Errorf("fates %v, want the placeholder made and the file unredacted", res.Sidecar)
 	}
 	if res.Session.Header().Media != agentsession.MediaSidecar {
 		t.Error("the redaction changed the media form")

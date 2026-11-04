@@ -168,6 +168,12 @@ const (
 	// FindingSidecarMedia: sidecar media that is not an image, such as a
 	// file, kept as the original's blob.
 	FindingSidecarMedia FindingKind = "sidecar-media"
+	// FindingUnredactedBlob: a sidecar blob that may hold text, which the
+	// redaction could not read, kept as the original's
+	// ([BlobUnredacted]). Accepting the kind makes the redaction
+	// publishable, but no publisher carries the blob: a session naming
+	// it is held.
+	FindingUnredactedBlob FindingKind = "unredacted-blob"
 	// FindingInlineMedia: inline media that is not an image, kept.
 	FindingInlineMedia FindingKind = "inline-media"
 	// FindingEmbeddedImage: an image data URL inside a longer string,

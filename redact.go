@@ -49,6 +49,15 @@ type Result struct {
 	// It is what another session redacted alongside re-points a
 	// reference into this one through: see [Alongside].
 	Counterparts map[string]string
+	// Sidecar says, for each blob the redaction's own entries reference
+	// by a sidecar URL ([SidecarRefs]), by hash, what the redaction did
+	// with it: see [BlobFate]. A hash written inside text is not a
+	// reference: the redaction writes a placeholder in its place,
+	// "[REDACTED blob#<n>]", and never follows it. Like Findings it
+	// covers the whole redaction on every call. A fork's prefix is its
+	// origin's redaction's, whose fates [RedactStore] adds to the
+	// fork's report. Nil when the redaction references no blob.
+	Sidecar map[string]BlobFate
 	// Counts are the replacements the string redactors made in what the
 	// redacted session holds of its own, header and every entry it
 	// wrote or replayed, by kind: "secret" for [Secrets], a pattern's
@@ -66,6 +75,7 @@ type options struct {
 	alongside Alongside
 	resolve   func(id string) (*agentsession.Session, error)
 	mediaType func(hash string) string
+	blobs     func(hash string) ([]byte, string, error)
 }
 
 // WithMediaTypes tells [Redact] the media type of a sidecar blob the
@@ -368,6 +378,7 @@ func redactSession(p Profile, key Key, original, existing *agentsession.Session,
 		return nil, err
 	}
 	r.mediaType = o.mediaType
+	r.readBlob = o.blobs
 	if o.origin != nil {
 		if err := r.forkFrom(o.origin); err != nil {
 			return nil, err
@@ -391,7 +402,7 @@ func redactSession(p Profile, key Key, original, existing *agentsession.Session,
 		}
 		r.red = existing
 	}
-	r.res = &Result{Session: r.red, Blobs: map[string]Blob{}, Counts: headerCounts}
+	r.res = &Result{Session: r.red, Blobs: map[string]Blob{}, Sidecar: map[string]BlobFate{}, Counts: headerCounts}
 	if r.out, err = r.sessions(); err != nil {
 		return nil, err
 	}
@@ -418,6 +429,9 @@ func redactSession(p Profile, key Key, original, existing *agentsession.Session,
 	}
 	if len(r.res.Blobs) == 0 {
 		r.res.Blobs = nil
+	}
+	if len(r.res.Sidecar) == 0 {
+		r.res.Sidecar = nil
 	}
 	r.res.Counterparts = make(map[string]string, len(r.placed))
 	for id, pl := range r.placed {
@@ -450,6 +464,7 @@ func newRedaction(p Profile, key Key, original *agentsession.Session, along Alon
 		origID:   original.ID(),
 		placed:   map[string]*placed{},
 		along:    along,
+		types:    map[string]string{},
 	}
 	r.redID = names.ID()
 	r.images = slices.ContainsFunc(p.Entries, func(e EntryRedactor) bool { _, ok := e.(images); return ok })
@@ -458,7 +473,7 @@ func newRedaction(p Profile, key Key, original *agentsession.Session, along Alon
 	// before the profile's own rules; the user's identity values, as far
 	// as the original has named them, after.
 	ids := Plain(names.ReplaceIDs(agentsession.SessionIDsNamed(original)))
-	chain := Chain(append(append([]StringRedactor{ids}, p.Strings...), func(s string, ph *Placeholders) string {
+	chain := Chain(append(append([]StringRedactor{ids, blobsInText}, p.Strings...), func(s string, ph *Placeholders) string {
 		return r.idents.replace(s, ph)
 	})...)
 	r.f = func(s string) string { return chain(s, r.ph) }
