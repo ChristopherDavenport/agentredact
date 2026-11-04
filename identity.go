@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ChristopherDavenport/agentsession"
+	"github.com/ChristopherDavenport/openresponses"
 )
 
 // IdentityMember names a member of a converted session that holds a
@@ -41,6 +42,11 @@ type IdentityMember struct {
 	// email address in it; of a pattern with groups, each group a match
 	// fills.
 	Extract *regexp.Regexp
+	// Commands harvests what a call running whoami, hostname, uname -n
+	// or id -un printed: the lines of its output, paired with the call by
+	// its call_id, that are one name each. Pointer and Extract are not
+	// read.
+	Commands bool
 	// Home says the member holds a path, of which the home directory it
 	// starts with, /home/<name>, /Users/<name> or <drive>:\Users\<name>,
 	// is harvested: a working directory names the user through it.
@@ -81,19 +87,45 @@ func ClaudeCodeIdentity() []IdentityMember {
 // login@host:~ or login@host:/path.
 var promptPattern = regexp.MustCompile(`(?:^|[\s"'(\[>])([a-z_][a-z0-9_-]{1,31})@([A-Za-z0-9][A-Za-z0-9-]{0,62}):(?:~|/)`)
 
+// More prompt shapes: [login@host dir]$ and login@host dir %.
+var (
+	bracketPrompt = regexp.MustCompile(`\[([a-z_][a-z0-9_-]{1,31})@([A-Za-z0-9][A-Za-z0-9.-]{0,62})[ :][^\]\n]*\][$#%]`)
+	spacePrompt   = regexp.MustCompile(`(?m)(?:^|[\s"'])([a-z_][a-z0-9_-]{1,31})@([A-Za-z0-9][A-Za-z0-9-]{0,62}) [~/][^\s]* ?[%$#]`)
+	// idPattern finds the names id prints: uid=1000(name) gid=...(group).
+	idPattern = regexp.MustCompile(`\b(?:uid|gid|groups)=[0-9]+\(([^)\s]+)\)`)
+	// gitAuthor finds the names and emails git log and git show print.
+	gitAuthor = regexp.MustCompile(`(?m)^\s*(?:Author|Commit|Committer):\s+([^<\n]+?)\s+<([^>\s]+@[^>\s]+)>`)
+	// transcriptCommand finds a shell transcript's whoami, hostname or
+	// uname -n and the name it printed on the next line.
+	transcriptCommand = regexp.MustCompile(`(?m)\$ (?:whoami|hostname|uname -n|id -un)\s*\n([A-Za-z0-9_.-]{2,64})\s*$`)
+	// identityCommand finds, in a call's arguments, a command printing a
+	// login or host name.
+	identityCommand = regexp.MustCompile(`(?:^|[^A-Za-z0-9_-])(?:whoami|hostname|uname -n|id -un)(?:$|[^A-Za-z0-9_-])`)
+	// oneName is an output line that is a single login or host name.
+	oneName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{1,63}$`)
+)
+
 // lsPattern finds the owner and group names an ls -l listing writes.
 var lsPattern = regexp.MustCompile(`(?m)^[-dlcbps][rwxsStT-]{9}[.+@]?\s+[0-9]+\s+([A-Za-z_][A-Za-z0-9_.-]*)\s+([A-Za-z_][A-Za-z0-9_.-]*)\s+[0-9]`)
 
 // TextIdentity is the identity members any session's text carries
 // whatever wrote it: the login and host names a shell prompt writes,
-// the owner and group names an ls -l listing writes, and the host an
-// env entry's workspace names. A system account's name (root, nobody
+// the owner and group names an ls -l listing writes, the names id prints,
+// git's author and committer names and emails, what whoami, hostname and
+// uname -n printed (in a transcript, or as a call's output), and the
+// host an env entry's workspace names. A system account's name (root, nobody
 // and the like) is never harvested.
 func TextIdentity() []IdentityMember {
 	return []IdentityMember{
 		{Type: agentsession.TypeEnv, Pointer: "/workspace/host"},
 		{Anywhere: true, Extract: promptPattern},
 		{Anywhere: true, Extract: lsPattern},
+		{Anywhere: true, Extract: bracketPrompt},
+		{Anywhere: true, Extract: spacePrompt},
+		{Anywhere: true, Extract: idPattern},
+		{Anywhere: true, Extract: gitAuthor},
+		{Anywhere: true, Extract: transcriptCommand},
+		{Commands: true},
 	}
 }
 
@@ -110,7 +142,7 @@ const minIdentity = 3
 
 // validate reports whether m can be read.
 func (m IdentityMember) validate() error {
-	if m.Anywhere && m.Extract == nil {
+	if m.Anywhere && m.Extract == nil && !m.Commands {
 		return fmt.Errorf("agentredact: an identity member read anywhere needs an Extract pattern")
 	}
 	if m.Pointer != "" && !strings.HasPrefix(m.Pointer, "/") {
@@ -123,6 +155,8 @@ func (m IdentityMember) validate() error {
 // and their spellings, matched without regard to ASCII case.
 type identities struct {
 	values map[string]bool
+	// calls are the calls, by call_id, whose output prints a name.
+	calls map[string]bool
 	// spellings maps each spelling, lowercased, to its value; order holds
 	// them longest first, then in byte order.
 	spellings map[string]string
@@ -130,7 +164,7 @@ type identities struct {
 }
 
 func newIdentities() *identities {
-	return &identities{values: map[string]bool{}, spellings: map[string]string{}}
+	return &identities{values: map[string]bool{}, spellings: map[string]string{}, calls: map[string]bool{}}
 }
 
 // clone is a copy of ids, so a fork continues its origin's set without
@@ -139,6 +173,9 @@ func (ids *identities) clone() *identities {
 	c := newIdentities()
 	for v := range ids.values {
 		c.add(v)
+	}
+	for id := range ids.calls {
+		c.calls[id] = true
 	}
 	return c
 }
@@ -286,6 +323,10 @@ func (ids *identities) found(s string) bool {
 func (ids *identities) harvestEntry(members []IdentityMember, e agentsession.Entry) error {
 	var tree any
 	for _, m := range members {
+		if m.Commands {
+			ids.commands(e)
+			continue
+		}
 		if m.Header || m.Type != "" && m.Type != e.EntryType() {
 			continue
 		}
@@ -307,6 +348,40 @@ func (ids *identities) harvestEntry(members []IdentityMember, e agentsession.Ent
 		ids.harvest(m, tree)
 	}
 	return nil
+}
+
+// commands remembers a call that runs a command printing a name, and
+// harvests the names its output prints.
+func (ids *identities) commands(e agentsession.Entry) {
+	it, ok := e.(*agentsession.ItemEntry)
+	if !ok {
+		return
+	}
+	switch v := it.Item.(type) {
+	case *openresponses.FunctionCall:
+		if identityCommand.MatchString(v.Arguments) {
+			ids.calls[v.CallID] = true
+		}
+	case *openresponses.FunctionCallOutput:
+		if !ids.calls[v.CallID] {
+			return
+		}
+		data, err := json.Marshal(v)
+		if err != nil {
+			return
+		}
+		var tree any
+		if tree, err = decodeTree(data); err != nil {
+			return
+		}
+		for _, s := range allStrings(tree, nil) {
+			for _, line := range strings.Split(s, "\n") {
+				if line = strings.TrimSpace(line); oneName.MatchString(line) && line != v.CallID && line != "function_call_output" {
+					ids.add(line)
+				}
+			}
+		}
+	}
 }
 
 // harvestHeader adds the values members name in the header h.

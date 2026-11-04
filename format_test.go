@@ -653,3 +653,26 @@ func TestNumberingSkipsLeftOut(t *testing.T) {
 		t.Errorf("the kept key is not numbered 1:\n%s", file)
 	}
 }
+
+// TestIdentityRecheck: login and host names in prompts without a colon,
+// id's uid and gid, whoami's and uname -n's output paired with the call
+// that ran them, and git author names are harvested and replaced (N2).
+func TestIdentityRecheck(t *testing.T) {
+	c := &clock{}
+	s := newOriginal("orig-identity-recheck")
+	appendAt(t, s, c, user("[fakelogin1@fakehost1 ~]$ id\nuid=1000(fakeuid) gid=1000(fakegid) groups=1000(fakegid)\nfakelogin2@fakehost2 ~ % ls"))
+	call := agentsession.NewItemEntry(&openresponses.FunctionCall{CallID: "call-w", Name: "bash", Arguments: `{"command":"whoami && uname -n"}`})
+	call.ResponseID = "resp-1"
+	appendAt(t, s, c, call)
+	appendAt(t, s, c, &agentsession.ResponseEntry{ResponseID: "resp-1", Status: openresponses.ResponseStatusCompleted})
+	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.NewFunctionCallOutput("call-w", "fakewhoami\nfakeunamehost\n")))
+	appendAt(t, s, c, user("commit abc\nAuthor: Fakefirst Fakelast <fake.author@example.test>\nDate: x\n\nfakewhoami on fakeunamehost, fakelogin1, fakeuid, Fakefirst Fakelast"))
+	p := Profile{Name: "test.identity-recheck@1", Identity: ClaudeCodeIdentity()}
+	res := redact(t, p, s, nil)
+	file := strings.ToLower(string(fileOf(t, res.Session)))
+	for _, v := range []string{"fakelogin1", "fakehost1", "fakelogin2", "fakehost2", "fakeuid", "fakegid", "fakewhoami", "fakeunamehost", "fakefirst fakelast", "fake.author@example.test"} {
+		if strings.Contains(file, v) {
+			t.Errorf("the redaction keeps %q", v)
+		}
+	}
+}

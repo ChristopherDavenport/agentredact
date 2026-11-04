@@ -170,7 +170,7 @@ func HomePaths(home string) StringRedactor {
 	others := otherSideHomes(home, re)
 	return func(s string, ph *Placeholders) string {
 		endsPath := func(c byte) bool { return c == '/' || c == '\\' || !continuesSegment(c) }
-		n := 0
+		s, n := replaceHome(s, windowsProfiles(s), "~", endsPath)
 		for _, o := range others {
 			var k int
 			s, k = replaceHome(s, o.FindAllStringIndex(s, -1), "~", endsPath)
@@ -201,6 +201,26 @@ func HomePaths(home string) StringRedactor {
 		n += k
 		return s
 	}
+}
+
+// windowsProfile matches a Windows user's profile seen from WSL,
+// /mnt/<drive>/Users/<name>, whatever the name and its case.
+var windowsProfile = regexp.MustCompile(`/mnt/[A-Za-z]` + homeSeparator + `(?i:users)` + homeSeparator + `([^/\\\s"':*?<>|]+)`)
+
+// sharedProfiles are the profiles under Users no person owns.
+var sharedProfiles = map[string]bool{"public": true, "default": true, "all users": true, "default user": true}
+
+// windowsProfiles are the matches of windowsProfile in s that name a
+// person's profile: any WSL user's Windows home is a home, as the
+// Windows name often differs from the Linux one.
+func windowsProfiles(s string) [][]int {
+	var out [][]int
+	for _, m := range windowsProfile.FindAllStringSubmatchIndex(s, -1) {
+		if !sharedProfiles[strings.ToLower(s[m[2]:m[3]])] {
+			out = append(out, m[:2])
+		}
+	}
+	return out
 }
 
 // otherSideHomes are the patterns of home as the other side of a WSL
@@ -410,7 +430,10 @@ func DefaultPatterns() StringRedactor {
 // line, which is redacted to the end of the string; a token after
 // Bearer; Hugging Face, Stripe live, GitLab personal access and Slack
 // webhook tokens; an AWS secret access key where a name says it is one;
-// and the password in a URL's credentials. A pattern with a group named
+// the password in a URL's credentials, in a password= keyword or in
+// curl -u, a Basic authorization, an AWS secret key and session token
+// in name/value pairs, Google OAuth tokens and client secrets, and a
+// PEM block in base64. A pattern with a group named
 // "secret" replaces that group alone, so "Bearer" and the URL around a
 // password stay. A change here changes what a profile using
 // DefaultPatterns writes, so it takes a new version.
@@ -422,9 +445,17 @@ func ExtraSecretPatterns() []guard.Pattern {
 		{Name: "huggingface_token", Regexp: regexp.MustCompile(`\bhf_[A-Za-z0-9]{30,}\b`)},
 		{Name: "stripe_key", Regexp: regexp.MustCompile(`\b(?:sk|rk)_live_[A-Za-z0-9]{16,}\b`)},
 		{Name: "gitlab_token", Regexp: regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}\b`)},
-		{Name: "slack_webhook", Regexp: regexp.MustCompile(`https://hooks\.slack\.com/services/[A-Za-z0-9_/-]+`)},
+		{Name: "slack_webhook", Regexp: regexp.MustCompile(`https:(?:\\?/){2}hooks\.slack\.com(?:\\?/)services(?:\\?/)[A-Za-z0-9_-]+(?:(?:\\?/)[A-Za-z0-9_-]+)*`)},
+		{Name: "google_oauth_token", Regexp: regexp.MustCompile(`\bya29\.[A-Za-z0-9_-]{20,}`)},
+		{Name: "google_client_secret", Regexp: regexp.MustCompile(`\bGOCSPX-[A-Za-z0-9_-]{20,}`)},
+		{Name: "pem_base64", Regexp: regexp.MustCompile(`\bLS0tLS1CRUdJT[A-Za-z0-9+/]{16,}={0,2}`)},
 		{Name: "aws_secret_key", Regexp: regexp.MustCompile(`(?i)(?:aws_?secret_?(?:access_?)?key|secret_?access_?key)["']?\s*[:=]\s*["']?(?P<secret>[A-Za-z0-9/+]{40})\b`)},
-		{Name: "url_password", Regexp: regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@"'\\]+:(?P<secret>[^\s@/"'\\]+)@`)},
+		{Name: "aws_secret_key", Regexp: regexp.MustCompile(`(?i)aws_secret_access_key\\?"\s*,\s*\\?"value\\?"\s*:\s*\\?"(?P<secret>[A-Za-z0-9/+]{40})`)},
+		{Name: "aws_session_token", Regexp: regexp.MustCompile(`(?i)(?:\\?"session_?token\\?"\s*:\s*\\?"|aws_session_token["']?\s*[:=]\s*["']?)(?P<secret>[A-Za-z0-9/+=]{16,})`)},
+		{Name: "url_password", Regexp: regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@"'\\]*:(?P<secret>[^\s@/"'\\]+)@`)},
+		{Name: "password", Regexp: regexp.MustCompile(`(?i)\b(?:password|passwd|pwd)=(?P<secret>[^;\s"'&,)]+)`)},
+		{Name: "basic_auth", Regexp: regexp.MustCompile(`(?:^|\s)(?:-u|--user)\s+["']?[^\s:"']+:(?P<secret>[^\s"']+)`)},
+		{Name: "basic_auth", Regexp: regexp.MustCompile(`(?i)\bbasic\s+(?P<secret>[A-Za-z0-9+/]{8,}={0,2})`)},
 	}
 }
 

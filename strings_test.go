@@ -236,7 +236,7 @@ func TestDefaultProfileLeaks(t *testing.T) {
 		{"wsl$", home, `\\wsl$\Debian\home\example`, `~`},
 		{"mnt", home, "cd /mnt/c/Users/example/proj", "cd ~/proj"},
 		{"windows", home, `C:\Users\example\proj`, `~\proj`},
-		{"other user", home, "/mnt/c/Users/other/proj", "/mnt/c/Users/other/proj"},
+		{"other user", home, "/mnt/c/Users/other/proj", "~/proj"}, // any WSL user's Windows profile is a home (N2)
 		{"bearer", pats, "Authorization: Bearer fakeTOKENfakeTOKEN0000", "Authorization: Bearer [REDACTED bearer_token]"},
 		{"hf", pats, "hf_FAKEfakeFAKEfakeFAKEfakeFAKEfake00", "[REDACTED huggingface_token]"},
 		{"stripe", pats, "sk_live_FAKEfakeFAKEfake0000 rk_live_FAKEfakeFAKEfake0000", "[REDACTED stripe_key] [REDACTED stripe_key]"},
@@ -248,6 +248,38 @@ func TestDefaultProfileLeaks(t *testing.T) {
 		{"truncated", pats, "key: -----BEGIN RSA PRIVATE KEY-----\nFAKEFAKE\nFAKE", "key: [REDACTED private_key]"},
 		{"json spelling", sec, `{"arguments":"{\"pw\":\"fake\\\"pass\\\\word\"}"}`, `{"arguments":"{\"pw\":\"[REDACTED]\"}"}`},
 		{"json spelling once", sec, `"pw":"fake\"pass\\word"`, `"pw":"[REDACTED]"`},
+	} {
+		if got := tt.r(tt.in, nil); got != tt.want {
+			t.Errorf("%s: %q = %q, want %q", tt.name, tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestRecheckLeaks: what the round-two re-check found the default
+// profile kept (N2).
+func TestRecheckLeaks(t *testing.T) {
+	home := HomePaths("/home/example")
+	pats := DefaultPatterns()
+	for _, tt := range []struct {
+		name     string
+		r        StringRedactor
+		in, want string
+	}{
+		{"mnt other name", home, "cd /mnt/c/Users/Fake.Person/proj", "cd ~/proj"},
+		{"mnt case", home, "/mnt/d/users/EXAMPLE/x", "~/x"},
+		{"mnt public kept", home, "/mnt/c/Users/Public/x", "/mnt/c/Users/Public/x"},
+		{"redis", pats, "redis://:fakepass0000@cache.example.invalid:6379", "redis://:[REDACTED url_password]@cache.example.invalid:6379"},
+		{"keyword", pats, "Server=db;User Id=sa;Password=FakePass0000;", "Server=db;User Id=sa;Password=[REDACTED password];"},
+		{"keyword lower", pats, "host=db password=fakepass0000 dbname=x", "host=db password=[REDACTED password] dbname=x"},
+		{"curl -u", pats, "curl -u fakeuser:fakepass0000 https://x.invalid", "curl -u fakeuser:[REDACTED basic_auth] https://x.invalid"},
+		{"basic", pats, "Authorization: Basic ZmFrZXVzZXI6ZmFrZXBhc3M=", "Authorization: Basic [REDACTED basic_auth]"},
+		{"k8s env", pats, `{"name":"AWS_SECRET_ACCESS_KEY","value":"FAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfake"}`, `{"name":"AWS_SECRET_ACCESS_KEY","value":"[REDACTED aws_secret_key]"}`},
+		{"ecs env escaped", pats, `{\"Name\": \"AWS_SECRET_ACCESS_KEY\", \"Value\": \"FAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfake\"}`, `{\"Name\": \"AWS_SECRET_ACCESS_KEY\", \"Value\": \"[REDACTED aws_secret_key]\"}`},
+		{"sts", pats, `"SessionToken": "FAKEsessionTOKENfake0000FAKE"`, `"SessionToken": "[REDACTED aws_session_token]"`},
+		{"ya29", pats, "ya29.FAKEfakeFAKEfakeFAKEfake00", "[REDACTED google_oauth_token]"},
+		{"gocspx", pats, "GOCSPX-FAKEfakeFAKEfakeFAKE00", "[REDACTED google_client_secret]"},
+		{"pem base64", pats, "key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCkZBS0U=", "key: [REDACTED pem_base64]"},
+		{"slack escaped", pats, `"https:\/\/hooks.slack.com\/services\/TFAKE0000\/BFAKE0000\/FAKEfakeFAKE"`, `"[REDACTED slack_webhook]"`},
 	} {
 		if got := tt.r(tt.in, nil); got != tt.want {
 			t.Errorf("%s: %q = %q, want %q", tt.name, tt.in, got, tt.want)

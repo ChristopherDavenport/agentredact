@@ -238,6 +238,16 @@ versions may break the API.
   `Publish` does through the same gate, and runs the profile's string
   rules over every document once more. `agentredact export` takes
   `-key` and the profile, and never exports unchecked.
+- **More found under the default profile (re-check).** `HomePaths`
+  takes any `/mnt/<drive>/Users/<name>` as a home, whatever the name or
+  its case (shared profiles aside). `ExtraSecretPatterns` adds
+  `redis://:pw@` URLs, `password=` keywords, `curl -u` and Basic
+  authorization, AWS secret keys in name/value pairs and session tokens,
+  Google `ya29.` tokens and `GOCSPX-` secrets, base64 PEM blocks, and
+  Slack webhooks written with `\/`. `TextIdentity` adds prompts without a
+  colon, `id`'s names, git author and committer names and emails, and
+  what `whoami`, `hostname` and `uname -n` printed, in a transcript or as
+  a call's output paired by `call_id` (`IdentityMember.Commands`).
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such
