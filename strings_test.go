@@ -314,3 +314,23 @@ func TestRound4Leaks(t *testing.T) {
 		}
 	}
 }
+
+// TestNoOverRedaction: prose and code that only look like credentials
+// are kept (round 4, 3).
+func TestNoOverRedaction(t *testing.T) {
+	pats := DefaultPatterns()
+	for _, in := range []string{
+		"a basic implementation of the parser",
+		"Basic authentication is described in RFC 7617",
+		"login(user=user, password=password)",
+		`if password=="" { return }`,
+		"kwargs: pwd=pwd",
+	} {
+		if got := pats(in, nil); got != in {
+			t.Errorf("%q = %q, want it kept", in, got)
+		}
+	}
+	if got := pats("Authorization: Basic ZmFrZXVzZXI6ZmFrZXBhc3M=", nil); got != "Authorization: Basic [REDACTED basic_auth]" {
+		t.Errorf("a Basic authorization: %q", got)
+	}
+}

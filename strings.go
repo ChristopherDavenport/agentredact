@@ -410,10 +410,29 @@ func Patterns(patterns ...guard.Pattern) StringRedactor {
 				s = p.Regexp.ReplaceAllStringFunc(s, func(m string) string { return ph.For(p.Name, m) })
 				continue
 			}
-			s = replaceGroup(s, p.Regexp, g, func(m string) string { return ph.For(p.Name, m) })
+			s = replaceGroup(s, p.Regexp, g, func(m string) string {
+				if notSecret(p.Name, m) {
+					return m
+				}
+				return ph.For(p.Name, m)
+			})
 		}
 		return s
 	}
+}
+
+// notSecret reports whether m, what a pattern's secret group matched,
+// is plainly no secret: a password that is the word password itself, as
+// code passing a variable of that name writes password=password.
+func notSecret(name, m string) bool {
+	if name != "password" {
+		return false
+	}
+	switch strings.ToLower(m) {
+	case "password", "passwd", "pwd", "pass", "secret":
+		return true
+	}
+	return false
 }
 
 // replaceGroup replaces, in each match of re in s, the text group g
@@ -479,7 +498,7 @@ func ExtraSecretPatterns() []guard.Pattern {
 		{Name: "password", Regexp: regexp.MustCompile(`(?i)\\?"[A-Za-z0-9_]*(?:password|passwd|pwd)\\?"\s*:\s*\\?"(?P<secret>[^"\\]+)\\?"`)},
 		{Name: "password", Regexp: regexp.MustCompile(`(?im)^[ \t-]*[A-Za-z0-9_]*(?:password|passwd)[ \t]*:[ \t]+["']?(?P<secret>[^\s"'#][^\n"'#]*?)["']?[ \t]*$`)},
 		{Name: "basic_auth", Regexp: regexp.MustCompile(`(?:^|\s)(?:-u|--user)\s+["']?[^\s:"']+:(?P<secret>[^\s"']+)`)},
-		{Name: "basic_auth", Regexp: regexp.MustCompile(`(?i)\bbasic\s+(?P<secret>[A-Za-z0-9+/]{8,}={0,2})`)},
+		{Name: "basic_auth", Regexp: regexp.MustCompile(`(?i)authorization\\?["']?\s*[:=]\s*\\?["']?basic\s+(?P<secret>[A-Za-z0-9+/]{8,}={0,2})`)},
 	}
 }
 

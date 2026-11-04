@@ -269,6 +269,10 @@ versions may break the API.
   keys, JSON `"password": "x"` and YAML `password: x`, AWS secret keys
   in YAML `name:`/`value:` pairs, and every line of a wrapped base64
   PEM block are found.
+- **Less over-redaction.** A Basic credential is found only after
+  `Authorization`, so "a basic implementation" is kept; a password that
+  is the word itself (`password=password`) and a comparison
+  (`password==""`) are kept.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such
