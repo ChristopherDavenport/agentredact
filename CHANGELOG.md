@@ -5,6 +5,50 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Fixed
+
+- **Security: publish carried every blob a redacted session named,
+  unredacted (#23).** `publish.Publish` copied each hash
+  `agentsession.SessionBlobs` found in the session's lines, a hash
+  written in text included (such as a tool's note naming where its
+  whole output was kept, as dax keeps a cut output), from the store of
+  originals to the target with its original bytes; and the redaction
+  read no blob, so a text blob a part referenced (an input_file's
+  `file_data`, a tool output that is just the URL) left as written, and
+  a profile without `Images` kept non-image media with no finding.
+  Now:
+  - the redaction decides every blob the session references by a
+    string that is wholly a sidecar URL (`SidecarRefs`): a text blob
+    (a text, JSON, XML or YAML type, or none and UTF-8 bytes) is read
+    (`WithBlobs`, which the store pass gives), given whole to the
+    profile's string redactors and written as a replacement blob of the
+    original's type; an image follows the image rule; other media is
+    kept and reported as `sidecar-media`, under every profile; a blob
+    that may be text and cannot be read is kept and reported as the new
+    `FindingUnredactedBlob` (`unredacted-blob`);
+  - a hash written inside text is replaced with `[REDACTED blob#<n>]`,
+    numbered by hash and counted under `blob`, and is never followed;
+  - `Result.Sidecar` and `SessionReport.Sidecar` give each reference's
+    fate (`BlobFate`: made, redacted, kept, unredacted), a fork's prefix
+    included; `SessionReport.CarriesBlob` says which may leave, and
+    `StoreReport.Public` leaves the fates out;
+  - `Publish` carries only the blobs the session references and the
+    report lets it carry, and holds a session referencing any other,
+    naming the blob in the reason; an `unredacted-blob` never leaves,
+    even when the kind is accepted. `ExportDataset` holds a session to
+    the same rule, and the scan stages the blobs a publish carries.
+  The review still reads entries alone: a text blob went through the
+  same string redactors, and the scan reads it.
+
+  What the redaction writes changes for any session holding a sidecar
+  reference or a hash in text: give profiles a new version. The
+  command's default profile is now `default@3`. A redaction written
+  under an old version with such a session resumes with
+  `ErrResumeDiverged`. A redacted-only store published before this
+  release may hold original blobs: check what it holds.
+
 ## v0.0.3 - 2026-11-04
 
 ### Fixed

@@ -34,7 +34,7 @@ URL encoding or image bytes are not found by the redactors.
 
 ```go
 p := agentredact.Profile{
-	Name: "default@2",
+	Name: "default@3",
 	Strings: []agentredact.StringRedactor{
 		agentredact.Secrets(apiKey),
 		agentredact.HomePaths(home),
@@ -51,9 +51,38 @@ res, err := agentredact.Redact(p, key, original, nil) // or the earlier redactio
 ```
 
 `Result.Blobs` holds the blobs the redacted session needs beyond the
-original's, such as the placeholder that replaced a sidecar image,
-keyed by hash, each with its media type; store them beside it with
-that type (`PutTypedBlob`).
+original's, such as the placeholder that replaced a sidecar image or a
+text blob's redacted copy, keyed by hash, each with its media type;
+store them beside it with that type (`PutTypedBlob`).
+
+### Blobs
+
+A blob is referenced by a string that is wholly a sidecar URL,
+`sidecar:sha256:<hex>` (`SidecarRefs`), wherever an entry holds it: an
+`image_url`, an input_file's `file_data`, a tool output that is just
+the URL. `Redact` decides each one, and `Result.Sidecar` says how, by
+hash:
+
+- `made`: an entry redactor made it, such as `Images`' placeholder;
+- `redacted`: a text blob (a `text/*`, JSON, XML, YAML type, or no
+  type and bytes that are UTF-8 with no NUL), read through `WithBlobs`,
+  given whole to the profile's string redactors and written as a
+  replacement blob of the original's type;
+- `kept`: an image the profile does not replace (an `image` finding),
+  or media that is not text (`sidecar-media`), kept as the original's;
+  it leaves only when the publisher accepts the finding's kind;
+- `unredacted`: a blob that may hold text the redaction could not read
+  (no `WithBlobs`, not held, or a text type that is not UTF-8), kept
+  and reported as `unredacted-blob`; it never leaves, whatever is
+  accepted.
+
+A hash written inside text, such as a tool's note naming where its
+whole output was kept, is not a reference: the redaction writes
+`[REDACTED blob#<n>]` in its place, numbered by hash, reads nothing for
+it, and no publisher follows it. The store pass gives `Redact` the
+store's blobs, and reports the fates per session, a fork's prefix
+included (`SessionReport.Sidecar`, `CarriesBlob`); the public report
+leaves them out.
 
 ### The key
 
@@ -349,8 +378,9 @@ profile's redactors never see them:
   types `image/*` under any item (`WithMediaTypes`, which the store
   pass sets), is reported as an `image` finding, since nothing reads
   the text in a screenshot; a publisher that accepts screenshots
-  accepts the kind. With `Images` a sidecar image is replaced, and
-  other sidecar media, such as a file, is kept and reported;
+  accepts the kind. With `Images` a sidecar image is replaced. Either
+  way a sidecar text blob is redacted and other sidecar media, such as
+  a PDF, is kept and reported (see Blobs);
 - an instruction part named by the hash of a text no entry the
   redaction wrote before it holds is written as `UnmetPartText` under
   its id, never under the original's hash, which can confirm a guessed
@@ -387,7 +417,8 @@ verdict covers no entry after its target.
 
 `scan.Scanner.Scan` runs the `trufflehog` binary (`os/exec`, never
 linked) over what a redacted session would publish: its file, the blobs
-it names (from a store's `BlobReader`) and, with `ATIF` set, its ATIF
+it references (`SidecarRefs`, from a store's `BlobReader`), which are
+the blobs a publish carries, and, with `ATIF` set, its ATIF
 documents exported with `NoPassthrough`, staged in a private temporary
 directory and scanned with `filesystem --json --no-verification
 --no-update`, so the scan makes no network call. A finding is kept as
@@ -409,7 +440,9 @@ redaction's own context (`review.AgentsMD`), not the original's. A
 model error, an unreadable answer or the cap fails the review. The
 review is advisory: text in the session, a web page or a tool's output,
 can steer the model, so the scan stays the gate; the cap counts every
-byte as a token so no request passes it.
+byte as a token so no request passes it. The review reads the
+session's entries, not its blobs: a text blob went through the same
+string redactors as the entries, and the scan reads it.
 
 ## Publish
 
@@ -420,6 +453,13 @@ judge in `Judges` (the scan when none are named; `Unjudged` opts out
 by name) cleared in its current state, blobs first with
 their types, importing a session the target lacks and appending to one
 it holds what it lacks; every other session is held, with its reason.
+The blobs carried are those the session references (`SidecarRefs`)
+and the report lets it carry (`SessionReport.CarriesBlob`): made or
+redacted by the pass, or kept by a rule whose finding is accepted. A
+session referencing any other, one the pass could not redact or one
+the report does not name, is held, and the reason names the blob. A
+hash written in text is never followed or carried. `ExportDataset`
+holds a session to the same rule, and writes no blob.
 Open the target set to hold only redacted entries (`WithRedactedOnly`,
 `MemoryRedactedOnly`): an original, or a verdict, sent there by mistake
 is refused. `Result.Published` names each session as a manifest does,
