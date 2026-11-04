@@ -102,7 +102,8 @@ func (r *Result) Verdict() agentredact.Verdict {
 var ErrScan = errors.New("scan: trufflehog")
 
 // Scan scans what the redacted session red would publish: its file, the
-// blobs it names, read through blobs (a store's
+// blobs it references ([agentredact.SidecarRefs]), which are the blobs
+// a publish carries with it, read through blobs (a store's
 // [agentsession.BlobReader], which may be nil only for a session naming
 // none), and, with ATIF set, its ATIF documents. It fails closed: a
 // run that does not say it finished scanning having read some bytes, a
@@ -249,7 +250,7 @@ func (s Scanner) stage(ctx context.Context, dir string, red *agentsession.Sessio
 	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), buf.Bytes(), 0o600); err != nil {
 		return nil, err
 	}
-	hashes, err := agentsession.SessionBlobs(red)
+	hashes, err := agentredact.SidecarRefs(red)
 	if err != nil {
 		return nil, err
 	}

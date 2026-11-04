@@ -14,6 +14,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 
 	"github.com/ChristopherDavenport/agentredact"
@@ -71,12 +73,18 @@ type Result struct {
 var ErrNotRedacted = errors.New("publish: the session holds an entry that is not redacted")
 
 // Publish copies to the target every redacted session of the private
-// store from under opts.Profile that may leave: the blobs it names
-// first, each with its type, then the session, imported whole when the
+// store from under opts.Profile that may leave: the blobs it references
+// first ([agentredact.SidecarRefs]), each with its type, then the
+// session, imported whole when the
 // target does not hold it and otherwise grown by the entries it lacks.
 // It reads each session afresh and holds it, unpublished, when it holds
 // a native entry, when opts.Report does not say it is publishable, or
-// when a judge has not cleared it at its judged entry. A session the
+// when a judge has not cleared it at its judged entry, or when it
+// references a blob the report does not let it carry
+// ([agentredact.SessionReport.CarriesBlob]): one the redaction could
+// not redact, or one the report does not name; the reason names the
+// blob. A hash written in text is not a reference and is never
+// followed or carried (agentredact#23). A session the
 // target refuses is held with the refusal; the error returned joins the
 // failures that stopped a session part way.
 func Publish(ctx context.Context, from, to agentsession.Store, opts Options) (*Result, error) {
@@ -99,7 +107,7 @@ func Publish(ctx context.Context, from, to agentsession.Store, opts Options) (*R
 	var errs []error
 	for _, id := range ids {
 		hold := func(reason string) { res.Held = append(res.Held, Held{Session: id, Reason: reason}) }
-		red, reason, err := g.check(ctx, from, id)
+		red, blobs, reason, err := g.check(ctx, from, id)
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -107,7 +115,7 @@ func Publish(ctx context.Context, from, to agentsession.Store, opts Options) (*R
 			hold(reason)
 			continue
 		}
-		n, err := push(ctx, from, to, red)
+		n, err := push(ctx, from, to, red, blobs)
 		if err != nil {
 			hold("the target refused it")
 			errs = append(errs, fmt.Errorf("publish: %s: %w", id, err))
@@ -147,38 +155,59 @@ func newGate(opts Options) (*gate, error) {
 }
 
 // check reads the redacted session id from the private store from and
-// returns it when it may leave: the report holds it publishable in the
-// state it is in now, it holds no native entry, and every judge cleared
-// that exact state. Otherwise it returns nil and why, and an error for a
-// failure to read.
-func (g *gate) check(ctx context.Context, from agentsession.Store, id string) (*agentsession.Session, string, error) {
+// returns it, with the blobs it references, when it may leave: the
+// report holds it publishable in the state it is in now, it holds no
+// native entry, the report lets it carry every blob it references, and
+// every judge cleared that exact state. Otherwise it returns nil and
+// why, and an error for a failure to read.
+func (g *gate) check(ctx context.Context, from agentsession.Store, id string) (*agentsession.Session, []string, string, error) {
 	rp, ok := g.reports[id]
-	switch {
-	case !ok:
-		return nil, "the store pass did not report it", nil
-	case !rp.Publishable():
-		return nil, "the store pass does not hold it publishable", nil
+	if !ok {
+		return nil, nil, "the store pass did not report it", nil
+	}
+	for _, h := range slices.Sorted(maps.Keys(rp.Sidecar)) {
+		if rp.Sidecar[h] == agentredact.BlobUnredacted {
+			return nil, nil, unredacted(h), nil
+		}
+	}
+	if !rp.Publishable() {
+		return nil, nil, "the store pass does not hold it publishable", nil
 	}
 	red, err := read(ctx, from, id)
 	if err != nil {
-		return nil, "it could not be read", err
+		return nil, nil, "it could not be read", err
 	}
 	if rp.State != agentredact.StateOf(red) {
-		return nil, "the report is of another state of the session: run the store pass again", nil
+		return nil, nil, "the report is of another state of the session: run the store pass again", nil
 	}
 	if err := ownRedacted(red); err != nil {
-		return nil, err.Error(), nil
+		return nil, nil, err.Error(), nil
+	}
+	blobs, err := agentredact.SidecarRefs(red)
+	if err != nil {
+		return nil, nil, "its blob references could not be read", err
+	}
+	for _, h := range blobs {
+		if !rp.CarriesBlob(h) {
+			return nil, nil, unredacted(h), nil
+		}
 	}
 	if len(g.judges) > 0 {
 		verdicts, err := agentredact.Verdicts(ctx, from, id)
 		if err != nil {
-			return nil, "its verdicts could not be read", err
+			return nil, nil, "its verdicts could not be read", err
 		}
 		if !agentredact.Cleared(verdicts, red, g.judges...) {
-			return nil, "not cleared by every judge in its current state", nil
+			return nil, nil, "not cleared by every judge in its current state", nil
 		}
 	}
-	return red, "", nil
+	return red, blobs, "", nil
+}
+
+// unredacted is the reason a session referencing the blob hash, which
+// the redaction did not redact, is held.
+func unredacted(hash string) string {
+	return "it references blob " + hash + ", which the redaction did not redact: it may not leave"
 }
 
 // ownRedacted refuses a session one of whose own entries carries no
@@ -198,13 +227,9 @@ func ownRedacted(s *agentsession.Session) error {
 	return nil
 }
 
-// push copies red's blobs, then red, to the target, and returns how many
-// entries it wrote.
-func push(ctx context.Context, from, to agentsession.Store, red *agentsession.Session) (int, error) {
-	hashes, err := agentsession.SessionBlobs(red)
-	if err != nil {
-		return 0, err
-	}
+// push copies hashes, the blobs red references, then red, to the
+// target, and returns how many entries it wrote.
+func push(ctx context.Context, from, to agentsession.Store, red *agentsession.Session, hashes []string) (int, error) {
 	if len(hashes) > 0 {
 		br, ok := from.(agentsession.BlobReader)
 		tw, ok2 := to.(agentsession.TypedBlobWriter)
