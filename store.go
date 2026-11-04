@@ -5,7 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/ChristopherDavenport/agentsession"
 )
@@ -148,7 +151,7 @@ func (r *StoreReport) Public(key Key) *StoreReport {
 		s.Original = ""
 		s.Sidecar = nil
 		if s.Err != nil {
-			s.Err = publicError{msg: hashRef.ReplaceAllString(s.Err.Error(), "sha256:…"), err: s.Err}
+			s.Err = publicError{msg: publicMessage(s.Redaction, s.Err), err: s.Err}
 		}
 		if s.WaitingOn != "" {
 			s.WaitingOn = RedactedID(key, s.WaitingOn, r.Profile)
@@ -157,6 +160,26 @@ func (r *StoreReport) Public(key Key) *StoreReport {
 	}
 	return &out
 }
+
+// publicMessage is err's message as a public report gives it. A blob
+// that could not be read is named by its entry and pointer alone, since
+// a file store's error names the blob's digest and its path, which can
+// name the user. Any other message has every hash and bare digest
+// elided, and the home directory written ~.
+func publicMessage(redaction string, err error) string {
+	var bre *blobReadError
+	if errors.As(err, &bre) {
+		return "agentredact: redacting " + redaction + ", " + bre.public()
+	}
+	msg := bareDigest.ReplaceAllString(hashRef.ReplaceAllString(err.Error(), "sha256:…"), "…")
+	if home, herr := os.UserHomeDir(); herr == nil && len(home) > 1 {
+		msg = strings.ReplaceAll(msg, home, "~")
+	}
+	return msg
+}
+
+// bareDigest matches a SHA-256 digest written without its prefix.
+var bareDigest = regexp.MustCompile(`\b[0-9a-f]{64}\b`)
 
 // publicError is a session's error as a public report holds it: its
 // message with every hash elided, and errors.Is finding the sentinels

@@ -70,6 +70,36 @@ func mergeFate(m map[string]BlobFate, hash string, f BlobFate) {
 // remove the reference from the original.
 var ErrBlobUnread = errors.New("agentredact: a blob the session references could not be read")
 
+// blobReadError is [ErrBlobUnread] for one reference: the entry's
+// position and type, the pointer, and the reader's error, whose message
+// may name the blob's hash and the store's path.
+type blobReadError struct {
+	pos int
+	typ string
+	at  string
+	err error
+}
+
+func (e *blobReadError) Error() string {
+	if errors.Is(e.err, agentsession.ErrNoBlob) {
+		return fmt.Sprintf("%v: the blob the reference at %s names is missing from the store: %v", ErrBlobUnread, e.at, e.err)
+	}
+	return fmt.Sprintf("%v: the reference at %s: %v", ErrBlobUnread, e.at, e.err)
+}
+
+func (e *blobReadError) Unwrap() []error { return []error{ErrBlobUnread, e.err} }
+
+// public is the error as a public report gives it: the entry and the
+// pointer, whether the blob is missing, and nothing of the reader's
+// message.
+func (e *blobReadError) public() string {
+	what := "the store could not read it"
+	if errors.Is(e.err, agentsession.ErrNoBlob) {
+		what = "its blob is missing from the store"
+	}
+	return fmt.Sprintf("entry %d (%s): %v: the reference at %s: %s", e.pos, e.typ, ErrBlobUnread, e.at, what)
+}
+
 // WithBlobs gives [Redact] the original's blobs: read returns the
 // bytes of the blob hash and the media type the original holds it
 // with, "" for none, as [agentsession.ReadSessionBlob] reads it for the
@@ -313,10 +343,7 @@ func (r *redaction) sidecars(pos int, n agentsession.Entry, made map[string]Blob
 			if d, err = r.decide(h); err != nil {
 				// The reference is named by where it is, never by the
 				// original blob's hash.
-				if errors.Is(err, agentsession.ErrNoBlob) {
-					return "", fmt.Errorf("%w: the blob the reference at %s names is missing from the store: %w", ErrBlobUnread, at, err)
-				}
-				return "", fmt.Errorf("%w: the reference at %s: %w", ErrBlobUnread, at, err)
+				return "", &blobReadError{pos: pos, typ: n.EntryType(), at: at, err: err}
 			}
 			r.decided[h] = d
 		}
