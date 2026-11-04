@@ -254,6 +254,14 @@ versions may break the API.
   the tree. The release guard refuses a command tag holding a replace
   or whose root version the proxy does not serve; the release workflow
   runs `go install` at a command tag.
+- **Fixed: identity harvesting no longer takes generic names.** Roles
+  and other format vocabulary, system and service accounts, common host
+  names, forges and their bots (`GitHub`, `runner`, …), no-reply and
+  dotless-domain addresses are never harvested, and a string that is
+  wholly a role or a type is never replaced, so a session quoting
+  `user@host:~$` keeps its roles and `Committer: GitHub` its github.com
+  URLs. A call's output is harvested only for the identity commands it
+  runs first (`whoami && ls` takes the login, not the files).
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

@@ -98,12 +98,52 @@ var (
 	// transcriptCommand finds a shell transcript's whoami, hostname or
 	// uname -n and the name it printed on the next line.
 	transcriptCommand = regexp.MustCompile(`(?m)\$ (?:whoami|hostname|uname -n|id -un)\s*\n([A-Za-z0-9_.-]{2,64})\s*$`)
-	// identityCommand finds, in a call's arguments, a command printing a
-	// login or host name.
-	identityCommand = regexp.MustCompile(`(?:^|[^A-Za-z0-9_-])(?:whoami|hostname|uname -n|id -un)(?:$|[^A-Za-z0-9_-])`)
 	// oneName is an output line that is a single login or host name.
 	oneName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{1,63}$`)
 )
+
+// identityCommands is how many commands the call's arguments run first
+// that each print a login or host name alone (whoami, hostname, uname
+// -n, id -un, joined by && or ;): their output is the output's first
+// lines, one each. What any other command prints, a listing's file
+// names among it, is never taken for the user's.
+func identityCommands(arguments string) int {
+	cmd := arguments
+	var a struct {
+		Command any `json:"command"`
+	}
+	if json.Unmarshal([]byte(arguments), &a) == nil && a.Command != nil {
+		switch c := a.Command.(type) {
+		case string:
+			cmd = c
+		case []any:
+			var parts []string
+			for _, p := range c {
+				if s, ok := p.(string); ok {
+					parts = append(parts, s)
+				}
+			}
+			cmd = strings.Join(parts, " ")
+			if len(parts) == 3 && (parts[0] == "bash" || parts[0] == "sh") && parts[1] == "-c" {
+				cmd = parts[2]
+			}
+		}
+	}
+	n := 0
+	for _, part := range commandSeparator.Split(cmd, -1) {
+		switch strings.Join(strings.Fields(part), " ") {
+		case "":
+		case "whoami", "hostname", "uname -n", "id -un", "id -u -n":
+			n++
+		default:
+			return n // what follows prints what it likes, after these
+		}
+	}
+	return n
+}
+
+// commandSeparator splits a shell command into its commands.
+var commandSeparator = regexp.MustCompile(`&&|;|\n`)
 
 // lsPattern finds the owner and group names an ls -l listing writes.
 var lsPattern = regexp.MustCompile(`(?m)^[-dlcbps][rwxsStT-]{9}[.+@]?\s+[0-9]+\s+([A-Za-z_][A-Za-z0-9_.-]*)\s+([A-Za-z_][A-Za-z0-9_.-]*)\s+[0-9]`)
@@ -132,8 +172,48 @@ func TextIdentity() []IdentityMember {
 // systemNames are account and group names no one is identified by.
 var systemNames = map[string]bool{
 	"root": true, "nobody": true, "nogroup": true, "daemon": true, "bin": true, "sys": true, "adm": true,
-	"wheel": true, "staff": true, "users": true, "admin": true, "www-data": true, "syslog": true,
-	"docker": true, "sudo": true, "messagebus": true, "localhost": true, "ubuntu": true,
+	"wheel": true, "staff": true, "users": true, "admin": true, "administrator": true, "www-data": true,
+	"syslog": true, "docker": true, "sudo": true, "messagebus": true, "localhost": true, "ubuntu": true,
+	"debian": true, "runner": true, "git": true, "host": true, "hostname": true, "server": true,
+	"machine": true, "computer": true, "guest": true, "test": true, "tester": true, "default": true,
+	"codespace": true, "vscode": true, "node": true, "app": true, "build": true, "builder": true,
+	"actions": true, "web-flow": true, "noreply": true, "example": true, "name": true, "username": true,
+	"me": true, "you": true, "your-name": true, "yourname": true, "dev": true, "ec2-user": true,
+	"centos": true, "fedora": true, "alpine": true, "kali": true, "pi": true, "raspberrypi": true,
+}
+
+// generic reports whether v names no one: a role or other word of the
+// format's vocabulary, which the Rewriter hands the string redactors
+// with the text (an item's role among them), a system or service
+// account, a host every machine has, a forge and its bots, or a no-reply
+// address. Harvested, any of them would be replaced across the session,
+// corrupting roles and URLs.
+func generic(v string) bool {
+	l := strings.ToLower(strings.TrimSpace(v))
+	if systemNames[l] || vocabulary[l] || strings.HasPrefix(l, "systemd-") || strings.HasPrefix(l, "_") {
+		return true
+	}
+	for _, p := range []string{"github", "gitlab", "bitbucket", "dependabot", "renovate"} {
+		if strings.HasPrefix(l, p) {
+			return true
+		}
+	}
+	if local, domain, ok := strings.Cut(l, "@"); ok {
+		return strings.Contains(local, "noreply") || strings.Contains(local, "no-reply") || !strings.Contains(domain, ".") ||
+			strings.HasSuffix(domain, ".local") || domain == "localhost.localdomain"
+	}
+	return false
+}
+
+// vocabulary are words of the format and the payload a string redactor
+// is handed as text where the format defines them: roles, item and
+// content types, statuses. No identity value is one, so none is ever
+// replaced.
+var vocabulary = map[string]bool{
+	"user": true, "assistant": true, "system": true, "developer": true, "tool": true, "function": true,
+	"message": true, "function_call": true, "function_call_output": true, "reasoning": true,
+	"input_text": true, "output_text": true, "input_image": true, "input_file": true, "refusal": true,
+	"completed": true, "incomplete": true, "in_progress": true, "failed": true,
 }
 
 // minIdentity is the shortest value harvested: a shorter one would match
@@ -155,8 +235,9 @@ func (m IdentityMember) validate() error {
 // and their spellings, matched without regard to ASCII case.
 type identities struct {
 	values map[string]bool
-	// calls are the calls, by call_id, whose output prints a name.
-	calls map[string]bool
+	// calls are the calls, by call_id, whose output prints names, and how
+	// many.
+	calls map[string]int
 	// spellings maps each spelling, lowercased, to its value; order holds
 	// them longest first, then in byte order.
 	spellings map[string]string
@@ -164,7 +245,7 @@ type identities struct {
 }
 
 func newIdentities() *identities {
-	return &identities{values: map[string]bool{}, spellings: map[string]string{}, calls: map[string]bool{}}
+	return &identities{values: map[string]bool{}, spellings: map[string]string{}, calls: map[string]int{}}
 }
 
 // clone is a copy of ids, so a fork continues its origin's set without
@@ -174,15 +255,15 @@ func (ids *identities) clone() *identities {
 	for v := range ids.values {
 		c.add(v)
 	}
-	for id := range ids.calls {
-		c.calls[id] = true
+	for id, n := range ids.calls {
+		c.calls[id] = n
 	}
 	return c
 }
 
 // add adds v and its spellings, unless it is too short.
 func (ids *identities) add(v string) {
-	if len(v) < minIdentity || ids.values[v] || systemNames[strings.ToLower(v)] || strings.HasPrefix(v, "systemd-") || strings.HasPrefix(v, "_") {
+	if len(v) < minIdentity || ids.values[v] || generic(v) {
 		return
 	}
 	ids.values[v] = true
@@ -298,6 +379,9 @@ func (ids *identities) matches(s string) (spans [][2]int, values []string) {
 // replace is s with every spelling of a value replaced by the value's
 // placeholder, ph.For("identity", value).
 func (ids *identities) replace(s string, ph *Placeholders) string {
+	if vocabulary[s] {
+		return s // a role or a type, which the Rewriter hands over as text
+	}
 	spans, values := ids.matches(s)
 	if spans == nil {
 		return s
@@ -359,26 +443,33 @@ func (ids *identities) commands(e agentsession.Entry) {
 	}
 	switch v := it.Item.(type) {
 	case *openresponses.FunctionCall:
-		if identityCommand.MatchString(v.Arguments) {
-			ids.calls[v.CallID] = true
+		if n := identityCommands(v.Arguments); n > 0 {
+			ids.calls[v.CallID] = n
 		}
 	case *openresponses.FunctionCallOutput:
-		if !ids.calls[v.CallID] {
+		n := ids.calls[v.CallID]
+		if n == 0 {
 			return
 		}
 		data, err := json.Marshal(v)
 		if err != nil {
 			return
 		}
-		var tree any
-		if tree, err = decodeTree(data); err != nil {
+		var out struct {
+			Output string `json:"output"`
+		}
+		if json.Unmarshal(data, &out) != nil {
 			return
 		}
-		for _, s := range allStrings(tree, nil) {
-			for _, line := range strings.Split(s, "\n") {
-				if line = strings.TrimSpace(line); oneName.MatchString(line) && line != v.CallID && line != "function_call_output" {
-					ids.add(line)
-				}
+		// The first n lines are what the n commands printed, one name
+		// each; anything after them is not taken.
+		lines := strings.Split(strings.TrimSpace(out.Output), "\n")
+		if len(lines) < n {
+			return
+		}
+		for _, line := range lines[:n] {
+			if line = strings.TrimSpace(line); oneName.MatchString(line) {
+				ids.add(line)
 			}
 		}
 	}

@@ -676,3 +676,43 @@ func TestIdentityRecheck(t *testing.T) {
 		}
 	}
 }
+
+// TestIdentityOverHarvest: generic names a prompt, a git log or a
+// listing holds are not taken for the user's: a session quoting
+// user@host:~$ keeps every role, Committer: GitHub keeps every
+// github.com URL, and whoami && ls harvests the login alone, not the
+// files (round 4, 1).
+func TestIdentityOverHarvest(t *testing.T) {
+	c := &clock{}
+	s := newOriginal("orig-over-harvest")
+	appendAt(t, s, c, user("docs say: user@host:~$ ls\nCommitter: GitHub <noreply@github.com>\nAuthor: runner <runner@localhost>"))
+	appendAt(t, s, c, user("see https://github.com/fake-owner/fake-repo and git@github.com:fake-owner/fake-repo.git"))
+	call := agentsession.NewItemEntry(&openresponses.FunctionCall{CallID: "call-w", Name: "bash", Arguments: `{"command":"whoami && ls"}`})
+	call.ResponseID = "resp-1"
+	appendAt(t, s, c, call)
+	appendAt(t, s, c, &agentsession.ResponseEntry{ResponseID: "resp-1", Status: openresponses.ResponseStatusCompleted})
+	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.NewFunctionCallOutput("call-w", "fakeloginx\nmain.go\nREADME.md\n")))
+	appendAt(t, s, c, user("main.go and README.md, said fakeloginx"))
+	turn(t, s, c, "resp-2", "ok")
+	p := Profile{Name: "test.over-harvest@1", Identity: ClaudeCodeIdentity()}
+	res := redact(t, p, s, nil)
+	file := string(fileOf(t, res.Session))
+	if strings.Contains(file, `"role":"[REDACTED`) {
+		t.Errorf("a role was redacted:\n%s", file)
+	}
+	for _, kept := range []string{"https://github.com/fake-owner/fake-repo", "git@github.com:", "main.go and README.md", `"role":"user"`, `"role":"assistant"`} {
+		if !strings.Contains(file, kept) {
+			t.Errorf("the redaction lost %q:\n%s", kept, file)
+		}
+	}
+	if strings.Contains(file, "fakeloginx") {
+		t.Error("whoami's login was kept")
+	}
+	for _, e := range readBack(t, res.Session).Entries() {
+		if it, ok := e.(*agentsession.ItemEntry); ok {
+			if m, ok := it.Item.(*openresponses.Message); ok && m.Role != "user" && m.Role != "assistant" {
+				t.Errorf("role %q", m.Role)
+			}
+		}
+	}
+}
