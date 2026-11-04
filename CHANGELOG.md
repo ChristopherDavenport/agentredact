@@ -283,6 +283,12 @@ versions may break the API.
 - `make release-command` refuses a branch other than `main`, and
   honours `RELEASE_PROXY` only under `RELEASE_COMMAND_TEST=1` with a
   `file://` origin, refusing it otherwise; its undo line prints once.
+- A Windows profile name holding spaces is taken up to its separator,
+  the end of the string or line, or a quote, so a surname no longer
+  survives at the end; `bash -lc whoami` (as Codex runs it) is
+  harvested; a password from a shell expansion, a variable or an
+  environment lookup (`pwd=$(pwd)`, `password=os.environ[...]`) is kept
+  as code.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

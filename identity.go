@@ -124,7 +124,8 @@ func identityCommands(arguments string) int {
 				}
 			}
 			cmd = strings.Join(parts, " ")
-			if len(parts) == 3 && (parts[0] == "bash" || parts[0] == "sh") && parts[1] == "-c" {
+			// bash -c, bash -lc (as Codex runs a command), sh -c, zsh -c.
+			if len(parts) == 3 && (parts[0] == "bash" || parts[0] == "sh" || parts[0] == "zsh") && shellCommandFlag.MatchString(parts[1]) {
 				cmd = parts[2]
 			}
 		}
@@ -141,6 +142,10 @@ func identityCommands(arguments string) int {
 	}
 	return n
 }
+
+// shellCommandFlag is a shell's flags ending in the one that takes the
+// command: -c, -lc, -ic.
+var shellCommandFlag = regexp.MustCompile(`^-[a-z]*c$`)
 
 // commandSeparator splits a shell command into its commands.
 var commandSeparator = regexp.MustCompile(`&&|;|\n`)
@@ -578,13 +583,13 @@ var homesPattern = regexp.MustCompile(`(?:(?:\\\\|\\){2}wsl(?:\.localhost|\$)(?:
 
 // spacedHomes finds a home whose name holds spaces, up to the separator
 // that must follow it, as a macOS or Windows name often does.
-var spacedHomes = regexp.MustCompile(`(?:/mnt/[A-Za-z]/Users|/Users|/home|[A-Za-z]:(?:\\\\|\\|/)Users)(?:\\\\|\\|/)[^\\/\n"']+ [^\\/\n"']+(?:\\|/)`)
+var spacedHomes = regexp.MustCompile(`(?:/mnt/[A-Za-z]/Users|/Users|/home|[A-Za-z]:(?:\\\\|\\|/)Users)(?:\\\\|\\|/)[^\\/\r\n"']+ [^\\/\r\n"']+(?:\\|/|$|["'\r\n])`)
 
 // homesIn are the home directories named in s, anywhere in it.
 func homesIn(s string) []string {
 	out := homesPattern.FindAllString(s, -1)
 	for _, h := range spacedHomes.FindAllString(s, -1) {
-		out = append(out, strings.TrimRight(h, `/\`))
+		out = append(out, strings.TrimRight(h, "/\\\"'\r\n"))
 	}
 	return out
 }

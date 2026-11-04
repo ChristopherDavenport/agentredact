@@ -733,3 +733,20 @@ func TestIdentityRound4(t *testing.T) {
 		}
 	}
 }
+
+// TestCodexWhoami: Codex runs a command as bash -lc; its whoami output is
+// harvested as a plain -c's is (round 5, 3).
+func TestCodexWhoami(t *testing.T) {
+	c := &clock{}
+	s := newOriginal("orig-codex-whoami")
+	call := agentsession.NewItemEntry(&openresponses.FunctionCall{CallID: "call-c", Name: "shell", Arguments: `{"command":["bash","-lc","whoami"]}`})
+	call.ResponseID = "resp-1"
+	appendAt(t, s, c, call)
+	appendAt(t, s, c, &agentsession.ResponseEntry{ResponseID: "resp-1", Status: openresponses.ResponseStatusCompleted})
+	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.NewFunctionCallOutput("call-c", "fakecodexlogin\n")))
+	appendAt(t, s, c, user("thanks, fakecodexlogin"))
+	res := redact(t, Profile{Name: "test.codex@1", Identity: ClaudeCodeIdentity()}, s, nil)
+	if strings.Contains(string(fileOf(t, res.Session)), "fakecodexlogin") {
+		t.Error("bash -lc whoami's login was kept")
+	}
+}

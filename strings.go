@@ -208,8 +208,10 @@ func HomePaths(home string) StringRedactor {
 var (
 	windowsProfile = regexp.MustCompile(`(?:/mnt/[A-Za-z]|\b[A-Za-z]:)` + homeSeparator + `(?i:users)` + homeSeparator + `([^/\\\s"':*?<>|]+)`)
 	// spacedProfile is one whose name holds spaces, taken up to the
-	// separator that must follow it.
-	spacedProfile = regexp.MustCompile(`(?:/mnt/[A-Za-z]|\b[A-Za-z]:)` + homeSeparator + `(?i:users)` + homeSeparator + `([^/\\\n"':*?<>|]+ [^/\\\n"':*?<>|]+)(?:/|\\)`)
+	// separator after it, or the end of the string, a line or a quoted
+	// string: so prose after such a name on its line goes with it, which
+	// keeps too little rather than a surname.
+	spacedProfile = regexp.MustCompile(`(?:/mnt/[A-Za-z]|\b[A-Za-z]:)` + homeSeparator + `(?i:users)` + homeSeparator + `([^/\\\r\n"':*?<>|]+ [^/\\\r\n"':*?<>|]+)(?:/|\\|$|["'\r\n])`)
 )
 
 // sharedProfiles are the profiles under Users no person owns.
@@ -431,6 +433,14 @@ func notSecret(name, m string) bool {
 	switch strings.ToLower(m) {
 	case "password", "passwd", "pwd", "pass", "secret":
 		return true
+	}
+	// A shell expansion or a variable ($(pwd), $PGPASS, ${X}) and a
+	// lookup of the environment are where a password comes from, not
+	// one.
+	for _, p := range []string{"$", "os.environ", "os.getenv", "process.env", "system.getenv", "env[", "getenv(", "env.fetch"} {
+		if strings.HasPrefix(strings.ToLower(m), p) {
+			return true
+		}
 	}
 	return false
 }

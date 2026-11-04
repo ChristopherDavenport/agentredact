@@ -334,3 +334,26 @@ func TestNoOverRedaction(t *testing.T) {
 		t.Errorf("a Basic authorization: %q", got)
 	}
 }
+
+// TestRound5Lows: a spaced profile name at the end of a string or before
+// a quote, and code passing a password from elsewhere (round 5, 3).
+func TestRound5Lows(t *testing.T) {
+	home := HomePaths("/home/example")
+	pats := DefaultPatterns()
+	for _, tt := range []struct {
+		name     string
+		r        StringRedactor
+		in, want string
+	}{
+		{"spaced at end", home, `cd C:\Users\Fake Person`, `cd ~`},
+		{"spaced before quote", home, `{"dir":"C:\\Users\\Fake Person"}`, `{"dir":"~"}`},
+		{"shell expansion", pats, "pwd=$(pwd)", "pwd=$(pwd)"},
+		{"env lookup", pats, `password=os.environ["DB_PASSWORD"]`, `password=os.environ["DB_PASSWORD"]`},
+		{"env reference", pats, "PGPASSWORD=$PGPASS psql", "PGPASSWORD=$PGPASS psql"},
+		{"still a secret", pats, "password=fakepass0000", "password=[REDACTED password]"},
+	} {
+		if got := tt.r(tt.in, nil); got != tt.want {
+			t.Errorf("%s: %q = %q, want %q", tt.name, tt.in, got, tt.want)
+		}
+	}
+}
