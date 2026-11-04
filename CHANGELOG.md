@@ -248,6 +248,12 @@ versions may break the API.
   colon, `id`'s names, git author and committer names and emails, and
   what `whoami`, `hostname` and `uname -n` printed, in a transcript or as
   a call's output paired by `call_id` (`IdentityMember.Commands`).
+- **Two-step release.** `make release` tags the root and the libraries;
+  `make release-command` then releases `cmd/agentredact` with its
+  replaces dropped and tidied against the proxy, and restores them for
+  the tree. The release guard refuses a command tag holding a replace
+  or whose root version the proxy does not serve; the release workflow
+  runs `go install` at a command tag.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

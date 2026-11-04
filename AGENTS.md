@@ -31,10 +31,9 @@ before writing code. Issues #2–#6 track the parts.
   the root. In the tree it replaces the root and `secrets` with `../..`
   and `../../secrets`, as `make replaces` requires, and `make extracted`
   skips it while the tree has moved on from the root version it
-  requires. Open: a release that keeps those replaces makes
-  `go install .../cmd/agentredact@vX` refuse it; the release has to drop
-  them from `cmd/agentredact/go.mod` before tagging, which
-  `scripts/versions.sh` does not do yet.
+  requires. A command is released in a second step, with its replaces
+  dropped, since `go install` refuses a module holding any (see
+  Releases).
 - The root imports the standard library, its `secrets` module,
   `agentsession`, `openresponses` and `agentpolicy` alone. At any depth
   the build may reach only those and the two modules `agentpolicy`
@@ -116,6 +115,24 @@ version), writes it as an annotated tag whose message is the changelog
 section (`scripts/release-notes.sh`), guards and writes `secrets/vX.Y.Z`
 the same way (the root tag of that version naming this commit), and
 pushes the branch and both tags with `git push origin --atomic`.
+The commands (`cmd/agentredact`) are released in a second step, once
+the proxy serves the root and the libraries at the version:
+
+```sh
+make release-command VERSION=v0.1.0
+```
+
+`scripts/release-command.sh` drops each command's replace directives,
+points its first-party requires at the version, tidies it against the
+proxy, builds and tests it, commits, guards and tags
+`cmd/agentredact/vX.Y.Z` from that commit; then it restores the
+replaces in a second commit, so the tree builds the command against
+itself again, and pushes the branch and the tags atomically. The guard
+refuses a command tag whose go.mod holds any replace, one whose root
+version is not tagged before it or not on the proxy, and one not
+requiring the root at its version. On the tag, the release workflow
+runs `go install github.com/ChristopherDavenport/agentredact/cmd/agentredact@vX.Y.Z`.
+`make release` itself tags the root and the libraries alone.
 `make extracted`, in CI, builds each module against the versions it
 requires, the way a consumer gets it; a module whose first-party
 dependency has never been released is skipped until it is. The release

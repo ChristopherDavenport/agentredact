@@ -139,6 +139,43 @@ case "$TAG" in
     ok "requires every first-party module at $TAG"
     ;;
 
+  cmd/*/v*)
+    # A command, released in the second step (AGENTS.md, Releases): the
+    # root and its libraries were tagged at this version before, and are
+    # on the proxy; the command requires them there, with no replace,
+    # since go install refuses a module that has one.
+    DIR="${TAG%/v*}"                 # cmd/agentredact
+    VERSION="v${TAG##*/v}"
+    [ -f "$DIR/go.mod" ] || die "no module at $DIR (expected $DIR/go.mod)"
+    printf '%s\n' "$VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+      || die "$TAG is not a plain <dir>/vX.Y.Z version"
+    ! grep -qE '^[[:space:]]*replace([[:space:]]|\()' "$DIR/go.mod" \
+      || die "$DIR/go.mod holds a replace directive; go install $TAG would refuse it.
+            Drop it and tidy against the proxy first (make release-command)."
+    ok "$DIR holds no replace"
+    DIR_LATEST="$(matching "^$DIR/v" | sed "s|^$DIR/||" | newest)"
+    if [ -n "$DIR_LATEST" ]; then
+      [ "$(printf '%s\n%s\n' "$DIR_LATEST" "$VERSION" | newest)" = "$VERSION" ] \
+        || die "$VERSION does not sort above $DIR's current release $DIR_LATEST"
+    fi
+    ok "$VERSION is new for $DIR"
+    git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null \
+      || die "the root is not tagged $VERSION; make release tags it first"
+    git merge-base --is-ancestor "$VERSION" HEAD \
+      || die "root $VERSION is not an ancestor of this commit"
+    ok "root $VERSION was released before this commit"
+    "$HERE/versions.sh" check "$VERSION" "$DIR" \
+      || die "$DIR does not require its first-party modules at $VERSION"
+    ok "requires every first-party module at $VERSION"
+    MODULE="$(GOWORK=off go list -m)"
+    # Asked from outside any module: inside the root, the go command
+    # answers for the main module from the tree, not the proxy.
+    err="$(cd "$(mktemp -d)" && GOWORK=off GOFLAGS= go list -m -e -f '{{with .Error}}{{.Err}}{{end}}' "$MODULE@$VERSION" 2>&1)"
+    [ -z "$err" ] || die "$MODULE@$VERSION is not on the proxy yet: $err
+            Release the command once the root and its libraries are served."
+    ok "$MODULE@$VERSION is on the proxy"
+    ;;
+
   */v*)
     DIR="${TAG%/v*}"                 # secrets
     VERSION="v${TAG##*/v}"           # v0.0.7

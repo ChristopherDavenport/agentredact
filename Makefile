@@ -10,7 +10,9 @@ GOVULNCHECK ?= $(GO) run golang.org/x/vuln/cmd/govulncheck@latest
 # tree (see replaces below). cmd/agentredact is the command, a module of
 # its own so a module meant for go install is not the root, which
 # carries the secrets replace; it requires the root the same way.
-SUBMODULES = secrets cmd/agentredact
+LIBRARIES = secrets
+COMMANDS = cmd/agentredact
+SUBMODULES = $(LIBRARIES) $(COMMANDS)
 
 # Every module here: the root and the nested ones. The version bump,
 # the replace check and the extracted build go over all of them, since
@@ -18,7 +20,7 @@ SUBMODULES = secrets cmd/agentredact
 MODULES = . $(SUBMODULES)
 
 .PHONY: build deps replaces test vet fmt tidy tidy-check lint vuln check \
-	extracted guard-test release-guard release release-commit clean
+	extracted guard-test release-guard release release-commit release-command clean
 
 build:
 	$(GO) build ./...
@@ -101,9 +103,11 @@ release-guard:
 	@test -n "$(TAG)" || { echo "usage: make release-guard TAG=<tag>"; exit 1; }
 	@scripts/release-guard.sh "$(TAG)"
 
-# Every tag a release writes: the root and one per nested module, all at
-# the same version, all from the one commit below.
-RELEASE_TAGS = $(VERSION) $(patsubst %,%/$(VERSION),$(SUBMODULES))
+# Every tag the first step of a release writes: the root and one per
+# library, all at the same version, all from the one commit below. The
+# commands are released in a second step (release-command), once these
+# are on the proxy.
+RELEASE_TAGS = $(VERSION) $(patsubst %,%/$(VERSION),$(LIBRARIES))
 
 # Cut a release:
 #
@@ -128,11 +132,20 @@ release: release-commit
 	@notes="$$(scripts/release-notes.sh $(VERSION))" || exit 1; \
 	 git tag -a $(VERSION) -m "$$notes"
 	@notes="$$(scripts/release-notes.sh $(VERSION))" || exit 1; \
-	 for m in $(SUBMODULES); do \
+	 for m in $(LIBRARIES); do \
 	   scripts/release-guard.sh "$$m/$(VERSION)" || exit 1; \
 	   git tag -a $$m/$(VERSION) -m "$$notes" || exit 1; \
 	 done
 	git push origin --atomic HEAD $(RELEASE_TAGS)
+
+# The second step: once the proxy serves the root and the libraries at
+# VERSION, release each command with its replaces dropped and tidied
+# against the proxy, tagged <dir>/VERSION, then point it at the tree
+# again; scripts/release-command.sh says how.
+#   make release-command VERSION=v0.1.0
+release-command:
+	@test -n "$(VERSION)" || { echo "usage: make release-command VERSION=vX.Y.Z"; exit 1; }
+	@scripts/release-command.sh $(VERSION) $(COMMANDS)
 
 # Bump every first-party requirement to VERSION, date the changelog,
 # check everything, commit. Nothing here is pushed, so a failure costs a
