@@ -18,6 +18,9 @@ versions may break the API.
   committing, when anything else in the tree changed. The next command
   release (v0.0.3) ships without the binary, and it is removed from
   main.
+- The command release's second commit rewrote the command's replace
+  block as single-line replaces and dropped the comment above it. It
+  now puts back the go.mod and go.sum from before the release.
 - The command release and its guard asked the public proxy alone in
   name only: an empty `GOPRIVATE`, `GONOPROXY` or `GONOSUMDB` reads as
   unset, so a value in the user's go env file still sent the question

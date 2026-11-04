@@ -92,7 +92,7 @@ published() {
   printf 'package m\n\nfunc Root() int { return 1 }\n' > m.go
   printf 'module %s/lib\n\ngo 1.25\n' "$M" > lib/go.mod
   printf 'package lib\n\nfunc Lib() int { return 2 }\n' > lib/lib.go
-  printf 'module %s/cmd/x\n\ngo 1.25\n\nrequire (\n\t%s v0.0.2\n\t%s/lib v0.0.2\n)\n\nreplace (\n\t%s => ../..\n\t%s/lib => ../../lib\n)\n' "$M" "$M" "$M" "$M" "$M" > cmd/x/go.mod
+  printf 'module %s/cmd/x\n\ngo 1.25\n\nrequire (\n\t%s v0.0.2\n\t%s/lib v0.0.2\n)\n\n// Why the replaces are here.\nreplace (\n\t%s => ../..\n\t%s/lib => ../../lib\n)\n' "$M" "$M" "$M" "$M" "$M" > cmd/x/go.mod
   : > cmd/x/go.sum
   printf 'package main\n\nimport (\n\t"fmt"\n\n\tm "%s"\n\t"%s/lib"\n)\n\nfunc main() { fmt.Println(m.Root() + lib.Lib()) }\n' "$M" "$M" > cmd/x/main.go
   if [ "${2:-}" = stray ]; then
@@ -130,8 +130,9 @@ run_release() {
 # tidied against the proxy, and holding nothing beside go.mod, go.sum
 # and the source (go build of a main package writes its binary into the
 # directory, which v0.0.2 of this repository committed); the commit
-# after it puts the replaces back, so the tree builds the command
-# against itself again. Branch and tag reach origin.
+# after it puts back the go.mod and go.sum from before, comment and
+# replace block included, so the tree builds the command against itself
+# again. Branch and tag reach origin.
 release_ok() {
   d="$(mktemp -d)"
   (
@@ -144,8 +145,7 @@ release_ok() {
     git show "$tagged:cmd/x/go.sum" | grep -qF "$M/lib v0.0.2 h1:" || exit 12
     extra="$(git ls-tree -r --name-only "$tagged" | grep -vxE 'cmd/x/(go\.mod|go\.sum|main\.go)' | grep -vxF -f <(git ls-tree -r --name-only "$start"))"
     [ -z "$extra" ] || { echo "the tagged commit adds: $extra"; exit 16; }
-    git show HEAD:cmd/x/go.mod | grep -qF "$M => ../.." || exit 13
-    git show HEAD:cmd/x/go.mod | grep -qF "$M/lib => ../../lib" || exit 13
+    git diff --quiet "$start" HEAD -- cmd/x || { git diff "$start" HEAD -- cmd/x; exit 13; }
     [ "$(git ls-remote origin refs/heads/main | cut -f1)" = "$(git rev-parse HEAD)" ] || exit 14
     git ls-remote --tags origin | grep -q 'refs/tags/cmd/x/v0.0.2$' || exit 14
     [ -z "$(git status --porcelain)" ] || exit 15
@@ -154,7 +154,7 @@ release_ok() {
   rc=$?
   chmod -R u+w "$d" 2>/dev/null; rm -rf "$d"
   if [ "$rc" != 0 ]; then
-    echo "FAIL: release-command on a published release: rc $rc (10 refused, 11 tag not on the release commit, 12 tagged go.mod has a replace or was not tidied against the proxy, 13 replaces not restored, 14 not pushed, 15 tree dirty, 16 tagged commit holds a file beside go.mod, go.sum and the source)"
+    echo "FAIL: release-command on a published release: rc $rc (10 refused, 11 tag not on the release commit, 12 tagged go.mod has a replace or was not tidied against the proxy, 13 the tree's command differs from before, 14 not pushed, 15 tree dirty, 16 tagged commit holds a file beside go.mod, go.sum and the source)"
     fails=$((fails + 1))
   fi
 }

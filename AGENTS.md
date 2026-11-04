@@ -136,10 +136,10 @@ points its first-party requires at the version, tidies it against the
 proxy, builds (to a temporary directory, so no binary lands in the
 tree) and tests it, commits its go.mod and go.sum alone (refusing when
 anything else in the tree changed), guards and tags
-`cmd/agentredact/vX.Y.Z` from that commit; then it restores the
-replaces in a second commit, so the tree builds the command against
-itself again, and pushes the branch and the tags atomically. The guard
-refuses a command tag whose go.mod holds any replace, one whose root
+`cmd/agentredact/vX.Y.Z` from that commit; then it puts back the
+go.mod and go.sum from before in a second commit, so the tree builds
+the command against itself again, and pushes the branch and the tags
+atomically. The guard refuses a command tag whose go.mod holds any replace, one whose root
 version is not tagged before it or not on the proxy, and one not
 requiring the root at its version. On the tag, the release workflow
 runs `go install github.com/ChristopherDavenport/agentredact/cmd/agentredact@vX.Y.Z`.

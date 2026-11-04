@@ -9,8 +9,8 @@
 # For each command it drops the replace directives, points every
 # first-party require at VERSION, tidies against the proxy, builds and
 # tests, commits, guards and tags <dir>/VERSION from that commit; then
-# it restores the replaces in a second commit, so the tree builds the
-# command against itself again, and pushes the branch and the tags in
+# it puts back the go.mod and go.sum from before in a second commit, so
+# the tree builds the command against itself again, and pushes the branch and the tags in
 # one atomic push. Nothing is pushed if any step fails: git reset --hard
 # to the commit before, and git tag -d the tags written.
 set -Eeuo pipefail
@@ -78,10 +78,9 @@ written=""
 # that failed inside it.
 trap '[ "$BASH_SUBSHELL" = 0 ] && echo "release-command: failed; undo with: git reset --hard $START${written:+; git tag -d$written}" >&2' ERR
 
-# Each dropped replace, as dir|old=new, to restore after the tag; a list
-# rather than an associative array, which the bash macOS ships lacks.
-restore=""
 for c in "$@"; do
+  # The module path of each replace, old=new, from the JSON go mod edit
+  # writes.
   pairs="$(cd "$c" && GOWORK=off go mod edit -json | awk '
     /"Replace"/ { in_r = 1 }
     in_r && /"Old"/ { want = "old" }
@@ -89,7 +88,6 @@ for c in "$@"; do
     in_r && /"Path"/ && want != "" {
       gsub(/[",]/, "", $2); if (want == "old") o = $2; else { print o "=" $2 }; want = ""
     }')"
-  for p in $pairs; do restore="$restore $c|$p"; done
   for p in $pairs; do
     (cd "$c" && GOWORK=off go mod edit -dropreplace="${p%%=*}")
   done
@@ -128,10 +126,17 @@ for c in "$@"; do
   written="$tags"
 done
 
-for r in $restore; do
-  (cd "${r%%|*}" && GOWORK=off go mod edit -replace="${r#*|}")
-done
+# The go.mod and go.sum from before the release commit: make release
+# pointed the command's first-party requires at VERSION there already,
+# with the replaces and the comment that says why they are there, which
+# go mod edit -replace would rewrite as single lines without it. The
+# tidy is there in case the proxy's tidy above settled a third-party
+# requirement differently; with the replaces back it answers from the
+# tree, which is what was just tagged.
 for c in "$@"; do
+  git checkout -q "$START" -- "$c/go.mod"
+  if git cat-file -e "$START:$c/go.sum" 2>/dev/null; then git checkout -q "$START" -- "$c/go.sum"; fi
+  "$HERE/versions.sh" set "$VERSION" "$c"
   (cd "$c" && GOWORK=off GOFLAGS=-mod=mod go mod tidy)
 done
 add_mods "$@"
