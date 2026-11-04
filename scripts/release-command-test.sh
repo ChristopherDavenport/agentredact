@@ -172,6 +172,7 @@ release_stray() {
     ! git rev-parse -q --verify refs/tags/cmd/x/v0.0.2 >/dev/null || exit 11
     [ "$(git ls-remote origin refs/heads/main | cut -f1)" = "$start" ] || exit 11
     grep -qF "cmd/x/stray.txt" "$d/out" || { cat "$d/out"; exit 13; }
+    grep -qF "remove the files listed" "$d/out" || { cat "$d/out"; exit 13; }
     grep -qF "undo with: git reset --hard $start" "$d/out" || { cat "$d/out"; exit 13; }
     exit 0
   )

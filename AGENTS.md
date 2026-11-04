@@ -134,8 +134,10 @@ the `git reset --hard` and `git tag -d` that undo it. It then drops
 each command's replace directives,
 points its first-party requires at the version, tidies it against the
 proxy, builds (to a temporary directory, so no binary lands in the
-tree) and tests it, commits its go.mod and go.sum alone (refusing when
-anything else in the tree changed), guards and tags
+tree) and tests it, commits its go.mod and go.sum alone (any other change, an
+untracked file a test wrote included, is refused by name before the
+commit; remove it, since `git reset --hard` leaves an untracked file
+behind), guards and tags
 `cmd/agentredact/vX.Y.Z` from that commit; then it puts back the
 go.mod and go.sum from before in a second commit, so the tree builds
 the command against itself again, and pushes the branch and the tags

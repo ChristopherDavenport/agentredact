@@ -99,8 +99,10 @@ for c in "$@"; do
   (cd "$c" && GOWORK=off GOFLAGS=-mod=mod go mod tidy && GOWORK=off GOFLAGS=-mod=readonly go build -o "$bin/" ./... && GOWORK=off GOFLAGS=-mod=readonly go test ./...)
   rm -rf "$bin"
 done
-# Only the commands' go.mod and go.sum change in a release commit;
-# anything else in the tree is refused rather than committed.
+# Only the commands' go.mod and go.sum change in a release commit. Any
+# other change, untracked files included, such as one a test wrote, is
+# refused by name rather than committed; git reset --hard does not
+# remove an untracked file, so the refusal says to.
 add_mods() {
   local c mods=()
   for c in "$@"; do
@@ -111,6 +113,7 @@ add_mods() {
   if [ -n "$stray" ]; then
     echo "release-command: the tree holds changes beyond the commands' go.mod and go.sum:" >&2
     echo "$stray" >&2
+    echo "release-command: remove the files listed (git reset --hard leaves an untracked one behind), then run it again" >&2
     return 1
   fi
 }
