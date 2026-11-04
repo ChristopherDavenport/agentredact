@@ -695,7 +695,7 @@ func TestRedactStoreFindingsEveryRun(t *testing.T) {
 	c := &clock{}
 	p := storeProfile()
 	st := agentsession.NewMemoryStore()
-	pdf, err := st.PutTypedBlob(context.Background(), []byte("%PDF-FAKE-BLOB-0004"), "application/pdf")
+	pdf, err := st.PutTypedBlob(context.Background(), []byte("%PDF-1.7\n%\xe2\xe3\xcf\xd3 FAKE-BLOB-0004"), "application/pdf")
 	if err != nil {
 		t.Fatal(err)
 	}

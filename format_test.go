@@ -310,14 +310,15 @@ func TestForkContinuesNumbering(t *testing.T) {
 
 // TestKeptImageFinding: a profile with no Images keeps every image and
 // reports each, inline, sidecar under an image_url, and a sidecar blob
-// of an image type under any item, as an image finding with no value
-// (#17); a profile with Images reports only the image it does not
+// whose bytes are an image under any item, as an image finding with no
+// value (#17); a profile with Images reports only the image it does not
 // reach, one an image_url does not name (#23).
 func TestKeptImageFinding(t *testing.T) {
 	c := &clock{}
 	s := agentsession.New(agentsession.Header{ID: "orig-images", CreatedAt: t0, Media: agentsession.MediaSidecar})
-	shot := "sidecar:" + agentsession.HashText("FAKE-SCREENSHOT-0001")
-	file := "sidecar:" + agentsession.HashText("FAKE-PNG-AS-FILE-0002")
+	blobs := blobStore{}
+	shot := "sidecar:" + blobs.put("\x89PNG\r\n\x1a\nFAKE-SCREENSHOT-0001", "image/png")
+	file := "sidecar:" + blobs.put("\x89PNG\r\n\x1a\nFAKE-PNG-AS-FILE-0002", "")
 	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.UserMessage(
 		&openresponses.InputText{Text: "three pictures"},
 		&openresponses.InputImage{ImageURL: fakeImage},
@@ -325,14 +326,8 @@ func TestKeptImageFinding(t *testing.T) {
 		&openresponses.InputFile{Filename: "fake.png", FileData: file},
 	)))
 	turn(t, s, c, "resp-1", "seen")
-	types := func(hash string) string {
-		if "sidecar:"+hash == file {
-			return "image/png"
-		}
-		return ""
-	}
 	plain := Profile{Name: "test.no-images@1", Strings: []StringRedactor{Secrets(fakePassword)}}
-	res, err := Redact(plain, testKey, s, nil, WithMediaTypes(types))
+	res, err := Redact(plain, testKey, s, nil, WithBlobs(blobs.read))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +341,7 @@ func TestKeptImageFinding(t *testing.T) {
 		}
 	}
 	want := []string{"/item/content/1/image_url", "/item/content/2/image_url", "/item/content/3/file_data"}
-	if !slices.Equal(at, want) {
+	if slices.Sort(at); !slices.Equal(at, want) {
 		t.Errorf("image findings at %v, want %v", at, want)
 	}
 	rep := SessionReport{Findings: res.Findings, accept: map[FindingKind]bool{}}
@@ -357,7 +352,7 @@ func TestKeptImageFinding(t *testing.T) {
 	if !rep.Publishable() {
 		t.Errorf("a session keeping images is not publishable when images are accepted: %+v", res.Findings)
 	}
-	with, err := Redact(testProfile(), testKey, s, nil, WithMediaTypes(types))
+	with, err := Redact(testProfile(), testKey, s, nil, WithBlobs(blobs.read))
 	if err != nil {
 		t.Fatal(err)
 	}

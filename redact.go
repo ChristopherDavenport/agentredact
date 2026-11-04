@@ -81,9 +81,9 @@ type options struct {
 // WithMediaTypes tells [Redact] the media type of a sidecar blob the
 // original names, by its hash, "" for one it does not know, as a store
 // holds it for the original ([agentsession.SessionBlobTyper],
-// [agentsession.TypedBlobReader]). A profile with no [Images] redactor
-// then reports a sidecar blob of an image type as a [FindingImage]
-// whatever item names it; without it, only one an image_url names.
+// [agentsession.TypedBlobReader]), where the [WithBlobs] reader gives
+// none: the type a text blob's replacement is written with. It decides
+// nothing: a blob is text, an image or other media by its bytes.
 func WithMediaTypes(mediaType func(hash string) string) Option {
 	return func(o *options) { o.mediaType = mediaType }
 }
@@ -464,7 +464,6 @@ func newRedaction(p Profile, key Key, original *agentsession.Session, along Alon
 		origID:   original.ID(),
 		placed:   map[string]*placed{},
 		along:    along,
-		types:    map[string]string{},
 	}
 	r.redID = names.ID()
 	r.images = slices.ContainsFunc(p.Entries, func(e EntryRedactor) bool { _, ok := e.(images); return ok })

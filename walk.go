@@ -72,10 +72,8 @@ type redaction struct {
 	// gives a sidecar blob's media type, when the caller can.
 	images    bool
 	mediaType func(hash string) string
-	// readBlob reads one of the original's blobs ([WithBlobs]), and
-	// types are the media types the blob step learnt, by hash.
+	// readBlob reads one of the original's blobs ([WithBlobs]).
 	readBlob func(hash string) ([]byte, string, error)
-	types    map[string]string
 	// idents are the identity values the original has named up to the
 	// entry being redacted, which the string redactors replace, and
 	// allIdents those the whole original names, which the redaction is
@@ -773,7 +771,7 @@ func (r *redaction) build(pos int, e agentsession.Entry, m Made, parent string) 
 		n.Base().Timestamp = r.stamp(e.Base().Timestamp) // never a clock
 	}
 	findings := &r.res.Findings
-	if err := inspect(n, pos, findings, r.images, r.typeOf, r.allIdents); err != nil {
+	if err := inspect(n, pos, findings, r.images, r.allIdents); err != nil {
 		return nil, err
 	}
 	*findings = append(*findings, memberNames(n, pos, r.probe)...)

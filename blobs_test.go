@@ -57,12 +57,17 @@ func TestRedactSidecarBlobs(t *testing.T) {
 		fate     BlobFate
 		finding  FindingKind
 		redacted bool
+		wantType string
 	}{
 		{name: "text", data: secretText, typ: "text/plain;charset=utf-8", reader: true, fate: BlobRedacted, redacted: true},
 		{name: "json", data: `{"pw":"` + fakePassword + `"}`, typ: "application/json", reader: true, fate: BlobRedacted, redacted: true},
 		{name: "untyped text", data: secretText, reader: true, fate: BlobRedacted, redacted: true},
-		{name: "untyped binary", data: "\x00\x01" + fakePassword, reader: true, fate: BlobKeptMedia, finding: FindingSidecarMedia},
-		{name: "pdf", data: "%PDF " + fakePassword, typ: "application/pdf", reader: true, fate: BlobKeptMedia, finding: FindingSidecarMedia},
+		{name: "untyped binary", data: "\x00\x01" + fakePassword, reader: true, fate: BlobUnredacted, finding: FindingUnredactedBlob},
+		{name: "pdf", data: "%PDF-1.7\n%\xe2\xe3\xcf\xd3 " + fakePassword, typ: "application/pdf", reader: true, fate: BlobKeptMedia, finding: FindingSidecarMedia},
+		{name: "png", data: "\x89PNG\r\n\x1a\n" + fakePassword, typ: "image/png", reader: true, fate: BlobKeptImage, finding: FindingImage},
+		{name: "png as text/plain", data: "\x89PNG\r\n\x1a\n" + fakePassword, typ: "text/plain", reader: true, fate: BlobKeptImage, finding: FindingImage},
+		{name: "pdf that is text", data: "%PDF-1.7 " + fakePassword, typ: "application/pdf", reader: true, fate: BlobRedacted, redacted: true, wantType: "text/plain;charset=utf-8"},
+		{name: "script", data: "export PW=" + fakePassword, typ: "application/x-sh-fake", reader: true, fate: BlobRedacted, redacted: true},
 		{name: "text not utf-8", data: "\xff\xfe" + fakePassword, typ: "text/plain", reader: true, fate: BlobUnredacted, finding: FindingUnredactedBlob},
 		{name: "no reader", data: secretText, typ: "text/plain", fate: BlobUnredacted, finding: FindingUnredactedBlob},
 	}
@@ -110,8 +115,8 @@ func TestRedactSidecarBlobs(t *testing.T) {
 			if got == h || !ok || bytes.Contains(b.Data, []byte(fakePassword)) || !bytes.Contains(b.Data, []byte("[REDACTED#1]")) {
 				t.Fatalf("the replacement %s: %q, want the text redacted", got, b.Data)
 			}
-			if b.MediaType != tc.typ {
-				t.Errorf("the replacement's type %q, want %q", b.MediaType, tc.typ)
+			if want := cmpOr(tc.wantType, tc.typ); b.MediaType != want {
+				t.Errorf("the replacement's type %q, want %q", b.MediaType, want)
 			}
 			if res.Counts["secret"] != 1 {
 				t.Errorf("counts %v, want the blob's secret counted", res.Counts)
@@ -126,6 +131,13 @@ func TestRedactSidecarBlobs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func cmpOr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // TestRedactBlobUnread: a blob the reader cannot read, one not held

@@ -202,21 +202,27 @@ func blobsInText(s string, ph *Placeholders) string {
 // the blobs the entry redactors added for it, and takes the
 // replacements written here.
 //
+// A blob is decided by its bytes, never by the type it is declared
+// with or the member naming it, since either can say image or media of
+// what is text:
+//
 //   - A blob an entry redactor made is [BlobMade].
-//   - An image, one an image_url names or of an image type, is kept
-//     ([BlobKeptImage]); a profile without [Images] reports it as a
-//     [FindingImage] when the entry is inspected, and one with Images,
-//     which reaches only image_url, reports it so here.
-//   - Media of a known type that is not text is kept and reported as a
-//     [FindingSidecarMedia] ([BlobKeptMedia]).
-//   - A text blob, of a text type, or of none whose bytes are UTF-8 and
-//     hold no NUL, is read, given whole to the profile's string
-//     redactors, as the entry's strings are, and written as a
-//     replacement blob with the original's type; the reference names
-//     the replacement ([BlobRedacted]). An untyped blob that is not text
-//     is kept as media.
-//   - A blob that may be text, with no blob reader given, is kept and
-//     reported as a [FindingUnredactedBlob] ([BlobUnredacted]).
+//   - Bytes that read as text, UTF-8 holding no NUL, are given whole to
+//     the profile's string redactors, as the entry's strings are, and
+//     written as a replacement blob ([BlobRedacted]) of the declared
+//     type, or text/plain where that type names an image, audio, video
+//     or a binary document: an SVG, a script under a vendor type, text
+//     an image_url names.
+//   - Bytes that start as an image format it knows (PNG, JPEG, GIF,
+//     WebP, TIFF, ICO, AVIF, HEIC) are an image, kept whole
+//     ([BlobKeptImage]) and reported as a [FindingImage]: [Images]
+//     replaces those an image_url names before this step.
+//   - Bytes that start as other media it knows (PDF, an archive or
+//     compressed stream, audio, video) are kept whole ([BlobKeptMedia])
+//     and reported as a [FindingSidecarMedia].
+//   - Any other bytes, UTF-16 text among them, are neither: kept and
+//     reported as a [FindingUnredactedBlob] ([BlobUnredacted]), which no
+//     publisher carries. So is every blob when no reader was given.
 //   - A blob the reader fails to read, one the store does not hold
 //     included, is [ErrBlobUnread], and the redaction writes nothing.
 func (r *redaction) sidecars(pos int, n agentsession.Entry, made map[string]Blob) (agentsession.Entry, error) {
@@ -229,74 +235,103 @@ func (r *redaction) sidecars(pos int, n agentsession.Entry, made map[string]Blob
 			mergeFate(r.res.Sidecar, h, BlobMade)
 			return url, nil
 		}
-		var (
-			data    []byte
-			typ     string
-			readErr error
-		)
-		if r.readBlob != nil {
-			if data, typ, readErr = r.readBlob(h); readErr != nil {
-				// Whether a blob can be read now is no input of the
-				// redaction: nothing is written, and the next pass
-				// decides the reference again.
-				return "", fmt.Errorf("%w: %w", ErrBlobUnread, readErr)
-			}
+		keep := func(fate BlobFate, kind FindingKind, message string) (string, error) {
+			mergeFate(r.res.Sidecar, h, fate)
+			report(kind, at, message)
+			return url, nil
+		}
+		if r.readBlob == nil {
+			return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar blob kept unredacted: no blob reader was given, so it was not read")
+		}
+		data, typ, err := r.readBlob(h)
+		if err != nil {
+			// Whether a blob can be read now is no input of the
+			// redaction: nothing is written, and the next pass decides
+			// the reference again.
+			return "", fmt.Errorf("%w: %w", ErrBlobUnread, err)
 		}
 		if typ == "" && r.mediaType != nil {
 			typ = r.mediaType(h)
 		}
-		if typ, _ = agentsession.BlobMediaType(typ); typ != "" {
-			r.types[h] = typ
-		}
-		keep := func(fate BlobFate, kind FindingKind, message string) (string, error) {
-			mergeFate(r.res.Sidecar, h, fate)
-			if kind != "" {
-				report(kind, at, message)
-			}
-			return url, nil
-		}
+		typ, _ = agentsession.BlobMediaType(typ)
 		switch {
-		case member == "image_url" || isImageType(typ):
+		case isText(data):
+		case sniffImage(data):
+			message := "a sidecar image kept whole: the profile replaces no image, and no string redactor reads the text in its pixels"
 			if r.images {
-				return keep(BlobKeptImage, FindingImage, "a sidecar image Images does not replace, kept whole: it replaces those an image_url names, and no string redactor reads the text in its pixels")
+				message = "a sidecar image Images does not replace, kept whole: it replaces those an image_url names, and no string redactor reads the text in its pixels"
 			}
-			return keep(BlobKeptImage, "", "") // inspect reports it as an image kept
-		case typ != "" && !isTextType(typ):
-			return keep(BlobKeptMedia, FindingSidecarMedia, "sidecar media that is not an image or text left as it is: no redactor replaces it, and text in it is not found")
-		case r.readBlob == nil:
-			return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar blob that may hold text kept unredacted: no blob reader was given, so it was not read")
-		case typ == "" && !isText(data):
-			return keep(BlobKeptMedia, FindingSidecarMedia, "an untyped sidecar blob that is not text left as it is: no redactor replaces it, and text in it is not found")
-		case !utf8.Valid(data):
-			return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar blob of a text type that is not UTF-8 kept unredacted: the string redactors read UTF-8 text")
+			return keep(BlobKeptImage, FindingImage, message)
+		case sniffMedia(data):
+			return keep(BlobKeptMedia, FindingSidecarMedia, "sidecar media that is not an image or text kept whole: no redactor replaces it, and text in it is not found")
+		default:
+			return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar blob kept unredacted: its bytes are neither UTF-8 text nor media the redaction knows")
 		}
 		out := []byte(r.f(string(data)))
 		nh := agentsession.HashBytes(out)
-		made[nh] = Blob{Data: out, MediaType: typ}
-		if typ != "" {
-			r.types[nh] = typ
-		}
+		made[nh] = Blob{Data: out, MediaType: textType(typ)}
 		mergeFate(r.res.Sidecar, nh, BlobRedacted)
 		return "sidecar:" + nh, nil
 	})
 }
 
-// typeOf is the media type the redaction knows for the blob hash: the
-// one its blob step read, else the one [WithMediaTypes] gives.
-func (r *redaction) typeOf(hash string) string {
-	if t := r.types[hash]; t != "" {
-		return t
+// textType is the type a text blob's replacement is written with, the
+// original's declared typ: kept, unless it names an image, audio, video
+// or a binary document, which the bytes are not, when it is text/plain.
+func textType(typ string) string {
+	if typ == "" || isTextType(typ) {
+		return typ
 	}
-	if r.mediaType != nil {
-		return r.mediaType(hash)
+	base, _, _ := strings.Cut(strings.ToLower(typ), ";")
+	for _, p := range []string{"image/", "audio/", "video/", "font/"} {
+		if strings.HasPrefix(base, p) {
+			return "text/plain;charset=utf-8"
+		}
 	}
-	return ""
+	switch base {
+	case "application/pdf", "application/zip", "application/gzip", "application/x-gzip", "application/octet-stream":
+		return "text/plain;charset=utf-8"
+	}
+	return typ
 }
 
-// isImageType reports whether t, a media type, is an image's.
-func isImageType(t string) bool {
-	return strings.HasPrefix(strings.ToLower(t), "image/")
+// magic is a format's signature: prefix at offset at.
+type magic struct {
+	at     int
+	prefix string
 }
+
+// imageMagic are the image formats the blob step knows by their bytes.
+var imageMagic = []magic{
+	{0, "\x89PNG\r\n\x1a\n"}, {0, "\xff\xd8\xff"}, {0, "GIF87a"}, {0, "GIF89a"},
+	{8, "WEBP"}, {0, "II*\x00"}, {0, "MM\x00*"}, {0, "\x00\x00\x01\x00"},
+	{4, "ftypavif"}, {4, "ftypheic"}, {4, "ftypheix"}, {4, "ftypmif1"},
+}
+
+// mediaMagic are the other media formats it knows by their bytes.
+var mediaMagic = []magic{
+	{0, "%PDF-"}, {0, "PK\x03\x04"}, {0, "\x1f\x8b"}, {0, "BZh"}, {0, "\xfd7zXZ\x00"},
+	{0, "7z\xbc\xaf\x27\x1c"}, {0, "\x28\xb5\x2f\xfd"}, {4, "ftyp"}, {0, "\x1a\x45\xdf\xa3"},
+	{0, "OggS"}, {0, "fLaC"}, {0, "ID3"}, {0, "\xff\xfb"}, {0, "\xff\xf3"}, {0, "\xff\xf2"},
+	{8, "WAVE"}, {8, "AVI "},
+}
+
+func matches(data []byte, ms []magic) bool {
+	for _, m := range ms {
+		if len(data) >= m.at+len(m.prefix) && string(data[m.at:m.at+len(m.prefix)]) == m.prefix {
+			return true
+		}
+	}
+	return false
+}
+
+// sniffImage reports whether data, bytes that are not text, start as
+// an image format the blob step knows.
+func sniffImage(data []byte) bool { return matches(data, imageMagic) }
+
+// sniffMedia reports whether data, bytes that are not text, start as
+// other media the blob step knows.
+func sniffMedia(data []byte) bool { return matches(data, mediaMagic) }
 
 // isTextType reports whether t, a media type, is text the string
 // redactors can read: text/*, JSON, XML, YAML, NDJSON, TOML,
