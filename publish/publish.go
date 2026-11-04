@@ -80,23 +80,9 @@ var ErrNotRedacted = errors.New("publish: the session holds an entry that is not
 // target refuses is held with the refusal; the error returned joins the
 // failures that stopped a session part way.
 func Publish(ctx context.Context, from, to agentsession.Store, opts Options) (*Result, error) {
-	if opts.Profile == "" || opts.Report == nil {
-		return nil, errors.New("publish: a profile and the store pass's report are needed")
-	}
-	if opts.Report.Profile != opts.Profile {
-		return nil, fmt.Errorf("publish: the report is of profile %q, not %q", opts.Report.Profile, opts.Profile)
-	}
-	judges := opts.Judges
-	switch {
-	case opts.Unjudged && len(judges) > 0:
-		return nil, errors.New("publish: Unjudged and Judges both set")
-	case opts.Unjudged:
-	case len(judges) == 0:
-		judges = DefaultJudges
-	}
-	reports := map[string]agentredact.SessionReport{}
-	for _, r := range opts.Report.Sessions {
-		reports[r.Redaction] = r
+	g, err := newGate(opts)
+	if err != nil {
+		return nil, err
 	}
 	var ids []string
 	for sum, err := range from.List(ctx, agentsession.ListFilter{}) {
@@ -113,40 +99,13 @@ func Publish(ctx context.Context, from, to agentsession.Store, opts Options) (*R
 	var errs []error
 	for _, id := range ids {
 		hold := func(reason string) { res.Held = append(res.Held, Held{Session: id, Reason: reason}) }
-		rp, ok := reports[id]
-		switch {
-		case !ok:
-			hold("the store pass did not report it")
-			continue
-		case !rp.Publishable():
-			hold("the store pass does not hold it publishable")
-			continue
-		}
-		red, err := read(ctx, from, id)
+		red, reason, err := g.check(ctx, from, id)
 		if err != nil {
-			hold("it could not be read")
 			errs = append(errs, err)
-			continue
 		}
-		if rp.State != agentredact.StateOf(red) {
-			hold("the report is of another state of the session: run the store pass again")
+		if red == nil {
+			hold(reason)
 			continue
-		}
-		if err := ownRedacted(red); err != nil {
-			hold(err.Error())
-			continue
-		}
-		if len(judges) > 0 {
-			verdicts, err := agentredact.Verdicts(ctx, from, id)
-			if err != nil {
-				hold("its verdicts could not be read")
-				errs = append(errs, err)
-				continue
-			}
-			if !agentredact.Cleared(verdicts, red, judges...) {
-				hold("not cleared by every judge at its judged entry")
-				continue
-			}
 		}
 		n, err := push(ctx, from, to, red)
 		if err != nil {
@@ -157,6 +116,69 @@ func Publish(ctx context.Context, from, to agentsession.Store, opts Options) (*R
 		res.Published = append(res.Published, Published{Session: id, Head: red.Leaf(), Appended: n})
 	}
 	return res, errors.Join(errs...)
+}
+
+// gate is what a session must pass to leave the private store, by
+// publish or by export.
+type gate struct {
+	judges  []string
+	reports map[string]agentredact.SessionReport
+}
+
+func newGate(opts Options) (*gate, error) {
+	if opts.Profile == "" || opts.Report == nil {
+		return nil, errors.New("publish: a profile and the store pass's report are needed")
+	}
+	if opts.Report.Profile != opts.Profile {
+		return nil, fmt.Errorf("publish: the report is of profile %q, not %q", opts.Report.Profile, opts.Profile)
+	}
+	g := &gate{judges: opts.Judges, reports: map[string]agentredact.SessionReport{}}
+	switch {
+	case opts.Unjudged && len(g.judges) > 0:
+		return nil, errors.New("publish: Unjudged and Judges both set")
+	case opts.Unjudged:
+	case len(g.judges) == 0:
+		g.judges = DefaultJudges
+	}
+	for _, r := range opts.Report.Sessions {
+		g.reports[r.Redaction] = r
+	}
+	return g, nil
+}
+
+// check reads the redacted session id from the private store from and
+// returns it when it may leave: the report holds it publishable in the
+// state it is in now, it holds no native entry, and every judge cleared
+// that exact state. Otherwise it returns nil and why, and an error for a
+// failure to read.
+func (g *gate) check(ctx context.Context, from agentsession.Store, id string) (*agentsession.Session, string, error) {
+	rp, ok := g.reports[id]
+	switch {
+	case !ok:
+		return nil, "the store pass did not report it", nil
+	case !rp.Publishable():
+		return nil, "the store pass does not hold it publishable", nil
+	}
+	red, err := read(ctx, from, id)
+	if err != nil {
+		return nil, "it could not be read", err
+	}
+	if rp.State != agentredact.StateOf(red) {
+		return nil, "the report is of another state of the session: run the store pass again", nil
+	}
+	if err := ownRedacted(red); err != nil {
+		return nil, err.Error(), nil
+	}
+	if len(g.judges) > 0 {
+		verdicts, err := agentredact.Verdicts(ctx, from, id)
+		if err != nil {
+			return nil, "its verdicts could not be read", err
+		}
+		if !agentredact.Cleared(verdicts, red, g.judges...) {
+			return nil, "not cleared by every judge in its current state", nil
+		}
+	}
+	return red, "", nil
 }
 
 // ownRedacted refuses a session one of whose own entries carries no

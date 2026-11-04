@@ -422,7 +422,9 @@ redacted ID and head hash, with the profile, the judges and the
 replacement counts (`agentredact/manifest@1`, kept minimal until
 agentsession#70 defines the shared manifest object); `Check` holds it
 to the published store. `ExportDataset` writes the sessions a manifest
-lists to a local directory a dataset host renders: per session its ATIF
+lists, read from the private store and each held to what `Publish`
+holds it to, with the profile's string rules run over every document
+once more, to a local directory a dataset host renders: per session its ATIF
 document and a Session Trace Simple Format-shaped `trace.jsonl`, the
 manifest and a card. Uploading the directory is your step.
 

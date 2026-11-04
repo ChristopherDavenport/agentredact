@@ -63,8 +63,11 @@ func TestCommand(t *testing.T) {
 	if err := do("publish", "-store", store, "-key", key, "-home", "/home/example", "-to", target, "-manifest", manifest); err != nil || !strings.Contains(out.String(), "published ") {
 		t.Errorf("publish: %v\n%s", err, out.String())
 	}
-	if err := do("export", "-store", target, "-manifest", manifest, "-out", filepath.Join(dir, "dataset")); err != nil {
+	if err := do("export", "-store", store, "-key", key, "-home", "/home/example", "-manifest", manifest, "-out", filepath.Join(dir, "dataset")); err != nil {
 		t.Errorf("export: %v", err)
+	}
+	if err := do("export", "-store", store, "-key", key, "-home", "/home/example", "-judges", "scan,review", "-manifest", manifest, "-out", filepath.Join(dir, "dataset2")); err == nil {
+		t.Error("exported a session no review cleared")
 	}
 	m, err := os.ReadFile(manifest)
 	if err != nil || bytes.Contains(m, []byte("orig-command")) {

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ChristopherDavenport/agentredact"
 	"github.com/ChristopherDavenport/agentsession"
 	"github.com/ChristopherDavenport/agentsession/atif"
 	"github.com/ChristopherDavenport/agentsession/export"
@@ -100,8 +101,13 @@ func (m Manifest) Check(ctx context.Context, st agentsession.Store) error {
 	return nil
 }
 
-// ExportDataset writes the sessions m lists, read from the published
-// store st, into dir as a dataset a host such as Hugging Face renders:
+// ExportDataset writes the sessions m lists into dir as a dataset a
+// host such as Hugging Face renders, read from the private store from
+// after each passes what [Publish] holds it to under opts: the report
+// holding it publishable in the state it is in now, which must be the
+// head m lists, no native entry, and a verdict of every judge covering
+// that exact state (the scan by default). A session that fails any is
+// an error, and nothing is exported for it:
 // for each session <id>/atif.json, its main trajectory's ATIF document
 // with no passthrough (export.NoPassthrough), and <id>/trace.jsonl, the
 // same path in the shape of Hugging Face's Session Trace Simple Format
@@ -109,25 +115,42 @@ func (m Manifest) Check(ctx context.Context, st agentsession.Store) error {
 // line per step and per tool result: role, content, reasoningContent,
 // toolCalls, toolCallId, model, timestamp), each sub-agent's in
 // <id>/subagents/<n>.jsonl; then manifest.json and a README.md card
-// saying what the data is and how it was cleaned. backstop, when not
-// nil, is applied to every string of each document
-// (export.RewriteStrings), as a last pass of the profile's rules. dir
-// must not exist. Nothing is uploaded: that is the user's step.
-func ExportDataset(ctx context.Context, st agentsession.Store, m Manifest, dir string, backstop func(string) string) error {
-	if err := m.Check(ctx, st); err != nil {
+// saying what the data is and how it was cleaned. rules, the profile's
+// string redactors ([agentredact.Profile.StringFunc]), are applied to
+// every string of each document again (export.RewriteStrings), as a
+// last pass. dir must not exist. Nothing is uploaded: that is the
+// user's step.
+func ExportDataset(ctx context.Context, from agentsession.Store, m Manifest, dir string, opts Options, rules agentredact.StringRedactor) error {
+	if rules == nil {
+		return errors.New("publish: the profile's string rules are needed as the export's last pass")
+	}
+	if m.Profile != opts.Profile {
+		return fmt.Errorf("%w: of profile %q, not %q", ErrManifest, m.Profile, opts.Profile)
+	}
+	g, err := newGate(opts)
+	if err != nil {
 		return err
 	}
+	if err := m.Check(ctx, from); err != nil {
+		return err
+	}
+	sessions := map[string]*agentsession.Session{}
+	for _, e := range m.Entries {
+		red, reason, err := g.check(ctx, from, e.Session)
+		if err != nil {
+			return err
+		}
+		if red == nil {
+			return fmt.Errorf("publish: %s may not leave: %s", e.Session, reason)
+		}
+		sessions[e.Session] = red
+	}
+	backstop := func(s string) string { return rules(s, nil) }
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		return fmt.Errorf("publish: the dataset directory: %w", err)
 	}
 	for _, e := range m.Entries {
-		s, err := read(ctx, st, e.Session)
-		if err != nil {
-			return err
-		}
-		if err := ownRedacted(s); err != nil {
-			return fmt.Errorf("publish: %s: %w", e.Session, err)
-		}
+		s := sessions[e.Session]
 		var doc *atif.Trajectory
 		for tr, err := range export.Trajectories(s) {
 			if err != nil {
@@ -143,10 +166,8 @@ func ExportDataset(ctx context.Context, st agentsession.Store, m Manifest, dir s
 		if doc == nil {
 			continue
 		}
-		if backstop != nil {
-			if err := export.RewriteStrings(doc, backstop); err != nil {
-				return fmt.Errorf("publish: %s: %w", e.Session, err)
-			}
+		if err := export.RewriteStrings(doc, backstop); err != nil {
+			return fmt.Errorf("publish: %s: %w", e.Session, err)
 		}
 		sdir := filepath.Join(dir, e.Session)
 		if err := os.Mkdir(sdir, 0o755); err != nil {

@@ -231,6 +231,13 @@ versions may break the API.
   usage where that is more, and caps each request's output to what is
   left, so no request passes it. The review is documented as advisory:
   text in a session can steer the model, and the scan stays the gate.
+- **An export is held to what a publish is.** `ExportDataset(ctx,
+  private, manifest, dir, opts, rules)` checks each session against the
+  store pass's report in its current state, its native entries and the
+  judges' verdicts on that exact state (the scan by default), as
+  `Publish` does through the same gate, and runs the profile's string
+  rules over every document once more. `agentredact export` takes
+  `-key` and the profile, and never exports unchecked.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

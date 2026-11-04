@@ -5,15 +5,18 @@
 //	agentredact redact  -store DIR -key FILE [-profile NAME] [-home DIR] [-rules FILE] [-accept KIND,...]
 //	agentredact scan    -store DIR -key FILE [-profile NAME] [-trufflehog BIN] [-atif]
 //	agentredact publish -store DIR -key FILE -to DIR [-profile NAME] [-judges scan,review | -unjudged] [-manifest FILE]
-//	agentredact export  -store DIR -manifest FILE -out DIR
+//	agentredact export  -store DIR -key FILE -manifest FILE -out DIR [-profile NAME] [-judges scan,review | -unjudged]
 //
 // A store is a jsonl store directory, or a cas store with -cas. The key
 // file holds the redaction key of the store of originals (keygen writes
 // one, mode 0600, and never overwrites one): keep it beside the store,
 // out of anything published. Losing it means the redactions made under
 // it cannot be resumed. The target of publish is opened to hold only
-// redacted entries, and export writes a local dataset directory; nothing
-// is uploaded.
+// redacted entries. export reads the private store, holds each session
+// the manifest lists to what publish does (the store pass's report in
+// the session's current state, the judges' verdicts on that exact
+// state) and runs the profile's rules over the documents once more,
+// then writes a local dataset directory; nothing is uploaded.
 //
 // The profile is the built-in one, named by -profile (default@2): the
 // home directory, the default secret patterns and the Claude Code
@@ -98,24 +101,6 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer closeStore()
-	if args[0] == "export" {
-		if *manifestF == "" || *outDir == "" {
-			return errors.New("export: -manifest and -out are required")
-		}
-		var m publish.Manifest
-		data, err := os.ReadFile(*manifestF)
-		if err != nil {
-			return err
-		}
-		if err := json.Unmarshal(data, &m); err != nil {
-			return fmt.Errorf("export: the manifest: %w", err)
-		}
-		if err := publish.ExportDataset(ctx, st, m, *outDir, nil); err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "exported %d sessions to %s\n", len(m.Entries), *outDir)
-		return nil
-	}
 	if *keyFile == "" {
 		return fmt.Errorf("%s: -key is required: there is no default key", args[0])
 	}
@@ -175,6 +160,30 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		if failed > 0 {
 			return fmt.Errorf("scan: %d sessions hold findings", failed)
 		}
+		return nil
+	case "export":
+		if err != nil {
+			return err
+		}
+		if *manifestF == "" || *outDir == "" {
+			return errors.New("export: -manifest and -out are required")
+		}
+		var m publish.Manifest
+		data, err := os.ReadFile(*manifestF)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(data, &m); err != nil {
+			return fmt.Errorf("export: the manifest: %w", err)
+		}
+		// From the private store, each session held to what publish
+		// holds it to, and the profile's rules run over the documents
+		// once more.
+		opts := publish.Options{Profile: p.Name, Report: rep, Judges: split(*judges), Unjudged: *unjudged}
+		if err := publish.ExportDataset(ctx, st, m, *outDir, opts, p.StringFunc()); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "exported %d sessions to %s\n", len(m.Entries), *outDir)
 		return nil
 	case "publish":
 		if err != nil {
