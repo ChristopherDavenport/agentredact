@@ -103,7 +103,8 @@ var ErrScan = errors.New("scan: trufflehog")
 // blobs it names, read through blobs (a store's
 // [agentsession.BlobReader], which may be nil only for a session naming
 // none), and, with ATIF set, its ATIF documents. It fails closed: a
-// run that does not say it finished scanning, a line of output that is
+// run that does not say it finished scanning having read some bytes, a
+// line of output that is
 // not a finding, and a session whose blobs cannot be read are errors,
 // never passes.
 func (s Scanner) Scan(ctx context.Context, red *agentsession.Session, blobs agentsession.BlobReader) (*Result, error) {
@@ -197,14 +198,17 @@ func (s Scanner) Scan(ctx context.Context, red *agentsession.Session, blobs agen
 }
 
 // finished reports whether trufflehog's log, JSON lines on stderr,
-// holds the line it writes when a scan completes, "finished scanning".
-// A run without it, cut short or of another program, is not a scan.
+// holds the line it writes when a scan completes, "finished scanning",
+// with the bytes it read more than none (trufflehog's main logs chunks
+// and bytes there). A run without it, cut short, of another program, or
+// that read nothing, is not a scan.
 func finished(logs []byte) bool {
 	for _, l := range bytes.Split(logs, []byte("\n")) {
 		var m struct {
-			Msg string `json:"msg"`
+			Msg   string `json:"msg"`
+			Bytes *int64 `json:"bytes"`
 		}
-		if json.Unmarshal(bytes.TrimSpace(l), &m) == nil && m.Msg == "finished scanning" {
+		if json.Unmarshal(bytes.TrimSpace(l), &m) == nil && m.Msg == "finished scanning" && m.Bytes != nil && *m.Bytes > 0 {
 			return true
 		}
 	}

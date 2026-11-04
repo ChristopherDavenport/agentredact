@@ -10,4 +10,5 @@ echo '{"level":"info-0","msg":"running source"}' >&2
 grep -rnoE 'AKIA[0-9A-Z]{16}' "$2" | while IFS=: read -r file line raw; do
 	printf '{"SourceMetadata":{"Data":{"Filesystem":{"file":"%s","line":%s}}},"DetectorName":"AWS","Raw":"%s","Redacted":"%s"}\n' "$file" "$line" "$raw" "$raw"
 done
-echo '{"level":"info-0","msg":"finished scanning","chunks":1}' >&2
+bytes=$(cat $(find "$2" -type f) | wc -c)
+printf '{"level":"info-0","msg":"finished scanning","chunks":1,"bytes":%s}\n' "$bytes" >&2

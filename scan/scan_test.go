@@ -119,7 +119,7 @@ func TestScanTruffleHog(t *testing.T) {
 func TestScanFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	red := redactWith(t, agentredact.Profile{Name: "scan.default@1", Strings: []agentredact.StringRedactor{agentredact.DefaultPatterns()}})
-	for _, bin := range []string{"trufflehog-silent", "trufflehog-garbled"} {
+	for _, bin := range []string{"trufflehog-silent", "trufflehog-garbled", "trufflehog-empty"} {
 		if res, err := (Scanner{Binary: filepath.Join("testdata", bin)}).Scan(ctx, red, nil); !errors.Is(err, ErrScan) {
 			t.Errorf("%s: %+v, %v; want ErrScan", bin, res, err)
 		}
