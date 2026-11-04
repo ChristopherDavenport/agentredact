@@ -75,8 +75,11 @@ it by its bytes, never by its declared type or the member naming it.
   into a replacement blob, so no metadata (PNG text chunks, EXIF) and
   no bytes after the image leave; reported as `image`;
 - `kept-media`: bytes that start as a PDF, audio or video, kept whole
-  and reported as `sidecar-media` (accepting it accepts a PDF's text
-  unread);
+  and reported as `sidecar-media`. The check is the signature alone,
+  and nothing after it is read: accepting the kind accepts any bytes
+  after a PDF, MP4/MOV, MKV, Ogg, FLAC, ID3, WAV or AVI signature as
+  they are, a PDF's text, a video's subtitles and attachments, and the
+  free-text tags of audio and video among them;
   a kept blob leaves only where its own kind is accepted, a fork's
   prefix blob included;
 - `unredacted`: any other bytes (UTF-16 among them), an archive or

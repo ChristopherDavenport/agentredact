@@ -165,8 +165,10 @@ func redactorName(r EntryRedactor) string {
 type FindingKind string
 
 const (
-	// FindingSidecarMedia: sidecar media that is not an image, such as a
-	// file, kept as the original's blob.
+	// FindingSidecarMedia: sidecar media that is not an image or text, a
+	// PDF, audio or video known by its signature, kept as the original's
+	// blob and unread: accepting the kind accepts the text such media
+	// carries, a PDF's, subtitles, attachments and tags.
 	FindingSidecarMedia FindingKind = "sidecar-media"
 	// FindingUnredactedBlob: a sidecar blob that may hold text, which the
 	// redaction could not read, kept as the original's

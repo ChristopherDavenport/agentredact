@@ -27,7 +27,8 @@ versions may break the API.
     replacement blob; a PNG, JPEG or GIF is an image (`image`), kept as
     its pixels alone, decoded and encoded again, so its metadata and any
     bytes after it do not leave; a PDF, audio or video is media
-    (`sidecar-media`), kept whole; anything else (an archive or
+    (`sidecar-media`), kept whole and unread, so accepting the kind
+    accepts a PDF's text, subtitles and attachments, and free-text tags; anything else (an archive or
     compressed stream, an image it cannot re-encode), a blob over the
     profile's new `BlobLimits` (8 MiB of text, 32 MiB of media by
     default; `FindingBlobTooLarge`), or any blob with no reader given

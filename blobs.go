@@ -318,8 +318,9 @@ func blobsInHeader(h agentsession.Header, ph *Placeholders) (agentsession.Header
 //     reported as a [FindingUnredactedBlob] ([BlobUnredacted]).
 //   - Bytes that start as other media it knows (PDF, audio, video) are
 //     kept whole ([BlobKeptMedia]) and reported as a
-//     [FindingSidecarMedia]: accepting the kind accepts a PDF's text
-//     unread.
+//     [FindingSidecarMedia]: accepting the kind accepts, unread, a
+//     PDF's text, a video's subtitles and attachments, and the
+//     free-text tags of audio and video.
 //   - Any other bytes, UTF-16 text among them, are neither: kept and
 //     reported as a [FindingUnredactedBlob] ([BlobUnredacted]), which no
 //     publisher carries. So is every blob when no reader was given.
@@ -496,8 +497,10 @@ var imageMagic = []magic{
 }
 
 // mediaMagic are the other media formats it knows by their bytes.
-// A PDF is among them, kept by the sidecar-media rule: its text is not
-// read, and a publisher accepting the kind accepts that.
+// A blob is matched by its signature alone and nothing after it is read:
+// a publisher accepting the sidecar-media kind accepts whatever text
+// follows, a PDF's, a video's subtitles and attachments, the free-text
+// tags of audio and video.
 var mediaMagic = []magic{
 	{0, "%PDF-"}, {4, "ftyp"}, {0, "\x1a\x45\xdf\xa3"},
 	{0, "OggS"}, {0, "fLaC"}, {0, "ID3"}, {8, "WAVE"}, {8, "AVI "},
