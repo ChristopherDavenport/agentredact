@@ -750,3 +750,23 @@ func TestCodexWhoami(t *testing.T) {
 		t.Error("bash -lc whoami's login was kept")
 	}
 }
+
+// TestClosedSetMembersKept: a rule matching a role's value leaves every
+// role as written, as agentsession v0.0.37 (format 0.20) keeps closed-
+// set members out of a rewrite; the text holding the word is still
+// rewritten.
+func TestClosedSetMembersKept(t *testing.T) {
+	c := &clock{}
+	s := newOriginal("orig-closed-set")
+	appendAt(t, s, c, user("the assistant said"))
+	turn(t, s, c, "resp-1", "assistant here")
+	p := Profile{Name: "test.closed-set@1", Strings: []StringRedactor{Secrets("assistant")}}
+	res := redact(t, p, s, nil)
+	file := string(fileOf(t, res.Session))
+	if !strings.Contains(file, `"role":"assistant"`) || strings.Contains(file, `"role":"[REDACTED`) {
+		t.Errorf("a role was rewritten:\n%s", file)
+	}
+	if strings.Contains(file, "the assistant said") {
+		t.Error("the text was not rewritten")
+	}
+}

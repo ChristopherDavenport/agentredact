@@ -7,10 +7,11 @@ versions may break the API.
 
 ## Unreleased
 
-- **Breaking: agentsession v0.0.36, format 0.19** (#19), with
+- **Breaking: agentsession v0.0.37, format 0.20** (#19), with
   agentpolicy v0.0.19, openresponses v0.0.18, agentturn v0.0.35 and
-  agenttool v0.0.29. Every redaction this version writes is a session
-  of format 0.19 and has a new ID (below), so a store pass writes each
+  agenttool v0.0.29, in the root and in `cmd/agentredact`. Every
+  redaction this version writes is a session of format 0.20 and has a
+  new ID (below), so a store pass writes each
   redaction afresh beside the ones v0.0.1 wrote, which it skips and
   never resumes. Profiles should take a new version with this release,
   since what they write changes throughout (below and the entries
@@ -289,6 +290,13 @@ versions may break the API.
   harvested; a password from a shell expansion, a variable or an
   environment lookup (`pwd=$(pwd)`, `password=os.environ[...]`) is kept
   as code.
+- **Closed-set members are kept (agentsession v0.0.37, format 0.20).**
+  The Rewriter no longer hands a redactor the members whose value is
+  drawn from a closed set (an item's `role`, `status` and `type`,
+  `omit.reasoning`, `include` elements, …), so a rule matching such a
+  word, `Secrets("assistant")` say, leaves roles as written. The
+  identity redactor's own guard against replacing a role or a type is
+  kept.
 - **Profiles take a new version.** #20, #12, #11 and #13 change what a
   profile writes (with the keyed names, every redaction is a new session
   anyway): name the profiles you redact with under a new version, such

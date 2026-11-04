@@ -12,7 +12,7 @@ go 1.25.0
 require (
 	github.com/ChristopherDavenport/agentpolicy v0.0.19
 	github.com/ChristopherDavenport/agentredact/secrets v0.0.1
-	github.com/ChristopherDavenport/agentsession v0.0.36
+	github.com/ChristopherDavenport/agentsession v0.0.37
 	github.com/ChristopherDavenport/openresponses v0.0.18
 )
 

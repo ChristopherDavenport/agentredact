@@ -1,6 +1,6 @@
 // Package agentredact writes redacted sessions and decides which of
 // them leave a store. A redacted session, in the Agent Session Format
-// (agentsession, format 0.19), is a session of its own made from an
+// (agentsession, format 0.20), is a session of its own made from an
 // original: every entry the redaction writes carries redacted, the
 // positions of the original's entries it was made from, its header
 // carries redacted_from, naming the original by a pseudonym keyed under

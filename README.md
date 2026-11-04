@@ -5,7 +5,7 @@ Redaction and publishing for agent sessions, built on
 agentredact writes a redacted copy of each session in a store and
 decides which of those copies may leave it.
 
-A redacted session, in agentsession's format 0.19, is a session of its
+A redacted session, in agentsession's format 0.20, is a session of its
 own made from an original:
 
 - every entry the redaction writes carries `redacted`, the positions

@@ -10,7 +10,7 @@ go 1.25.0
 require (
 	github.com/ChristopherDavenport/agentredact v0.0.1
 	github.com/ChristopherDavenport/agentredact/secrets v0.0.1 // indirect
-	github.com/ChristopherDavenport/agentsession v0.0.36
+	github.com/ChristopherDavenport/agentsession v0.0.37
 )
 
 require github.com/ChristopherDavenport/openresponses v0.0.18
