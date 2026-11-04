@@ -225,54 +225,128 @@ func blobsInText(s string, ph *Placeholders) string {
 //     publisher carries. So is every blob when no reader was given.
 //   - A blob the reader fails to read, one the store does not hold
 //     included, is [ErrBlobUnread], and the redaction writes nothing.
+//   - A blob over the profile's cap for its kind ([BlobLimits]) is kept
+//     and reported as a [FindingBlobTooLarge] ([BlobUnredacted]).
+//
+// Each blob is read and decided once per redaction, however many
+// references name it.
 func (r *redaction) sidecars(pos int, n agentsession.Entry, made map[string]Blob) (agentsession.Entry, error) {
-	report := func(kind FindingKind, at, message string) {
-		r.res.Findings = append(r.res.Findings, Finding{Kind: kind, Position: pos, At: at, Redactor: "redact", Message: message})
-	}
 	return walkSidecars(n, func(url, at, member string) (string, error) {
 		h := strings.TrimPrefix(url, "sidecar:")
 		if _, ok := made[h]; ok {
 			mergeFate(r.res.Sidecar, h, BlobMade)
 			return url, nil
 		}
-		keep := func(fate BlobFate, kind FindingKind, message string) (string, error) {
-			mergeFate(r.res.Sidecar, h, fate)
-			report(kind, at, message)
-			return url, nil
-		}
-		if r.readBlob == nil {
-			return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar blob kept unredacted: no blob reader was given, so it was not read")
-		}
-		data, typ, err := r.readBlob(h)
-		if err != nil {
-			// Whether a blob can be read now is no input of the
-			// redaction: nothing is written, and the next pass decides
-			// the reference again.
-			return "", fmt.Errorf("%w: %w", ErrBlobUnread, err)
-		}
-		if typ == "" && r.mediaType != nil {
-			typ = r.mediaType(h)
-		}
-		typ, _ = agentsession.BlobMediaType(typ)
-		switch {
-		case isText(data):
-		case sniffImage(data):
-			message := "a sidecar image kept whole: the profile replaces no image, and no string redactor reads the text in its pixels"
-			if r.images {
-				message = "a sidecar image Images does not replace, kept whole: it replaces those an image_url names, and no string redactor reads the text in its pixels"
+		d, ok := r.decided[h]
+		if !ok {
+			var err error
+			if d, err = r.decide(h); err != nil {
+				return "", err
 			}
-			return keep(BlobKeptImage, FindingImage, message)
-		case sniffMedia(data):
-			return keep(BlobKeptMedia, FindingSidecarMedia, "sidecar media that is not an image or text kept whole: no redactor replaces it, and text in it is not found")
-		default:
-			return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar blob kept unredacted: its bytes are neither UTF-8 text nor media the redaction knows")
+			r.decided[h] = d
 		}
-		out := []byte(r.f(string(data)))
-		nh := agentsession.HashBytes(out)
-		made[nh] = Blob{Data: out, MediaType: textType(typ)}
-		mergeFate(r.res.Sidecar, nh, BlobRedacted)
-		return "sidecar:" + nh, nil
+		if d.kind != "" {
+			r.res.Findings = append(r.res.Findings, Finding{Kind: d.kind, Position: pos, At: at, Redactor: "redact", Message: d.message})
+		}
+		if d.blob != nil {
+			made[d.hash] = *d.blob
+		}
+		mergeFate(r.res.Sidecar, d.hash, d.fate)
+		return "sidecar:" + d.hash, nil
 	})
+}
+
+// blobDecision is what the blob step made of one blob: the hash the
+// reference names after it, the fate, the replacement written when
+// there is one, and the finding each reference to it reports.
+type blobDecision struct {
+	hash    string
+	fate    BlobFate
+	blob    *Blob
+	kind    FindingKind
+	message string
+}
+
+// decide reads the original's blob h, once per redaction, and decides
+// it as [redaction.sidecars] says.
+func (r *redaction) decide(h string) (blobDecision, error) {
+	keep := func(fate BlobFate, kind FindingKind, message string) (blobDecision, error) {
+		return blobDecision{hash: h, fate: fate, kind: kind, message: message}, nil
+	}
+	if r.readBlob == nil {
+		return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar blob kept unredacted: no blob reader was given, so it was not read")
+	}
+	data, typ, err := r.readBlob(h)
+	if err != nil {
+		// Whether a blob can be read now is no input of the redaction:
+		// nothing is written, and the next pass decides the reference
+		// again.
+		return blobDecision{}, fmt.Errorf("%w: %w", ErrBlobUnread, err)
+	}
+	if typ == "" && r.mediaType != nil {
+		typ = r.mediaType(h)
+	}
+	typ, _ = agentsession.BlobMediaType(typ)
+	limits := r.p.BlobLimits.withDefaults()
+	tooLarge := func(limit int64) (blobDecision, error) {
+		return keep(BlobUnredacted, FindingBlobTooLarge, fmt.Sprintf("a sidecar blob of %d bytes kept unredacted: over the profile's limit of %d for its kind", len(data), limit))
+	}
+	switch {
+	case isText(data):
+		if int64(len(data)) > limits.Text {
+			return tooLarge(limits.Text)
+		}
+	case sniffImage(data):
+		if int64(len(data)) > limits.Media {
+			return tooLarge(limits.Media)
+		}
+		message := "a sidecar image kept whole: the profile replaces no image, and no string redactor reads the text in its pixels"
+		if r.images {
+			message = "a sidecar image Images does not replace, kept whole: it replaces those an image_url names, and no string redactor reads the text in its pixels"
+		}
+		return keep(BlobKeptImage, FindingImage, message)
+	case sniffMedia(data):
+		if int64(len(data)) > limits.Media {
+			return tooLarge(limits.Media)
+		}
+		return keep(BlobKeptMedia, FindingSidecarMedia, "sidecar media that is not an image or text kept whole: no redactor replaces it, and text in it is not found")
+	default:
+		return keep(BlobUnredacted, FindingUnredactedBlob, "a sidecar blob kept unredacted: its bytes are neither UTF-8 text nor media the redaction knows")
+	}
+	out := []byte(r.f(string(data)))
+	return blobDecision{hash: agentsession.HashBytes(out), fate: BlobRedacted, blob: &Blob{Data: out, MediaType: textType(typ)}}, nil
+}
+
+// BlobLimits caps the bytes of one sidecar blob the redaction takes
+// ([Profile.BlobLimits]): Text for one read as text, through the string
+// redactors, and Media for an image or other media kept whole. A blob
+// over its cap is kept unredacted and reported as a
+// [FindingBlobTooLarge], and never leaves. A zero field takes its
+// default, [DefaultTextBlobLimit] or [DefaultMediaBlobLimit]. The caps
+// are rules of the profile: changing one changes what it writes.
+//
+// The cap bounds what the redaction holds and rewrites, not what a
+// store reads: agentsession serves a blob whole, so the reader returns
+// all of it before the cap is checked.
+type BlobLimits struct {
+	Text  int64
+	Media int64
+}
+
+// The default caps of [BlobLimits].
+const (
+	DefaultTextBlobLimit  = 8 << 20
+	DefaultMediaBlobLimit = 32 << 20
+)
+
+func (l BlobLimits) withDefaults() BlobLimits {
+	if l.Text == 0 {
+		l.Text = DefaultTextBlobLimit
+	}
+	if l.Media == 0 {
+		l.Media = DefaultMediaBlobLimit
+	}
+	return l
 }
 
 // textType is the type a text blob's replacement is written with, the

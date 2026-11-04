@@ -251,3 +251,45 @@ func TestCarriesBlob(t *testing.T) {
 		t.Error("accepted")
 	}
 }
+
+// TestRedactBlobLimits: a profile's caps hold a blob over them, of
+// text or media, as too large and never carried; each blob is read
+// once, however many references name it.
+func TestRedactBlobLimits(t *testing.T) {
+	blobs := blobStore{}
+	text := blobs.put("a long log "+fakePassword, "text/plain")
+	pdf := blobs.put("%PDF-1.7\n%\xe2\xe3\xcf\xd3 a long document", "application/pdf")
+	c := &clock{}
+	s := agentsession.New(agentsession.Header{ID: "orig-blob-limits", CreatedAt: t0, Media: agentsession.MediaSidecar})
+	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.UserMessage(
+		&openresponses.InputFile{Filename: "a.log", FileData: "sidecar:" + text},
+		&openresponses.InputFile{Filename: "b.log", FileData: "sidecar:" + text},
+		&openresponses.InputFile{Filename: "c.pdf", FileData: "sidecar:" + pdf})))
+	reads := 0
+	read := func(h string) ([]byte, string, error) { reads++; return blobs.read(h) }
+	p := testProfile()
+	p.BlobLimits = BlobLimits{Text: 8, Media: 16}
+	res, err := Redact(p, testKey, s, nil, WithBlobs(read))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reads != 2 {
+		t.Errorf("read %d times, want each blob once", reads)
+	}
+	if res.Sidecar[text] != BlobUnredacted || res.Sidecar[pdf] != BlobUnredacted || len(res.Blobs) != 0 {
+		t.Errorf("fates %v, blobs %v: want both held as too large", res.Sidecar, res.Blobs)
+	}
+	n := 0
+	for _, f := range res.Findings {
+		if f.Kind == FindingBlobTooLarge {
+			n++
+		}
+	}
+	if n != 3 {
+		t.Errorf("findings %+v, want one too-large per reference", res.Findings)
+	}
+	p.BlobLimits = BlobLimits{Text: -1}
+	if err := p.Validate(); err == nil {
+		t.Error("a negative limit validates")
+	}
+}

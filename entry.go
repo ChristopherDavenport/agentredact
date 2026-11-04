@@ -174,6 +174,11 @@ const (
 	// publishable, but no publisher carries the blob: a session naming
 	// it is held.
 	FindingUnredactedBlob FindingKind = "unredacted-blob"
+	// FindingBlobTooLarge: a sidecar blob over the profile's cap for its
+	// kind ([BlobLimits]), kept as the original's and never read through
+	// the redactors ([BlobUnredacted]). Like an unredacted blob, it never
+	// leaves, whatever is accepted.
+	FindingBlobTooLarge FindingKind = "blob-too-large"
 	// FindingInlineMedia: inline media that is not an image, kept.
 	FindingInlineMedia FindingKind = "inline-media"
 	// FindingEmbeddedImage: an image data URL inside a longer string,

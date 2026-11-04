@@ -69,6 +69,10 @@ type Profile struct {
 	// reported, though a home path naming it, /home/<login>, still is:
 	// give such a login to [Secrets] in the profile's Strings.
 	Identity []IdentityMember
+	// BlobLimits caps the sidecar blobs the redaction reads, by kind;
+	// zero takes the defaults (8 MiB of text, 32 MiB of media). A blob
+	// over its cap is held: see [BlobLimits].
+	BlobLimits BlobLimits
 }
 
 // ErrProfileName is returned for a profile name [ValidateProfileName]
@@ -143,6 +147,9 @@ func (p Profile) Validate() error {
 		if s == nil {
 			return fmt.Errorf("agentredact: profile %s: session redactor %d is nil", p.Name, i)
 		}
+	}
+	if p.BlobLimits.Text < 0 || p.BlobLimits.Media < 0 {
+		return fmt.Errorf("agentredact: profile %s: a negative blob limit", p.Name)
 	}
 	for _, m := range p.Identity {
 		if err := m.validate(); err != nil {

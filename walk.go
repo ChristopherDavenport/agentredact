@@ -74,6 +74,8 @@ type redaction struct {
 	mediaType func(hash string) string
 	// readBlob reads one of the original's blobs ([WithBlobs]).
 	readBlob func(hash string) ([]byte, string, error)
+	// decided are the blobs the blob step decided, by original hash.
+	decided map[string]blobDecision
 	// idents are the identity values the original has named up to the
 	// entry being redacted, which the string redactors replace, and
 	// allIdents those the whole original names, which the redaction is

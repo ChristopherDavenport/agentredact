@@ -464,6 +464,7 @@ func newRedaction(p Profile, key Key, original *agentsession.Session, along Alon
 		origID:   original.ID(),
 		placed:   map[string]*placed{},
 		along:    along,
+		decided:  map[string]blobDecision{},
 	}
 	r.redID = names.ID()
 	r.images = slices.ContainsFunc(p.Entries, func(e EntryRedactor) bool { _, ok := e.(images); return ok })
