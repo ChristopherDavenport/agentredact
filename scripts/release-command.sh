@@ -23,7 +23,10 @@ die() { echo "release-command: $*" >&2; exit 1; }
 # alone: it is honoured only with RELEASE_COMMAND_TEST=1 and an origin
 # that is a file:// remote, a throwaway repository, and refused
 # otherwise, so one leaking in from the environment cannot have go.sum
-# written from an unverified source.
+# written from an unverified source. GOENV=off as well: the go command
+# reads an empty GOPRIVATE, GONOPROXY or GONOSUMDB as unset and takes
+# the value from the user's go env file instead, which may name this
+# repository.
 if [ -n "${RELEASE_PROXY:-}" ]; then
   [ "${RELEASE_COMMAND_TEST:-}" = 1 ] || die "RELEASE_PROXY is set outside a test (RELEASE_COMMAND_TEST=1); unset it"
   case "$(git remote get-url origin 2>/dev/null)" in
@@ -31,7 +34,7 @@ if [ -n "${RELEASE_PROXY:-}" ]; then
     *) die "RELEASE_PROXY is honoured only for a file:// origin, a test's" ;;
   esac
 fi
-export GOPROXY="${RELEASE_PROXY:-https://proxy.golang.org}" GOPRIVATE= GONOPROXY= GOFLAGS="${GOFLAGS:+$GOFLAGS }"
+export GOENV=off GOPROXY="${RELEASE_PROXY:-https://proxy.golang.org}" GOPRIVATE= GONOPROXY= GOFLAGS="${GOFLAGS:+$GOFLAGS }"
 [ -n "${RELEASE_PROXY:-}" ] || export GONOSUMDB= GOSUMDB=sum.golang.org
 GOFLAGS="$(printf '%s' "$GOFLAGS" | sed -E 's/-mod=[a-z]+//g')"
 export GOFLAGS

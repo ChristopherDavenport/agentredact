@@ -169,8 +169,11 @@ case "$TAG" in
     ok "requires every first-party module at $VERSION"
     MODULE="$(GOWORK=off go list -m)"
     # Asked from outside any module: inside the root, the go command
-    # answers for the main module from the tree, not the proxy.
-    err="$(cd "$(mktemp -d)" && GOWORK=off GOFLAGS= go list -m -e -f '{{with .Error}}{{.Err}}{{end}}' "$MODULE@$VERSION" 2>&1)"
+    # answers for the main module from the tree, not the proxy. The
+    # proxy alone, as go install asks it: GOENV=off keeps a GOPRIVATE in
+    # the user's go env file from sending the question to origin, and
+    # GOPROXY names no direct fallback.
+    err="$(cd "$(mktemp -d)" && GOENV=off GOPROXY="${GOPROXY:-https://proxy.golang.org}" GOWORK=off GOFLAGS= go list -m -e -f '{{with .Error}}{{.Err}}{{end}}' "$MODULE@$VERSION" 2>&1)"
     [ -z "$err" ] || die "$MODULE@$VERSION is not on the proxy yet: $err
             Release the command once the root and its libraries are served."
     ok "$MODULE@$VERSION is on the proxy"

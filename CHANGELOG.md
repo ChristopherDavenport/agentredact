@@ -18,6 +18,11 @@ versions may break the API.
   committing, when anything else in the tree changed. The next command
   release (v0.0.3) ships without the binary, and it is removed from
   main.
+- The command release and its guard asked the public proxy alone in
+  name only: an empty `GOPRIVATE`, `GONOPROXY` or `GONOSUMDB` reads as
+  unset, so a value in the user's go env file still sent the question
+  to origin. Both now run with `GOENV=off`, and the guard's proxy check
+  no longer falls back to `direct`.
 
 ## v0.0.2 - 2026-11-03
 
