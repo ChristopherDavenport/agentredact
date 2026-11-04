@@ -167,61 +167,71 @@ rootdep refuse v0.0.2 v0.0.1 none v0.0.1 sub/v0.0.1
 rootdep accept sub/v0.0.2 v0.0.2 head v0.0.1 sub/v0.0.1
 rootdep refuse sub/v0.0.2 v0.0.2 head v0.0.1 sub/v0.0.2
 
-# command <accept|refuse> <tag> <root version cmd/x requires> <replace: yes|no>
-#         <the proxy serves the root at the tag's version: yes|no>
+# command <accept|refuse> <tag> <version cmd/x requires the root and lib at>
+#         <replace: yes|no> <what the proxy serves at the tag's version: all|root|none>
 #         [published tags...]
 # A command module at cmd/x, released in the second step: the root and
-# its libraries were tagged before, at an earlier commit, and are on the
-# proxy; the command's go.mod drops its replaces and requires the root
+# its library lib were tagged before, at an earlier commit, and are on
+# the proxy; the command's go.mod drops its replaces and requires both
 # at the version released. The guard refuses a command with any replace,
-# since go install refuses it, and one whose root version the proxy does
-# not serve yet. A file proxy in the case's directory stands in for
-# proxy.golang.org.
+# since go install refuses it, and one requiring a first-party module
+# the proxy does not serve yet. A file proxy in the case's directory
+# stands in for proxy.golang.org. With private=1 the caller's shell
+# exports GOPRIVATE and GONOPROXY naming the modules, and any direct
+# fetch is sent to a closed port: the guard asks the proxy alone, so it
+# accepts all the same.
 command() {
   want="$1"; tag="$2"; req="$3"; repl="$4"; served="$5"; shift 5
   d="$(mktemp -d)"
   git init -q --bare "$d/origin.git"
   git init -q "$d/work"
   v="v${tag##*/v}"
-  mkdir -p "$d/proxy/$M/@v"
-  if [ "$served" = yes ]; then
-    echo "$v" > "$d/proxy/$M/@v/list"
-    printf '{"Version":"%s","Time":"2026-01-01T00:00:00Z"}\n' "$v" > "$d/proxy/$M/@v/$v.info"
-    printf 'module %s\n\ngo 1.25\n' "$M" > "$d/proxy/$M/@v/$v.mod"
-  else
-    : > "$d/proxy/$M/@v/list"
-  fi
+  mkdir -p "$d/proxy/$M/@v" "$d/proxy/$M/lib/@v"
+  serve() {
+    echo "$v" > "$d/proxy/$1/@v/list"
+    printf '{"Version":"%s","Time":"2026-01-01T00:00:00Z"}\n' "$v" > "$d/proxy/$1/@v/$v.info"
+    printf 'module %s\n\ngo 1.25\n' "$1" > "$d/proxy/$1/@v/$v.mod"
+  }
+  case "$served" in
+    all) serve "$M"; serve "$M/lib" ;;
+    root) serve "$M"; : > "$d/proxy/$M/lib/@v/list" ;;
+    *) : > "$d/proxy/$M/@v/list"; : > "$d/proxy/$M/lib/@v/list" ;;
+  esac
   (
     cd "$d/work" || exit 1
-    mkdir -p scripts cmd/x
+    mkdir -p scripts lib cmd/x
     cp "$HERE/versions.sh" "$HERE/check-extracted.sh" scripts/
     printf 'module %s\n\ngo 1.25\n' "$M" > go.mod
+    printf 'module %s/lib\n\ngo 1.25\n' "$M" > lib/go.mod
     git add . && git -c user.email=t@t -c user.name=t commit -qm init
-    git tag "$v"
+    git tag "$v" && git tag "lib/$v"
     git remote add origin "$d/origin.git"
     for t in "$@"; do git tag "$t"; done
     git push -q origin --tags 2>/dev/null
-    printf 'module %s/cmd/x\n\ngo 1.25\n\nrequire %s %s\n' "$M" "$M" "$req" > cmd/x/go.mod
+    printf 'module %s/cmd/x\n\ngo 1.25\n\nrequire (\n\t%s %s\n\t%s/lib %s\n)\n' "$M" "$M" "$req" "$M" "$req" > cmd/x/go.mod
     [ "$repl" = no ] || printf '\nreplace %s => ../..\n' "$M" >> cmd/x/go.mod
     git add . && git -c user.email=t@t -c user.name=t commit -qm "release the command"
+    env=()
+    [ "${private:-}" != 1 ] || env=(GOPRIVATE="$M" GONOPROXY="$M" HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9)
     # A module cache of its own: one the case shared would serve the
     # version to the cases after it.
-    GOMODCACHE="$d/modcache" GOPROXY="file://$d/proxy" GONOSUMDB="$M" GOFLAGS="-mod=mod -modcacherw" GOWORK=off bash "$GUARD" "$tag" >/dev/null 2>&1
+    env "${env[@]}" GOMODCACHE="$d/modcache" GOPROXY="file://$d/proxy" GONOSUMDB="$M" GOFLAGS="-mod=mod -modcacherw" GOWORK=off bash "$GUARD" "$tag" >/dev/null 2>&1
   )
   rc=$?
-  rm -rf "$d"
+  chmod -R u+w "$d" 2>/dev/null; rm -rf "$d"
   got=refuse; [ "$rc" = 0 ] && got=accept
   if [ "$got" != "$want" ]; then
-    echo "FAIL: command guard $tag (requires $req, replace $repl, served $served) with [$*]: want $want, got $got"
+    echo "FAIL: command guard $tag (requires $req, replace $repl, served $served${private:+, private}) with [$*]: want $want, got $got"
     fails=$((fails + 1))
   fi
 }
 
-command accept cmd/x/v0.0.2 v0.0.2 no yes v0.0.1
-command refuse cmd/x/v0.0.2 v0.0.2 yes yes v0.0.1
-command refuse cmd/x/v0.0.2 v0.0.2 no no v0.0.1
-command refuse cmd/x/v0.0.2 v0.0.1 no yes v0.0.1
-command refuse cmd/x/v0.0.2 v0.0.2 no yes v0.0.1 cmd/x/v0.0.2
+command accept cmd/x/v0.0.2 v0.0.2 no all v0.0.1
+command refuse cmd/x/v0.0.2 v0.0.2 yes all v0.0.1
+command refuse cmd/x/v0.0.2 v0.0.2 no none v0.0.1
+command refuse cmd/x/v0.0.2 v0.0.2 no root v0.0.1
+command refuse cmd/x/v0.0.2 v0.0.1 no all v0.0.1
+command refuse cmd/x/v0.0.2 v0.0.2 no all v0.0.1 cmd/x/v0.0.2
 
 [ "$fails" = 0 ] && echo "release-guard tests passed"
 exit "$fails"

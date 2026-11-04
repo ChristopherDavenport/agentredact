@@ -140,8 +140,9 @@ anything else in the tree changed), guards and tags
 go.mod and go.sum from before in a second commit, so the tree builds
 the command against itself again, and pushes the branch and the tags
 atomically. The guard refuses a command tag whose go.mod holds any replace, one whose root
-version is not tagged before it or not on the proxy, and one not
-requiring the root at its version. On the tag, the release workflow
+version is not tagged before it, one not requiring the root at its
+version, and one requiring a first-party module (the root, `secrets`)
+the proxy does not serve at it. On the tag, the release workflow
 runs `go install github.com/ChristopherDavenport/agentredact/cmd/agentredact@vX.Y.Z`.
 `make release` itself tags the root and the libraries alone.
 `make extracted`, in CI, builds each module against the versions it
