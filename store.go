@@ -137,14 +137,19 @@ type SessionReport struct {
 
 // Public is a copy of r for anywhere it leaves the holder of the
 // originals: every session named by its redaction alone, Original
-// emptied and WaitingOn the redaction of the session waited on. A
-// report written to a published place is this, never r.
+// emptied, Sidecar left out, WaitingOn the redaction of the session
+// waited on, and Err its message with every hash elided, errors.Is
+// finding what it found and errors.As nothing below it. A report written
+// to a published place is this, never r.
 func (r *StoreReport) Public(key Key) *StoreReport {
 	out := *r
 	out.Sessions = make([]SessionReport, len(r.Sessions))
 	for i, s := range r.Sessions {
 		s.Original = ""
 		s.Sidecar = nil
+		if s.Err != nil {
+			s.Err = publicError{msg: hashRef.ReplaceAllString(s.Err.Error(), "sha256:…"), err: s.Err}
+		}
 		if s.WaitingOn != "" {
 			s.WaitingOn = RedactedID(key, s.WaitingOn, r.Profile)
 		}
@@ -152,6 +157,20 @@ func (r *StoreReport) Public(key Key) *StoreReport {
 	}
 	return &out
 }
+
+// publicError is a session's error as a public report holds it: its
+// message with every hash elided, and errors.Is finding the sentinels
+// below it, but no way down to the errors it wraps, whose fields or
+// messages may name an original's hashes.
+type publicError struct {
+	msg string
+	err error
+}
+
+func (e publicError) Error() string { return e.msg }
+
+// Is reports whether target is in the chain of the error it stands for.
+func (e publicError) Is(target error) bool { return errors.Is(e.err, target) }
 
 // Publishable reports whether the redaction is written and up to date
 // with the original as this run read it, holds no native entries, and

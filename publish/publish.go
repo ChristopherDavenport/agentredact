@@ -102,6 +102,19 @@ func Publish(ctx context.Context, from, to agentsession.Store, opts Options) (*R
 			ids = append(ids, h.ID)
 		}
 	}
+	// A session the store pass failed before writing anything, such as
+	// one referencing a blob the store does not hold, has no redaction
+	// to list: it is held all the same, so the result says why.
+	listed := map[string]bool{}
+	for _, id := range ids {
+		listed[id] = true
+	}
+	for _, rp := range opts.Report.Sessions {
+		if rp.Err != nil && !listed[rp.Redaction] {
+			ids = append(ids, rp.Redaction)
+			listed[rp.Redaction] = true
+		}
+	}
 	sort.Strings(ids)
 	res := &Result{}
 	var errs []error
@@ -165,6 +178,9 @@ func (g *gate) check(ctx context.Context, from agentsession.Store, id string) (*
 	if !ok {
 		return nil, nil, "the store pass did not report it", nil
 	}
+	if rp.Err != nil {
+		return nil, nil, failed(rp.Err), nil
+	}
 	for _, h := range slices.Sorted(maps.Keys(rp.Sidecar)) {
 		if rp.Sidecar[h] == agentredact.BlobUnredacted {
 			return nil, nil, unredacted(h), nil
@@ -202,6 +218,19 @@ func (g *gate) check(ctx context.Context, from agentsession.Store, id string) (*
 		}
 	}
 	return red, blobs, "", nil
+}
+
+// failed is the reason a session the store pass failed is held, its
+// error's message, which names a reference by its position and pointer
+// and no hash.
+func failed(err error) string {
+	switch {
+	case errors.Is(err, agentredact.ErrBlobUnread) && errors.Is(err, agentsession.ErrNoBlob):
+		return "a blob it references is missing from the private store; restore the blob, or remove the reference from the original: " + err.Error()
+	case errors.Is(err, agentredact.ErrBlobUnread):
+		return "a blob it references could not be read; the next store pass tries again: " + err.Error()
+	}
+	return "the store pass could not redact it: " + err.Error()
 }
 
 // unredacted is the reason a session referencing the blob hash, which

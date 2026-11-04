@@ -63,7 +63,11 @@ func mergeFate(m map[string]BlobFate, hash string, f BlobFate) {
 // the redaction writes for a reference must not depend on whether the
 // blob could be read at that moment, and a later run, once the blob
 // reads, redacts the session. The store pass reports it in the
-// session's Err.
+// session's Err, which names the reference by its entry's position and
+// its pointer, never the blob's hash; for a blob the store does not
+// hold, it wraps [agentsession.ErrNoBlob] and says the blob is missing.
+// The remedy for one that will never arrive is to restore it, or to
+// remove the reference from the original.
 var ErrBlobUnread = errors.New("agentredact: a blob the session references could not be read")
 
 // WithBlobs gives [Redact] the original's blobs: read returns the
@@ -307,7 +311,12 @@ func (r *redaction) sidecars(pos int, n agentsession.Entry, made map[string]Blob
 		if !ok {
 			var err error
 			if d, err = r.decide(h); err != nil {
-				return "", err
+				// The reference is named by where it is, never by the
+				// original blob's hash.
+				if errors.Is(err, agentsession.ErrNoBlob) {
+					return "", fmt.Errorf("%w: the blob the reference at %s names is missing from the store: %w", ErrBlobUnread, at, err)
+				}
+				return "", fmt.Errorf("%w: the reference at %s: %w", ErrBlobUnread, at, err)
 			}
 			r.decided[h] = d
 		}
@@ -347,7 +356,7 @@ func (r *redaction) decide(h string) (blobDecision, error) {
 		// Whether a blob can be read now is no input of the redaction:
 		// nothing is written, and the next pass decides the reference
 		// again.
-		return blobDecision{}, fmt.Errorf("%w: %w", ErrBlobUnread, err)
+		return blobDecision{}, err
 	}
 	if typ == "" && r.mediaType != nil {
 		typ = r.mediaType(h)
