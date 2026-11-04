@@ -41,6 +41,32 @@ func testProfile() Profile {
 	}
 }
 
+// testKey is the redaction key every test redacts under: synthetic,
+// and spelled so no one takes it for a secret.
+var testKey = mustKey("agentredact-test-key-not-a-secret-0000")
+
+func mustKey(s string) Key {
+	k, err := NewKey([]byte(s))
+	if err != nil {
+		panic(err)
+	}
+	return k
+}
+
+// redIDOf is the ID of the redaction of the native session id under
+// profile and testKey, which every reference to id is re-pointed to.
+func redIDOf(id, profile string) string { return RedactedID(testKey, id, profile) }
+
+// pseudonymOf is the pseudonym of the native session id under profile
+// and testKey, which redacted_from names it by.
+func pseudonymOf(id, profile string) string {
+	ps, err := agentsession.Pseudonym(keyBytes(testKey), id, profile)
+	if err != nil {
+		panic(err)
+	}
+	return ps
+}
+
 var t0 = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 
 // clock gives each entry its own timestamp, a second apart, so a case
@@ -179,7 +205,7 @@ func wantInstructions(t *testing.T, red *agentsession.Session, want string) {
 	}
 }
 
-const partsRedacted = "Never print [REDACTED openai_key].\n\nThe password is [REDACTED].\n\nYou work in ~/project."
+const partsRedacted = "Never print [REDACTED openai_key#1].\n\nThe password is [REDACTED#1].\n\nYou work in ~/project."
 
 // TestRedactPartsByHash: parts named by hash resolve to the rewritten
 // texts, in a fresh redaction and in one resumed past the entry that
@@ -301,7 +327,7 @@ func fileOf(t *testing.T, s *agentsession.Session) []byte {
 
 func redact(t *testing.T, p Profile, orig, existing *agentsession.Session) *Result {
 	t.Helper()
-	res, err := Redact(p, orig, existing)
+	res, err := Redact(p, testKey, orig, existing)
 	if err != nil {
 		t.Fatalf("Redact: %v", err)
 	}
@@ -323,10 +349,10 @@ func checkRedaction(t *testing.T, p Profile, orig *agentsession.Session, res *Re
 	}
 	h := red.Header()
 	oh := orig.Header()
-	if !h.Redacted || h.RedactedFrom == nil || h.RedactedFrom.Session != oh.ID || h.RedactedFrom.Profile != p.Name {
+	if !h.Redacted || h.RedactedFrom == nil || h.RedactedFrom.Session != pseudonymOf(oh.ID, p.Name) || h.RedactedFrom.Profile != p.Name {
 		t.Errorf("header redacted %v, redacted_from %+v", h.Redacted, h.RedactedFrom)
 	}
-	if want := agentsession.RedactedSessionID(oh.ID, p.Name); h.ID != want {
+	if want := redIDOf(oh.ID, p.Name); h.ID != want {
 		t.Errorf("ID %s, want %s", h.ID, want)
 	}
 	if h.Base != "" {
@@ -391,7 +417,7 @@ func TestRedact(t *testing.T) {
 				t.Errorf("findings %+v", res.Findings)
 			}
 			if ps := orig.Header().ParentSession; ps != "" {
-				if got := res.Session.Header().ParentSession; got != agentsession.RedactedSessionID(ps, p.Name) {
+				if got := res.Session.Header().ParentSession; got != redIDOf(ps, p.Name) {
 					t.Errorf("parent_session %q, want the derived redaction of %s", got, ps)
 				}
 			}
@@ -470,23 +496,23 @@ func TestRedactRefusesAnotherRedaction(t *testing.T) {
 
 	other := testProfile()
 	other.Name = "test.default@2"
-	if _, err := Redact(other, orig, red); !errors.Is(err, ErrNotThisRedaction) {
+	if _, err := Redact(other, testKey, orig, red); !errors.Is(err, ErrNotThisRedaction) {
 		t.Errorf("another profile: %v, want ErrNotThisRedaction", err)
 	}
 	otherOrig := compactionOriginal(t, &clock{})
-	if _, err := Redact(p, otherOrig, red); !errors.Is(err, ErrNotThisRedaction) {
+	if _, err := Redact(p, testKey, otherOrig, red); !errors.Is(err, ErrNotThisRedaction) {
 		t.Errorf("another original: %v, want ErrNotThisRedaction", err)
 	}
-	if _, err := Redact(p, orig, orig); !errors.Is(err, ErrNotThisRedaction) {
+	if _, err := Redact(p, testKey, orig, orig); !errors.Is(err, ErrNotThisRedaction) {
 		t.Errorf("a session that is not redacted: %v, want ErrNotThisRedaction", err)
 	}
 	// A redaction naming more of the original than it holds.
 	short := newOriginal("orig-plain")
 	appendAt(t, short, &clock{}, user("x"))
-	if _, err := Redact(p, short, red); !errors.Is(err, agentsession.ErrStaleOriginal) {
+	if _, err := Redact(p, testKey, short, red); !errors.Is(err, agentsession.ErrStaleOriginal) {
 		t.Errorf("a shorter original: %v, want ErrStaleOriginal", err)
 	}
-	if _, err := Redact(Profile{Name: "no version"}, orig, nil); !errors.Is(err, ErrProfileName) {
+	if _, err := Redact(Profile{Name: "no version"}, testKey, orig, nil); !errors.Is(err, ErrProfileName) {
 		t.Errorf("a bad profile name: %v, want ErrProfileName", err)
 	}
 }
@@ -549,12 +575,12 @@ func TestRedactSidecarImage(t *testing.T) {
 	turn(t, s, c, "resp-1", "I see two images")
 	res := redact(t, testProfile(), s, nil)
 
-	blob, err := placeholderBytes(DefaultImagePlaceholder)
+	blob, _, err := placeholderBytes(DefaultImagePlaceholder)
 	if err != nil {
 		t.Fatal(err)
 	}
 	hash := agentsession.HashBytes(blob)
-	if len(res.Blobs) != 1 || !bytes.Equal(res.Blobs[hash], blob) {
+	if len(res.Blobs) != 1 || !bytes.Equal(res.Blobs[hash].Data, blob) || res.Blobs[hash].MediaType != "image/png" {
 		t.Fatalf("blobs %v, want the placeholder's bytes under %s", res.Blobs, hash)
 	}
 	file := fileOf(t, res.Session)
@@ -680,7 +706,7 @@ func TestImagesPlaceholder(t *testing.T) {
 		t.Error("the image part is gone")
 	}
 	bad := Profile{Name: "bad@1", Entries: []EntryRedactor{Images("not a data url")}}
-	if _, err := Redact(bad, orig, nil); err == nil {
+	if _, err := Redact(bad, testKey, orig, nil); err == nil {
 		t.Error("a bad placeholder was accepted")
 	}
 }
@@ -696,10 +722,10 @@ func TestRedactWrapsAgentsessionErrors(t *testing.T) {
 	env.AddRead("/a/two", agentsession.HashText("2"))
 	appendAt(t, s, c, user("first"))
 	id := appendAt(t, s, c, env)
-	p := Profile{Name: "collide@1", Strings: []StringRedactor{func(s string) string {
+	p := Profile{Name: "collide@1", Strings: []StringRedactor{Plain(func(s string) string {
 		return strings.NewReplacer("one", "x", "two", "x").Replace(s)
-	}}}
-	_, err := Redact(p, s, nil)
+	})}}
+	_, err := Redact(p, testKey, s, nil)
 	if !errors.Is(err, agentsession.ErrKeyCollision) {
 		t.Fatalf("err %v, want ErrKeyCollision", err)
 	}
@@ -745,7 +771,7 @@ func TestChainLeavesBase64DataURLs(t *testing.T) {
 		{"data:x;token=" + fakeKey + ";base64,AA", "data:x;token=[REDACTED openai_key];base64,AA"},
 		{"data:application/pdf;name=AAA.pdf;base64,AAA", "data:application/pdf;name=[REDACTED].pdf;base64,AAA"},
 	} {
-		if got := r(tt.in); got != tt.want {
+		if got := r(tt.in, nil); got != tt.want {
 			t.Errorf("Chain(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
@@ -762,7 +788,7 @@ func TestRedactLeavesDataURLsWithoutImages(t *testing.T) {
 		t.Fatalf("the payload is not base64: %v", err)
 	}
 	url := "data:image/png;base64," + payload
-	if DefaultPatterns()(url) == url {
+	if DefaultPatterns()(url, nil) == url {
 		t.Fatal("the payload holds no pattern match; the case proves nothing")
 	}
 	c := &clock{}
@@ -778,14 +804,16 @@ func TestRedactLeavesDataURLsWithoutImages(t *testing.T) {
 	if got := m.Content[1].(*openresponses.InputImage).ImageURL; got != url {
 		t.Errorf("image_url %q, want %q", got, url)
 	}
-	if got := m.Content[0].(*openresponses.InputText).Text; got != "key [REDACTED openai_key]" {
+	if got := m.Content[0].(*openresponses.InputText).Text; got != "key [REDACTED openai_key#1]" {
 		t.Errorf("text %q", got)
 	}
 }
 
 // TestRedactUnmetPartHash: a part named by the hash of a text no entry
-// holds keeps the original's hash, and is reported by its id, without
-// the hash; parts whose texts the Rewriter met are not.
+// holds is written as UnmetPartText under its id, never under the
+// original's hash (RFC 0001 0.14, Every redacted entry); parts whose
+// texts the Rewriter met keep a hash, of the rewritten text, and the
+// response after the part verifies over the text written.
 func TestRedactUnmetPartHash(t *testing.T) {
 	c := &clock{}
 	s := newOriginal("orig-unmet")
@@ -798,15 +826,28 @@ func TestRedactUnmetPartHash(t *testing.T) {
 		{ID: "ghost", Hash: ghost},
 	}})
 	appendAt(t, s, c, user("again"))
+	turn(t, s, c, "resp-1", "one")
 	res := redact(t, testProfile(), s, nil)
-	if len(res.Findings) != 1 {
-		t.Fatalf("findings %+v, want one", res.Findings)
+	if len(res.Findings) != 0 {
+		t.Errorf("findings %+v, want none", res.Findings)
 	}
-	f := res.Findings[0]
-	if f.Position != 3 || f.At != "/instructions_parts/1" || f.Redactor != "redact" || !strings.Contains(f.Message, `"ghost"`) || strings.Contains(f.Message, ghost) || strings.Contains(f.Message, "a fake text") {
-		t.Errorf("finding %+v", f)
+	file := fileOf(t, res.Session)
+	if bytes.Contains(file, []byte(ghost)) || bytes.Contains(file, []byte(agentsession.HashText(keys))) {
+		t.Errorf("the redaction keeps an original hash:\n%s", file)
 	}
-	if _, err := agentsession.Read(bytes.NewReader(fileOf(t, res.Session))); err != nil {
-		t.Errorf("the redaction does not read: %v", err)
+	back, err := agentsession.Read(bytes.NewReader(file))
+	if err != nil {
+		t.Fatalf("the redaction does not read: %v", err)
+	}
+	cfg := agentsession.FileOrder(back)[2].(*agentsession.ConfigEntry)
+	if p := cfg.InstructionsParts; len(p) != 2 || p[0].Hash == "" || p[1].ID != "ghost" || p[1].Hash != "" || p[1].Text != UnmetPartText {
+		t.Errorf("parts %+v", p)
+	}
+	for _, e := range back.Entries() {
+		if r, ok := e.(*agentsession.ResponseEntry); ok && r.RequestHash != "" {
+			if err := back.Verify(r.ID); err != nil {
+				t.Errorf("the response does not verify: %v", err)
+			}
+		}
 	}
 }

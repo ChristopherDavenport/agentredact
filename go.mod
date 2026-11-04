@@ -10,15 +10,15 @@ go 1.25.0
 // run pkg@version refuse a module carrying any replace, so a command
 // meant for go install lives in a module of its own (AGENTS.md).
 require (
-	github.com/ChristopherDavenport/agentpolicy v0.0.17
+	github.com/ChristopherDavenport/agentpolicy v0.0.19
 	github.com/ChristopherDavenport/agentredact/secrets v0.0.1
-	github.com/ChristopherDavenport/agentsession v0.0.28
-	github.com/ChristopherDavenport/openresponses v0.0.14
+	github.com/ChristopherDavenport/agentsession v0.0.37
+	github.com/ChristopherDavenport/openresponses v0.0.18
 )
 
 require (
-	github.com/ChristopherDavenport/agenttool v0.0.22 // indirect
-	github.com/ChristopherDavenport/agentturn v0.0.24 // indirect
+	github.com/ChristopherDavenport/agenttool v0.0.29 // indirect
+	github.com/ChristopherDavenport/agentturn v0.0.35 // indirect
 )
 
 replace github.com/ChristopherDavenport/agentredact/secrets => ./secrets

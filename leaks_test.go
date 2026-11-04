@@ -17,9 +17,11 @@ func homeProfile() Profile {
 	return Profile{Name: "test.home@1", Strings: []StringRedactor{HomePaths(fakeHome)}}
 }
 
-// TestHeaderExtraKeys: the header's members the format does not define
-// have their names renamed at any depth, and the header holds no
-// planted path.
+// TestHeaderExtraKeys: inside the header's members the format does not
+// define, names and strings are rewritten at any depth; the member's
+// own name is the format's, kept as written (RFC 0001 0.14, The
+// redacted session), and reported, without the name, when the string
+// redactors would change it.
 func TestHeaderExtraKeys(t *testing.T) {
 	s := agentsession.New(agentsession.Header{ID: "orig-header-keys", CreatedAt: t0, Extra: map[string]json.RawMessage{
 		"x.harness/projects":  json.RawMessage(`{"` + fakeHome + `/proj":{"trusted":true,"list":[{"` + fakeHome + `/deep":1}]}}`),
@@ -27,13 +29,12 @@ func TestHeaderExtraKeys(t *testing.T) {
 	}})
 	appendAt(t, s, &clock{}, user("hello"))
 	res := redact(t, homeProfile(), s, nil)
-	file := fileOf(t, res.Session)
-	if bytes.Contains(file, []byte(fakeHome)) {
-		t.Errorf("the header kept the home:\n%s", file)
-	}
 	h := res.Session.Header()
-	if _, ok := h.Extra["~/top-key"]; !ok {
-		t.Errorf("Extra %v, want ~/top-key", h.Extra)
+	if got := string(h.Extra[fakeHome+"/top-key"]); got != `"value"` {
+		t.Errorf("Extra %v, want the top-level name kept", h.Extra)
+	}
+	if len(res.Findings) != 1 || res.Findings[0].Kind != FindingHeaderName || res.Findings[0].Position != 0 || strings.Contains(res.Findings[0].Message+res.Findings[0].At, fakeHome) {
+		t.Errorf("findings %+v, want one header-member-name naming nothing", res.Findings)
 	}
 	if got := string(h.Extra["x.harness/projects"]); got != `{"~/proj":{"list":[{"~/deep":1}],"trusted":true}}` {
 		t.Errorf("nested member %s", got)
@@ -46,18 +47,17 @@ func TestHeaderExtraKeyCollisions(t *testing.T) {
 		extra map[string]json.RawMessage
 		f     StringRedactor
 	}{
-		{"top level", map[string]json.RawMessage{fakeHome + "/a": json.RawMessage(`1`), "~/a": json.RawMessage(`2`)}, HomePaths(fakeHome)},
 		{"nested", map[string]json.RawMessage{"x.fake": json.RawMessage(`{"` + fakeHome + `/a":1,"~/a":2}`)}, HomePaths(fakeHome)},
-		{"to a defined member", map[string]json.RawMessage{"x-cwd": json.RawMessage(`"v"`)}, func(s string) string { return strings.ReplaceAll(s, "x-cwd", "cwd") }},
+		{"deeper", map[string]json.RawMessage{"x.fake": json.RawMessage(`{"list":[{"` + fakeHome + `/b":1,"~/b":2}]}`)}, HomePaths(fakeHome)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s := agentsession.New(agentsession.Header{ID: "orig-collide", CreatedAt: t0, Extra: tt.extra})
 			appendAt(t, s, &clock{}, user("hello"))
-			_, err := Redact(Profile{Name: "collide@1", Strings: []StringRedactor{tt.f}}, s, nil)
+			_, err := Redact(Profile{Name: "collide@1", Strings: []StringRedactor{tt.f}}, testKey, s, nil)
 			if !errors.Is(err, agentsession.ErrKeyCollision) {
 				t.Fatalf("err %v, want ErrKeyCollision", err)
 			}
-			if strings.Contains(err.Error(), fakeHome) {
+			if strings.Contains(err.Error(), fakeHome) || strings.Contains(err.Error(), "~/") {
 				t.Errorf("the error quotes the home: %v", err)
 			}
 		})
@@ -75,54 +75,56 @@ func unknownExtension(t *testing.T) agentsession.Entry {
 	return e
 }
 
-// TestEntryKeysRefused: an entry holding a member name the string
-// redactors would change is refused, by position and a pointer built
-// from rewritten names, never naming the key.
-func TestEntryKeysRefused(t *testing.T) {
+// TestEntryKeysRenamed: a member name that is data, in a custom entry's
+// data, an outcome's details, a member the format does not define or an
+// extension entry, reaches the string redactors and is renamed (RFC
+// 0001 0.14, Every redacted entry), so no planted path survives as a
+// key.
+func TestEntryKeysRenamed(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
 		entry func(t *testing.T, s *agentsession.Session) agentsession.Entry
-		at    string
+		want  string
 	}{
 		{"custom data", func(t *testing.T, s *agentsession.Session) agentsession.Entry {
 			return &agentsession.CustomEntry{NS: "x.fake", Data: json.RawMessage(`{"` + fakeHome + `/a.go":"x"}`)}
-		}, "/data/~0~1a.go"},
+		}, `"~/a.go":"x"`},
 		{"outcome details", func(t *testing.T, s *agentsession.Session) agentsession.Entry {
 			o := agentsession.NewOutcomeEntry("fake", s.Leaf())
 			o.Details = json.RawMessage(`{"tests":{"` + fakeHome + `/t":1}}`)
 			return o
-		}, "/details/tests/~0~1t"},
+		}, `"~/t":1`},
 		{"nested unknown member", func(t *testing.T, s *agentsession.Session) agentsession.Entry {
 			e := user("hello")
 			e.Unknown = map[string]json.RawMessage{"x.fake:meta": json.RawMessage(`{"files":{"` + fakeHome + `/b":"1"}}`)}
 			return e
-		}, "/x.fake:meta/files/~0~1b"},
+		}, `"~/b":"1"`},
 		{"extension entry", func(t *testing.T, s *agentsession.Session) agentsession.Entry {
 			return unknownExtension(t)
-		}, "/index/~0~1c"},
+		}, `"~/c":true`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c := &clock{}
 			s := newOriginal("orig-keys")
 			appendAt(t, s, c, user("first"))
 			appendAt(t, s, c, tt.entry(t, s))
-			_, err := Redact(homeProfile(), s, nil)
-			if !errors.Is(err, ErrKeyNotRedacted) {
-				t.Fatalf("err %v, want ErrKeyNotRedacted", err)
+			res, err := Redact(homeProfile(), testKey, s, nil)
+			if err != nil {
+				t.Fatal(err)
 			}
-			msg := err.Error()
-			if strings.Contains(msg, fakeHome) || strings.Contains(msg, "~1home~1example") {
-				t.Errorf("the error names the key: %v", err)
+			file := fileOf(t, res.Session)
+			if bytes.Contains(file, []byte(fakeHome)) {
+				t.Errorf("a member name kept the home:\n%s", file)
 			}
-			if !strings.Contains(msg, "entry 2 ") || !strings.Contains(msg, "at "+tt.at) {
-				t.Errorf("the error %q does not name entry 2 at %s", msg, tt.at)
+			if !bytes.Contains(file, []byte(tt.want)) {
+				t.Errorf("the redaction does not hold %s:\n%s", tt.want, file)
 			}
 		})
 	}
 }
 
 // TestEnvFileKeysRenamed: an env entry's file paths, which the Rewriter
-// renames, pass the key check without Environment.
+// renames, are redacted without Environment.
 func TestEnvFileKeysRenamed(t *testing.T) {
 	s := newOriginal("orig-env-files")
 	env := agentsession.NewEnvEntry("")
@@ -198,14 +200,15 @@ func TestWorkspaceKindRedacted(t *testing.T) {
 	if bytes.Contains(fileOf(t, res.Session), []byte("corp-buildfarm-7")) {
 		t.Errorf("the kind was kept:\n%s", fileOf(t, res.Session))
 	}
-	if got := res.Session.Entries()[0].(*agentsession.EnvEntry).Workspace; got == nil || got.Kind != SecretReplacement {
+	if got := res.Session.Entries()[0].(*agentsession.EnvEntry).Workspace; got == nil || got.Kind != "[REDACTED#1]" {
 		t.Errorf("workspace %+v", got)
 	}
 }
 
 // TestCrossSessionReferences: a reference to another session names its
 // derived redaction; an entry of another session whose counterparts are
-// not given stays as written and is reported.
+// not given is left out, the parents element naming it removed (RFC
+// 0001 0.19, Every redacted entry), and reported.
 func TestCrossSessionReferences(t *testing.T) {
 	c := &clock{}
 	s := newOriginal("orig-cross")
@@ -230,10 +233,16 @@ func TestCrossSessionReferences(t *testing.T) {
 		t.Errorf("findings at %v, want %v", got, want)
 	}
 	file := fileOf(t, res.Session)
+	if bytes.Contains(file, []byte(agentsession.HashText("fake entry"))) {
+		t.Error("the other session's original entry was kept")
+	}
+	if last := agentsession.FileOrder(res.Session)[2]; len(last.Base().Parents) != 0 {
+		t.Errorf("parents %v, want the element removed", last.Base().Parents)
+	}
 	if bytes.Contains(file, []byte("fake-other-session")) {
 		t.Error("the other session's original ID was kept")
 	}
-	if !bytes.Contains(file, []byte(agentsession.RedactedSessionID("fake-other-session", testProfile().Name))) {
+	if !bytes.Contains(file, []byte(redIDOf("fake-other-session", testProfile().Name))) {
 		t.Error("the other session's derived redaction is not named")
 	}
 }
@@ -279,17 +288,17 @@ func TestRedactRefusesWrongExisting(t *testing.T) {
 	redID := red.ID()
 
 	wrongID := agentsession.New(agentsession.Header{ID: "fake-wrong-id", CreatedAt: t0, Redacted: true,
-		RedactedFrom: &agentsession.RedactedFrom{Session: orig.ID(), Profile: p.Name}})
-	if _, err := Redact(p, orig, wrongID); !errors.Is(err, ErrNotThisRedaction) {
+		RedactedFrom: &agentsession.RedactedFrom{Session: pseudonymOf(orig.ID(), p.Name), Profile: p.Name}})
+	if _, err := Redact(p, testKey, orig, wrongID); !errors.Is(err, ErrNotThisRedaction) {
 		t.Errorf("a wrong ID: %v, want ErrNotThisRedaction", err)
 	}
 
 	based, err := agentsession.Fork(red, red.Entries()[2].Base().ID, agentsession.Header{ID: redID, CreatedAt: t0, Redacted: true,
-		RedactedFrom: &agentsession.RedactedFrom{Session: orig.ID(), Profile: p.Name}})
+		RedactedFrom: &agentsession.RedactedFrom{Session: pseudonymOf(orig.ID(), p.Name), Profile: p.Name}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Redact(p, orig, based); !errors.Is(err, ErrNotThisRedaction) {
+	if _, err := Redact(p, testKey, orig, based); !errors.Is(err, ErrNotThisRedaction) {
 		t.Errorf("a base: %v, want ErrNotThisRedaction", err)
 	}
 
@@ -298,7 +307,7 @@ func TestRedactRefusesWrongExisting(t *testing.T) {
 	for range agentsession.FileOrder(orig) {
 		appendAt(t, other, &clock{}, user("x"))
 	}
-	if _, err := Redact(p, other, red); !errors.Is(err, ErrNotThisRedaction) {
+	if _, err := Redact(p, testKey, other, red); !errors.Is(err, ErrNotThisRedaction) {
 		t.Errorf("entries of other types: %v, want ErrNotThisRedaction", err)
 	}
 }

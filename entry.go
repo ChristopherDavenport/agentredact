@@ -64,7 +64,7 @@ type EntryContext struct {
 
 	redactor string
 	findings *[]Finding
-	blobs    map[string][]byte
+	blobs    map[string]Blob
 }
 
 // Path returns the original's path to the entry, root first, the entry
@@ -99,18 +99,26 @@ func (c *EntryContext) report(kind FindingKind, at, message string) {
 }
 
 // AddBlob records data as a blob the redacted session needs, such as
-// the replacement for a sidecar image, and returns its hash,
-// sha256:<hex>, which a sidecar: URL names. [Redact] returns the blobs
-// of the entries it commits in [Result.Blobs] for the caller to store
-// beside the redacted session; it writes none itself. A blob the
-// original holds and the redaction keeps is not added: it is the
-// original's, shared.
-func (c *EntryContext) AddBlob(data []byte) string {
+// the replacement for a sidecar image, with mediaType, the type of the
+// data URL it stands for, as RFC 0001 has a replaced blob stored with
+// the replacement's type, and returns its hash, sha256:<hex>, which a
+// sidecar: URL names. [Redact] returns the blobs of the entries it
+// commits in [Result.Blobs] for the caller to store beside the redacted
+// session; it writes none itself. A blob the original holds and the
+// redaction keeps is not added: it is the original's, shared.
+func (c *EntryContext) AddBlob(data []byte, mediaType string) string {
 	hash := agentsession.HashBytes(data)
 	if c.blobs != nil {
-		c.blobs[hash] = append([]byte(nil), data...)
+		c.blobs[hash] = Blob{Data: append([]byte(nil), data...), MediaType: mediaType}
 	}
 	return hash
+}
+
+// Blob is a sidecar blob a redaction made: its bytes and the media type
+// it is stored with ([agentsession.TypedBlobWriter]).
+type Blob struct {
+	Data      []byte
+	MediaType string
 }
 
 // Finding is something [Redact] wrote without redacting it, which a
@@ -131,7 +139,7 @@ type Finding struct {
 	// stage can gate on: see [FindingKind].
 	Kind FindingKind
 	// Position is the entry's position in the original's file order,
-	// counting from 1.
+	// counting from 1, or 0 for the header.
 	Position int
 	// At is an RFC 6901 pointer into the redacted entry, built from its
 	// rewritten member names, "" for the whole entry.
@@ -165,12 +173,20 @@ const (
 	// FindingEmbeddedImage: an image data URL inside a longer string,
 	// kept.
 	FindingEmbeddedImage FindingKind = "embedded-image"
-	// FindingOriginalHash: an instruction part that keeps the original's
-	// hash, which can confirm a guessed text.
-	FindingOriginalHash FindingKind = "original-hash"
-	// FindingForeignReference: a parents element naming an entry of a
-	// session not redacted alongside, whose entry it names as the
-	// original wrote it.
+	// FindingIdentity: a value an identity member of the original names
+	// ([Profile.Identity]), in one of its spellings, still held by the
+	// redacted session: one the original named only after the entry
+	// holding it, or one a string redactor changed in part.
+	FindingIdentity FindingKind = "identity-value"
+	// FindingImage: an image kept whole, inline or sidecar, by a profile
+	// with no [Images] redactor: no string redactor reads the text in
+	// its pixels, so a screenshot keeps whatever the screen showed. A
+	// publisher that accepts screenshots accepts this kind.
+	FindingImage FindingKind = "image"
+	// FindingForeignReference: a reference to an entry of a session not
+	// redacted alongside (a parents element's entry, a copied_from
+	// entry), removed, since the entry standing for it in that session's
+	// redaction is not known and the original's entry is not kept.
 	FindingForeignReference FindingKind = "foreign-reference"
 	// FindingExtension: an extension entry, whose own members may still
 	// name an entry of the original.
@@ -179,6 +195,16 @@ const (
 	// them: a branch or compaction summary, a converging entry, a pinned
 	// item, a trigger copied from a queued input left out.
 	FindingRestates FindingKind = "restates-left-out"
+	// FindingHeaderName: a member of the header the format does not
+	// define whose name the string redactors would change, kept as
+	// written, since the format keeps a header member's name; reported at
+	// position 0.
+	FindingHeaderName FindingKind = "header-member-name"
+	// FindingMemberName: the name of an entry's member the format does
+	// not define, or of an item's own member, that the string redactors
+	// would change, kept as written, since the format keeps such names;
+	// at "" for the entry's member and "/item" for the item's.
+	FindingMemberName FindingKind = "member-name"
 	// FindingRedactor: what a profile's own redactor reported through
 	// [EntryContext.Report].
 	FindingRedactor FindingKind = "redactor"

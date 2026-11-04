@@ -1,0 +1,4 @@
+#!/bin/sh
+# A stand-in for a trufflehog run that writes nothing and never says it
+# finished, as one killed part way might: the scan must not pass it.
+exit 0

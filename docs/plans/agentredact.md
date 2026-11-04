@@ -7,7 +7,9 @@ pass that keeps a store's redactions current, the scan, the review, the
 manifest and the publish. It takes over agentsession#12, whose library
 half agentsession closed in v0.0.27 and v0.0.28.
 
-Written 2026-10-18, against agentsession v0.0.28 (format 0.13). It
+Written 2026-10-18, against agentsession v0.0.28 (format 0.13);
+brought to agentsession v0.0.36 (format 0.19) on 2026-11-03, where the
+redacted session's names below are keyed. It
 merges the drafts on #1: the first, which described sealed snapshot
 twins, is superseded by the revision for v0.0.27, which marks redaction
 per entry, and by the v0.0.28 step that gives every redacted response
@@ -28,10 +30,16 @@ Redacted sessions section and `docs/plans/redaction.md`. In short:
   position twice. No other entry carries the member, so a reader always
   knows which entries a redaction made.
 - **The header** carries `redacted: true` and
-  `redacted_from: {session, profile}`. Its ID is
-  `RedactedSessionID(original, profile)`, a UUIDv5 over
-  `["redacted","<original>","<profile>"]`, so one original under one
-  profile always has one redacted session, whose ID stays as it grows.
+  `redacted_from: {session, profile}`. Since 0.19 `session` is the
+  original's pseudonym, an HMAC-SHA-256 UUIDv8 of its ID and the
+  profile under a key the holder of the originals keeps, one per store
+  of originals; its ID is `RedactedSessionID(pseudonym, profile)`, a
+  UUIDv5 over `["redacted","<pseudonym>","<profile>"]`, so one original
+  under one profile and key always has one redacted session, whose ID
+  stays as it grows, and a native session ID does not lead to it. The
+  key comes from a key file the user keeps beside the store
+  (`ReadKeyFile`), never from a default; losing it means the
+  redactions under it cannot be resumed.
 - **A redacted session hashes independently.** Every hash in it is
   computed over what it holds, `request_hash` included: the redactor
   calls `Session.SetRequestHash` on each response, and the session then
@@ -195,7 +203,7 @@ Keep one redacted session per profile for every session in a store, in
 the same store, and append to it as its original grows.
 
 - **Resume** each one from its markers. Open
-  `RedactedSessionID(original, profile)`; if the store holds it, the
+  the ID the key and profile derive (`RedactedID`); if the store holds it, the
   highest original position its own entries name is the work done.
   Redact the original's entries after that position, in file order
   (`FileOrder`), feeding the `Rewriter` every entry from the first, so
@@ -204,8 +212,9 @@ the same store, and append to it as its original grows.
   1. `Rewriter.Rewrite`, then the entry redactors;
   2. `RemapRefs` through the old→new map: `parent` and every
      entry-naming member to the IDs this session wrote, entries of
-     sessions redacted alongside to theirs, and every session ID to
-     the redaction the profile derives for it, held or not;
+     sessions redacted alongside to theirs, an entry of any other
+     session left out, and every session ID to the redaction the key
+     and profile derive for it, held or not;
   3. `SetRedacted(e, spans)` with the positions it was made from;
   4. on a response, `Session.SetRequestHash(resp)`, after clearing
      `RequestHash` when the original's did not verify;
@@ -214,10 +223,9 @@ the same store, and append to it as its original grows.
      cas store does not hold it as a mirror), and after that `Append`s
      the new entries with their IDs set, which every store checks
      against the hash it computes, and sets the head, where the store
-     can (cas), to where an import of the same file puts it. A store's
-     `Append` fills an empty parent from its leaf, so a new root cannot
-     be appended; the pass refuses it before writing (`ErrRootAppend`)
-     until agentsession can.
+     can, to where an import of the same file puts it. An entry with its
+     ID set and no parent is appended at the universal root
+     (agentsession v0.0.31).
 
   The header goes through `RemapHeaderRefs` (`parent_session`, `base`)
   and the redactors, and gains `redacted`, `redacted_from` and the
@@ -261,11 +269,12 @@ the same store, and append to it as its original grows.
   `Opaque`, its own members unread; its strings still go through the
   `Rewriter`.
 - **Blobs.** A replaced sidecar blob is written to the store under the
-  replacement's hash, through its `PutBlob`, before the entries naming
-  it; a kept blob is shared with the original. The cas store has
-  `PutBlob`, beside its `Import`, which takes no blobs
-  (agentsession#245); the memory and jsonl stores have no blob write
-  path, and there a redaction that made blobs is not written.
+  replacement's hash with the replacement's media type, through its
+  `PutTypedBlob` (RFC 0001 0.16, RFC 0002 Media), before the entries
+  naming it; a kept blob is shared with the original. Every store of
+  agentsession v0.0.36 takes typed blobs; a store that does not is
+  given no redaction that made blobs. Where a store holds types per
+  session, the redaction is given the types of the blobs it names.
 - **Failures.** A session that fails is reported, and the sessions that
   depend on it, through any chain, are not redacted; every other
   session is. An append that fails part way leaves a redaction that the
@@ -298,17 +307,22 @@ bytes; every redacted session verifies, its request hashes included.
    what the deterministic pass missed: a name, a host, a customer. A
    flag blocks publishing until a person clears it or adds a redactor,
    which means a new profile.
-4. **Manifest** (#6): for each published session, its redacted hashes
-   and `redacted_from`. The original's hashes stay local, since an
-   original hash lets anyone confirm a guessed value.
-5. **Publish** (#6): push the redacted sessions to a store set to hold
-   only redacted entries, so an original sent by mistake is refused, or
-   export them, with their blobs and ATIF, into a dataset repository,
-   as pi-share-hf does. Until agentsession#244 lands, a push a remote
-   refuses leaves its objects there until a sweep.
+4. **Manifest** (#6): for each published session, its own `id` and
+   head hash, never an original's ID or entry hash (RFC 0002, Redacted
+   sessions, with agentsession#70's manifest object); the mapping to
+   originals stays with the holder of the key. Each header's
+   `redacted_from.session` is the original's keyed pseudonym (0.19),
+   which leads nowhere without the key.
+5. **Publish** (#6, `publish`): push the sessions the store pass holds
+   publishable and the required judges cleared at their judged entry to
+   a store set to hold only redacted entries, so an original sent by
+   mistake is refused (a redacted-only remote refuses a push before any
+   upload, agentsession#244), or export them, with their blobs and
+   ATIF, into a dataset repository, as pi-share-hf does.
 
-Scan and review verdicts go in a separate session that links to the one
-it judges, naming the entry it judged up to. They are records, not
+Scan and review verdicts go in a separate session, a fork of the one
+it judges at the entry it judged up to, with the verdict an `outcome`
+there (RFC 0001 0.19, The redacted session; `WriteVerdict`). They are records, not
 redacted entries: appended to the redacted session they would be native
 entries, and the publish target would refuse it.
 
@@ -336,16 +350,20 @@ verdicts, and each safe to run again.
 
 ## Open questions
 
-- Where the review's context comes from: the session's AGENTS.md chain,
-  or a file the publisher supplies? Which model, and how its cost is
-  bounded?
+- The review (settled 2026-11-03): the host supplies the model, an
+  openresponses adapter and a model name, and a token cap, with no
+  default for either; the context is what the caller passes, the
+  redaction's own AGENTS.md parts by default (`review.AgentsMD`), since
+  what the model reads may leave the machine; a review that errs or
+  reaches the cap fails closed.
 - First dataset host: Hugging Face? Does a dataset repository count as
   a store, and does its upload client clear the dependency rule?
 - Catching a profile reused for changed rules: a digest of the rules
   would confirm guessed secret values if published, so it can only be
   kept beside the private store, never in `redacted_from`.
-- Publishing a session that grew after it was judged: push it only up
-  to the judged entry, or hold it until the new entries are judged?
+- Publishing a session that grew after it was judged: settled
+  2026-11-03, it waits for a new verdict (`Cleared` holds a verdict to
+  the session's current judged entry).
 - A header's strings: no agentsession helper rewrites them as
   `RewriteStrings` does an entry's (`cwd`, `harness`, extension
   members). Ask for one, or redact the members agentredact knows and

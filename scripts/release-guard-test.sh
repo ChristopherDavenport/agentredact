@@ -167,5 +167,61 @@ rootdep refuse v0.0.2 v0.0.1 none v0.0.1 sub/v0.0.1
 rootdep accept sub/v0.0.2 v0.0.2 head v0.0.1 sub/v0.0.1
 rootdep refuse sub/v0.0.2 v0.0.2 head v0.0.1 sub/v0.0.2
 
+# command <accept|refuse> <tag> <root version cmd/x requires> <replace: yes|no>
+#         <the proxy serves the root at the tag's version: yes|no>
+#         [published tags...]
+# A command module at cmd/x, released in the second step: the root and
+# its libraries were tagged before, at an earlier commit, and are on the
+# proxy; the command's go.mod drops its replaces and requires the root
+# at the version released. The guard refuses a command with any replace,
+# since go install refuses it, and one whose root version the proxy does
+# not serve yet. A file proxy in the case's directory stands in for
+# proxy.golang.org.
+command() {
+  want="$1"; tag="$2"; req="$3"; repl="$4"; served="$5"; shift 5
+  d="$(mktemp -d)"
+  git init -q --bare "$d/origin.git"
+  git init -q "$d/work"
+  v="v${tag##*/v}"
+  mkdir -p "$d/proxy/$M/@v"
+  if [ "$served" = yes ]; then
+    echo "$v" > "$d/proxy/$M/@v/list"
+    printf '{"Version":"%s","Time":"2026-01-01T00:00:00Z"}\n' "$v" > "$d/proxy/$M/@v/$v.info"
+    printf 'module %s\n\ngo 1.25\n' "$M" > "$d/proxy/$M/@v/$v.mod"
+  else
+    : > "$d/proxy/$M/@v/list"
+  fi
+  (
+    cd "$d/work" || exit 1
+    mkdir -p scripts cmd/x
+    cp "$HERE/versions.sh" "$HERE/check-extracted.sh" scripts/
+    printf 'module %s\n\ngo 1.25\n' "$M" > go.mod
+    git add . && git -c user.email=t@t -c user.name=t commit -qm init
+    git tag "$v"
+    git remote add origin "$d/origin.git"
+    for t in "$@"; do git tag "$t"; done
+    git push -q origin --tags 2>/dev/null
+    printf 'module %s/cmd/x\n\ngo 1.25\n\nrequire %s %s\n' "$M" "$M" "$req" > cmd/x/go.mod
+    [ "$repl" = no ] || printf '\nreplace %s => ../..\n' "$M" >> cmd/x/go.mod
+    git add . && git -c user.email=t@t -c user.name=t commit -qm "release the command"
+    # A module cache of its own: one the case shared would serve the
+    # version to the cases after it.
+    GOMODCACHE="$d/modcache" GOPROXY="file://$d/proxy" GONOSUMDB="$M" GOFLAGS="-mod=mod -modcacherw" GOWORK=off bash "$GUARD" "$tag" >/dev/null 2>&1
+  )
+  rc=$?
+  rm -rf "$d"
+  got=refuse; [ "$rc" = 0 ] && got=accept
+  if [ "$got" != "$want" ]; then
+    echo "FAIL: command guard $tag (requires $req, replace $repl, served $served) with [$*]: want $want, got $got"
+    fails=$((fails + 1))
+  fi
+}
+
+command accept cmd/x/v0.0.2 v0.0.2 no yes v0.0.1
+command refuse cmd/x/v0.0.2 v0.0.2 yes yes v0.0.1
+command refuse cmd/x/v0.0.2 v0.0.2 no no v0.0.1
+command refuse cmd/x/v0.0.2 v0.0.1 no yes v0.0.1
+command refuse cmd/x/v0.0.2 v0.0.2 no yes v0.0.1 cmd/x/v0.0.2
+
 [ "$fails" = 0 ] && echo "release-guard tests passed"
 exit "$fails"

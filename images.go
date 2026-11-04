@@ -98,12 +98,12 @@ func (r images) RedactEntry(c *EntryContext, e agentsession.Entry) (agentsession
 				}
 				return r.placeholder
 			case strings.HasPrefix(x, "sidecar:") && member == "image_url":
-				blob, err := placeholderBytes(r.placeholder)
+				blob, mediaType, err := placeholderBytes(r.placeholder)
 				if err != nil {
 					fail(err)
 					return x
 				}
-				url := "sidecar:" + c.AddBlob(blob)
+				url := "sidecar:" + c.AddBlob(blob, mediaType)
 				if x != url {
 					changed = true
 				}
@@ -170,25 +170,30 @@ func isImageDataURL(s string) bool {
 
 // checkPlaceholder reports whether p is a base64 data URL of an image.
 func checkPlaceholder(p string) error {
-	_, err := placeholderBytes(p)
+	_, _, err := placeholderBytes(p)
 	return err
 }
 
 // placeholderBytes returns the bytes of p, a base64 data URL of an
-// image, which a sidecar image is replaced with.
-func placeholderBytes(p string) ([]byte, error) {
+// image, which a sidecar image is replaced with, and its media type,
+// which the blob is stored with.
+func placeholderBytes(p string) ([]byte, string, error) {
 	if !isImageDataURL(p) {
-		return nil, fmt.Errorf("agentredact: images: the placeholder is not a data URL of an image")
+		return nil, "", fmt.Errorf("agentredact: images: the placeholder is not a data URL of an image")
 	}
 	meta, payload, ok := strings.Cut(p[len("data:"):], ",")
 	if !ok || !strings.HasSuffix(strings.ToLower(meta), ";base64") {
-		return nil, fmt.Errorf("agentredact: images: the placeholder is not a base64 data URL")
+		return nil, "", fmt.Errorf("agentredact: images: the placeholder is not a base64 data URL")
+	}
+	mediaType, err := agentsession.BlobMediaType(meta[:len(meta)-len(";base64")])
+	if err != nil {
+		return nil, "", fmt.Errorf("agentredact: images: the placeholder's media type: %w", err)
 	}
 	data, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
-		return nil, fmt.Errorf("agentredact: images: the placeholder's payload: %w", err)
+		return nil, "", fmt.Errorf("agentredact: images: the placeholder's payload: %w", err)
 	}
-	return data, nil
+	return data, mediaType, nil
 }
 
 // pointerToken escapes a member name for an RFC 6901 pointer.

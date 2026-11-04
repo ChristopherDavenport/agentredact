@@ -94,7 +94,7 @@ func (r *redaction) forkFrom(o *Origin) error {
 	case h.ParentSession != o.Original.ID():
 		return fmt.Errorf("agentredact: %s is a fork of %q, not of %s", r.origID, h.ParentSession, o.Original.ID())
 	}
-	state, err := originState(r.p, o, h.Base, r.along)
+	state, ph, err := originState(r, o, h.Base)
 	if err != nil {
 		return fmt.Errorf("agentredact: %s as a fork of %s: %w", r.origID, o.Redaction.ID(), err)
 	}
@@ -127,18 +127,42 @@ func (r *redaction) forkFrom(o *Origin) error {
 	}
 	r.fork, r.base = true, base
 	r.originRedID = o.Redaction.ID()
+	r.ph = ph.ph // the numbering the origin's redaction reached at the base
+	// The identity values its origin had read by the base, and its own
+	// header's.
+	r.idents = ph.idents
+	if len(r.p.Identity) > 0 {
+		if err := r.idents.harvestHeader(r.p.Identity, h); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 // originState replays the redaction of o.Original into o.Redaction up
 // to the entry base, and returns what it made of each entry up to
-// there. Nothing is written to o.Redaction.
-func originState(p Profile, o *Origin, base string, along Alongside) (map[string]*placed, error) {
-	r := newRedaction(p, o.Original, along)
+// there, and the numbering of its placeholders there. Nothing is
+// written to o.Redaction.
+// originRead is what a fork's redaction takes from its origin's at the
+// base: the numbering of its placeholders, and the identity values it
+// had read.
+type originRead struct {
+	ph     *Placeholders
+	idents *identities
+}
+
+func originState(fork *redaction, o *Origin, base string) (map[string]*placed, originRead, error) {
+	r, err := newRedaction(fork.p, fork.key, o.Original, fork.along, fork.resolve)
+	if err != nil {
+		return nil, originRead{}, err
+	}
 	if o.Origin != nil {
 		if err := r.forkFrom(o.Origin); err != nil {
-			return nil, err
+			return nil, originRead{}, err
 		}
+	}
+	if _, _, err := r.header(); err != nil { // numbered first, as the origin's redaction did
+		return nil, originRead{}, err
 	}
 	pos := 0
 	for i, e := range r.order {
@@ -148,28 +172,27 @@ func originState(p Profile, o *Origin, base string, along Alongside) (map[string
 		}
 	}
 	if pos == 0 {
-		return nil, fmt.Errorf("%w: the origin %s does not hold the fork's base", agentsession.ErrNoEntry, r.origID)
+		return nil, originRead{}, fmt.Errorf("%w: the origin %s does not hold the fork's base", agentsession.ErrNoEntry, r.origID)
 	}
 	if err := r.resume(o.Redaction); err != nil {
-		return nil, err
+		return nil, originRead{}, err
 	}
 	r.red = o.Redaction
-	r.res = &Result{Session: r.red, Blobs: map[string][]byte{}}
-	var err error
+	r.res = &Result{Session: r.red, Blobs: map[string]Blob{}}
 	if r.out, err = r.sessions(); err != nil {
-		return nil, err
+		return nil, originRead{}, err
 	}
 	if err := r.checkSessions(r.out); err != nil {
-		return nil, err
+		return nil, originRead{}, err
 	}
 	r.lastTS = o.Original.Header().CreatedAt
 	behind := r.done < pos
 	r.done = max(r.done, pos) // replay it all: never write to the origin's redaction
 	if err := r.walk(pos, false); err != nil {
 		if behind && errors.Is(err, ErrResumeDiverged) {
-			return nil, fmt.Errorf("%w: %w", ErrOriginBehind, err)
+			return nil, originRead{}, fmt.Errorf("%w: %w", ErrOriginBehind, err)
 		}
-		return nil, err
+		return nil, originRead{}, err
 	}
-	return r.placed, nil
+	return r.placed, originRead{ph: r.ph.clone(), idents: r.idents.clone()}, nil
 }

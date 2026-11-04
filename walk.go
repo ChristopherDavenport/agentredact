@@ -55,16 +55,36 @@ type placed struct {
 // existing redaction to hold an entry of the same ID, rather than
 // writing it, and then writes the rest.
 type redaction struct {
-	p        Profile
-	f        StringRedactor
-	original *agentsession.Session
-	order    []agentsession.Entry
-	origID   string
-	redID    string
-	red      *agentsession.Session
-	res      *Result
-	rw       *agentsession.Rewriter
-	placed   map[string]*placed
+	p       Profile
+	key     Key
+	resolve func(id string) (*agentsession.Session, error)
+	// names derives the redaction's own ID, its redacted_from and the ID
+	// every reference to a session is re-pointed to.
+	names *agentsession.RedactionNames
+	// ph numbers the placeholders the string redactors write, and f is
+	// the profile's string redactors joined, writing through ph.
+	ph *Placeholders
+	f  func(string) string
+	// probe is f writing nothing down, for asking whether a name would
+	// change.
+	probe func(string) string
+	// images says the profile replaces images ([Images]); mediaType
+	// gives a sidecar blob's media type, when the caller can.
+	images    bool
+	mediaType func(hash string) string
+	// idents are the identity values the original has named up to the
+	// entry being redacted, which the string redactors replace, and
+	// allIdents those the whole original names, which the redaction is
+	// checked for.
+	idents, allIdents *identities
+	original          *agentsession.Session
+	order             []agentsession.Entry
+	origID            string
+	redID             string
+	red               *agentsession.Session
+	res               *Result
+	rw                *agentsession.Rewriter
+	placed            map[string]*placed
 	// leftOut is set once an entry has been left out, by any redactor.
 	leftOut bool
 	// lastTS is the timestamp of the entry last written, which one whose
@@ -103,8 +123,8 @@ func (r *redaction) resume(existing *agentsession.Session) error {
 	switch {
 	case !h.Redacted || h.RedactedFrom == nil:
 		return fmt.Errorf("%w: %s is not a redacted session", ErrNotThisRedaction, h.ID)
-	case h.RedactedFrom.Session != r.origID:
-		return fmt.Errorf("%w: %s was redacted from %s, not %s", ErrNotThisRedaction, h.ID, h.RedactedFrom.Session, r.origID)
+	case h.RedactedFrom.Session != r.names.RedactedFrom().Session:
+		return fmt.Errorf("%w: %s was redacted from %s, not from %s under this key", ErrNotThisRedaction, h.ID, h.RedactedFrom.Session, r.origID)
 	case h.RedactedFrom.Profile != r.p.Name:
 		return fmt.Errorf("%w: %s was redacted under profile %q, not %q", ErrNotThisRedaction, h.ID, h.RedactedFrom.Profile, r.p.Name)
 	case h.ID != r.redID:
@@ -188,7 +208,7 @@ func (r *redaction) entry(pos int, e, body agentsession.Entry) error {
 		// What the redactors report or add for an entry then left out
 		// is dropped with it: a finding names an entry written, and a
 		// blob is one a written entry names.
-		found, blobs := len(r.res.Findings), map[string][]byte{}
+		found, blobs := len(r.res.Findings), map[string]Blob{}
 		if made, block, err = r.chain(pos, body, replay, blobs); err != nil {
 			return err
 		}
@@ -531,7 +551,7 @@ func (r *redaction) runStart(e agentsession.Entry) string {
 // add go in kept. What they find is reported, replaying too, so every
 // call reports the whole redaction; replaying, no blob is kept, since
 // it was written with the entry.
-func (r *redaction) chain(pos int, body agentsession.Entry, replay bool, kept map[string][]byte) ([]Made, bool, error) {
+func (r *redaction) chain(pos int, body agentsession.Entry, replay bool, kept map[string]Blob) ([]Made, bool, error) {
 	cur := []Made{{Entry: body}}
 	findings, blobs := &r.res.Findings, kept
 	if replay {
@@ -742,9 +762,10 @@ func (r *redaction) build(pos int, e agentsession.Entry, m Made, parent string) 
 		n.Base().Timestamp = r.stamp(e.Base().Timestamp) // never a clock
 	}
 	findings := &r.res.Findings
-	if err := inspect(n, r.f, pos, findings); err != nil {
+	if err := inspect(n, pos, findings, r.images, r.mediaType, r.allIdents); err != nil {
 		return nil, err
 	}
+	*findings = append(*findings, memberNames(n, pos, r.probe)...)
 	add := func(kind FindingKind, at, message string) {
 		*findings = append(*findings, Finding{Kind: kind, Position: pos, At: at, Redactor: "redact", Message: message})
 	}
@@ -764,7 +785,11 @@ func (r *redaction) build(pos int, e agentsession.Entry, m Made, parent string) 
 		if r.alongside(u.Session) {
 			return nil, fmt.Errorf("%w: %s", ErrUnmappedRef, u.At)
 		}
-		add(FindingForeignReference, u.At, "an entry of another session kept as written: it names that session's original entry, which can confirm a guess, as that session's redaction was not given")
+	}
+	for _, d := range rr.Dropped {
+		if d.Session != "" && d.Session != r.origID && !r.alongside(d.Session) {
+			add(FindingForeignReference, d.At, "a reference to an entry of another session removed: that session's redaction was not given, so the entry standing for it there is not known, and the original's entry is not kept")
+		}
 	}
 	if rr.Opaque {
 		add(FindingExtension, "", "extension entry: its parent and parents were re-pointed, but a member of its own may still name an entry of the original")
@@ -817,9 +842,6 @@ func (r *redaction) put(n, e agentsession.Entry, pos int, replay bool) (string, 
 			return "", fmt.Errorf("%w: a fresh redaction writes a %s marked [%s] here, which it does not hold", ErrResumeDiverged, n.EntryType(), markKey(redactedOf(n)))
 		}
 		r.matched[res.ID] = true
-		if e != nil {
-			r.res.Findings = append(r.res.Findings, unmetParts(r.red, res.ID, n, pos)...)
-		}
 		return res.ID, nil
 	}
 	res, err := r.red.Commit(n)
@@ -836,9 +858,6 @@ func (r *redaction) put(n, e agentsession.Entry, pos int, replay bool) (string, 
 		return "", errors.New("the redacted session already holds the entry")
 	}
 	r.res.Entries = append(r.res.Entries, n)
-	if e != nil {
-		r.res.Findings = append(r.res.Findings, unmetParts(r.red, res.ID, n, pos)...)
-	}
 	return res.ID, nil
 }
 
@@ -855,10 +874,16 @@ func (r *redaction) remap(override map[string]string) agentsession.Remap {
 			if session != "" && session != r.origID {
 				// Another session's: the entry standing for it in that
 				// session's redaction, when its counterparts are given.
-				if id := r.along.Entries[session][entry]; id != "" {
-					return id, true
+				// One that redaction left out is left out here, and one it
+				// does not hold is unmapped.
+				if m, ok := r.along.Entries[session]; ok {
+					id, held := m[entry]
+					return id, held
 				}
-				return "", false
+				// Not known: left out, as RFC 0001 has a redactor that
+				// holds neither that session nor its redaction do, rather
+				// than kept as the original's entry.
+				return "", true
 			}
 			if id, ok := override[entry]; ok {
 				return id, true
@@ -870,11 +895,11 @@ func (r *redaction) remap(override map[string]string) agentsession.Remap {
 }
 
 // session re-points a reference to the session id: always to the
-// redaction the profile derives for it, held or not, so what is written
-// never depends on which sessions a store held when, and no original
-// session ID is kept.
+// redaction the key and profile derive for it, held or not, so what is
+// written never depends on which sessions a store held when, and no
+// original session ID is kept.
 func (r *redaction) session(id string) (string, bool) {
-	return agentsession.RedactedSessionID(id, r.p.Name), true
+	return r.names.Session(id)
 }
 
 // alongside reports whether the entries of session are re-pointed:

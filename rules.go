@@ -165,23 +165,30 @@ func ParseRules(r io.Reader) (StringRedactor, error) {
 		}
 		regexes = append(regexes, rule{re: re, template: tmpl})
 	}
-	return func(s string) string {
+	return func(s string, ph *Placeholders) string {
+		n := 0
 		for _, l := range literals {
-			s = strings.ReplaceAll(s, l.literal, l.repl)
+			if k := strings.Count(s, l.literal); k > 0 {
+				n += k
+				s = strings.ReplaceAll(s, l.literal, l.repl)
+			}
 		}
 		for _, x := range regexes {
-			s = x.apply(s)
+			var k int
+			s, k = x.apply(s)
+			n += k
 		}
+		ph.Count("rules", n)
 		return s
 	}, nil
 }
 
 // apply replaces every match of the rule's regex in s with its
 // template expanded.
-func (x rule) apply(s string) string {
+func (x rule) apply(s string) (string, int) {
 	matches := x.re.FindAllStringSubmatchIndex(s, -1)
 	if matches == nil {
-		return s
+		return s, 0
 	}
 	var b strings.Builder
 	last := 0
@@ -202,7 +209,7 @@ func (x rule) apply(s string) string {
 		last = m[1]
 	}
 	b.WriteString(s[last:])
-	return b.String()
+	return b.String(), len(matches)
 }
 
 // parseTemplate parses a Python re.sub replacement against re, whose

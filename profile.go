@@ -14,13 +14,26 @@ import (
 // and no dependence on map order, since a response ID and an
 // instruction part's text are named across entries by their value, and
 // a rerun must write what it wrote before.
-type StringRedactor func(string) string
+//
+// ph numbers the placeholders of the redacted session being written
+// ([Placeholders]); a redactor that replaces values with a placeholder
+// of its own writes it with ph.For, so two distinct values are never
+// written alike. ph is nil outside a redaction, and a redactor that
+// writes no placeholder ignores it ([Plain]).
+type StringRedactor func(s string, ph *Placeholders) string
+
+// Plain adapts a function that writes no numbered placeholder to a
+// [StringRedactor]. A function replacing several distinct values with
+// one fixed text can make two instruction layer ids one, which
+// agentsession refuses ([agentsession.ErrLayersMerged]).
+func Plain(f func(string) string) StringRedactor {
+	return func(s string, _ *Placeholders) string { return f(s) }
+}
 
 // Profile is a named, versioned set of redactors. Its name is written
 // to a redacted session's redacted_from.profile and goes into the
-// session's ID ([agentsession.RedactedSessionID]), so one original
-// under one profile has one redacted session, which the profile
-// resumes. A profile names one set of rules: changing what a profile's
+// session's ID ([RedactedID]), so one original under one profile and
+// key has one redacted session, which the profile resumes. A profile names one set of rules: changing what a profile's
 // redactors write mixes two redactions in one session, so a changed
 // rule set takes a new version.
 type Profile struct {
@@ -38,6 +51,24 @@ type Profile struct {
 	// Sessions choose whole branches to leave out, before any entry is
 	// redacted: see [SessionRedactor].
 	Sessions []SessionRedactor
+	// Identity names the members of the originals that hold values
+	// identifying the user, such as [ClaudeCodeIdentity]. [Redact] reads
+	// the values from each original, header first and then each entry
+	// as it reaches it in file order, and replaces every spelling of
+	// each value it has read so far wherever the string redactors reach,
+	// after Strings, with "[REDACTED identity#<n>]"; and it reports each
+	// spelling of any value the whole original names that the redacted
+	// session still holds as a [FindingIdentity]. The profile names the
+	// members, never the values.
+	//
+	// Generic names are never harvested: roles and other words of the
+	// format, system and service accounts and common host names (root,
+	// admin, dev, runner, test, app, developer, server, build and the
+	// like), forges and their bots, no-reply addresses. A login or host
+	// that really is one of them is therefore neither replaced nor
+	// reported, though a home path naming it, /home/<login>, still is:
+	// give such a login to [Secrets] in the profile's Strings.
+	Identity []IdentityMember
 }
 
 // ErrProfileName is returned for a profile name [ValidateProfileName]
@@ -113,6 +144,11 @@ func (p Profile) Validate() error {
 			return fmt.Errorf("agentredact: profile %s: session redactor %d is nil", p.Name, i)
 		}
 	}
+	for _, m := range p.Identity {
+		if err := m.validate(); err != nil {
+			return fmt.Errorf("agentredact: profile %s: %w", p.Name, err)
+		}
+	}
 	return nil
 }
 
@@ -141,17 +177,17 @@ func (p Profile) StringFunc() StringRedactor {
 // server-sent event.
 func Chain(rs ...StringRedactor) StringRedactor {
 	rs = append([]StringRedactor(nil), rs...)
-	apply := func(s string) string {
+	apply := func(s string, ph *Placeholders) string {
 		for _, r := range rs {
-			s = r(s)
+			s = r(s, ph)
 		}
 		return s
 	}
-	return func(s string) string {
+	return func(s string, ph *Placeholders) string {
 		if meta, payload, ok := splitBase64DataURL(s); ok {
-			return s[:len("data:")] + apply(meta) + "," + payload
+			return s[:len("data:")] + apply(meta, ph) + "," + payload
 		}
-		return apply(s)
+		return apply(s, ph)
 	}
 }
 

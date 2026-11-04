@@ -10,33 +10,18 @@ import (
 	"github.com/ChristopherDavenport/agentsession"
 )
 
-// BlobWriter is implemented by a store that takes media blobs, as the
-// cas store does: PutBlob stores data under its hash, sha256:<hex>, and
-// returns the hash. [RedactStore] writes through it the blobs a
-// redaction made ([Result.Blobs]) before the entries that name them.
-type BlobWriter interface {
-	PutBlob(ctx context.Context, data []byte) (string, error)
-}
-
 // ErrNoBlobWriter is reported by [RedactStore] for a session whose
 // redaction made blobs, such as the replacement for a sidecar image,
-// in a store that takes none ([BlobWriter]): the redaction is not
-// written, since its entries would name blobs the store does not hold.
-var ErrNoBlobWriter = errors.New("agentredact: the store takes no blobs, and the redaction names blobs it made")
+// in a store that does not take a blob with its media type
+// ([agentsession.TypedBlobWriter]), as RFC 0002 has a store of sidecar
+// media do: the redaction is not written, since its entries would name
+// blobs the store does not hold, or holds untyped.
+var ErrNoBlobWriter = errors.New("agentredact: the store takes no typed blobs, and the redaction names blobs it made")
 
 // ErrNoImporter is reported by [RedactStore] for a session whose
 // redaction is new, in a store that cannot import a session whole
 // ([agentsession.Importer]).
 var ErrNoImporter = errors.New("agentredact: the store cannot import a session")
-
-// ErrRootAppend is reported by [RedactStore] for a redaction that grew
-// a new root: an entry whose ancestors in the original were all left
-// out with nothing in their place, appended after the redaction was
-// first written. A store's Append fills an empty parent from the
-// store's leaf, so no store appends a root to a session it holds;
-// nothing is written for the session, and every run reports it until
-// agentsession appends one.
-var ErrRootAppend = errors.New("agentredact: the redaction grew a new root, which a store cannot append")
 
 // ErrDependency is reported by [RedactStore] for a session it did not
 // redact because a session it depends on failed: its fork's origin, or
@@ -71,16 +56,21 @@ type StoreReport struct {
 	// in the order it took them.
 	Sessions []SessionReport
 	// Skipped counts the sessions the store holds that are redactions
-	// themselves, under any profile, which are never redacted again.
+	// themselves, under any profile, or verdicts on them ([Verdict]),
+	// which are never redacted.
 	Skipped int
 }
 
 // SessionReport is what [RedactStore] did with one original.
 type SessionReport struct {
-	// Original is the original's ID.
-	Original string
-	// Redaction is its redaction's ID,
-	// [agentsession.RedactedSessionID] of the original and the profile.
+	// Original is the original's native ID: private linking data, the
+	// one field joining an original to its redaction, which must never
+	// be published. WaitingOn is too. [StoreReport.Public] is the
+	// report with both taken out, for anywhere a report leaves the
+	// holder of the originals.
+	Original string `json:"private_original"`
+	// Redaction is its redaction's ID, [RedactedID] of the original
+	// under the key and the profile.
 	Redaction string
 	// Fork says the redaction is a fork of its origin's redaction (see
 	// [WithOrigin]); a fork whose base that redaction left out has no
@@ -103,7 +93,7 @@ type SessionReport struct {
 	// session it depends on that waits itself. Waiting is not a failure:
 	// once that session arrives a later run redacts this one, and until
 	// then every run reports it.
-	WaitingOn string
+	WaitingOn string `json:"private_waiting_on"`
 	// Native counts the redaction's own entries that carry no redacted:
 	// appended natively, by a writer who resumed the redaction. A store
 	// set to hold only redacted entries refuses such a session, so it
@@ -115,6 +105,16 @@ type SessionReport struct {
 	// on every run, so the latest report says it all: see [Finding].
 	// They hold no values.
 	Findings []Finding
+	// State is the redaction's state when this run left it ([StateOf]):
+	// what Publishable holds of. A publisher holds it to the session's
+	// state when it publishes, so a report from before the session
+	// changed decides nothing.
+	State State
+	// Counts are the replacements the string redactors made in the whole
+	// redaction, by kind ([Result.Counts]), recounted on every run: a
+	// count, never a value. A manifest or a dataset card says from them
+	// how the data was cleaned.
+	Counts map[string]int
 	// Warnings are what went wrong after the redaction was written,
 	// which does not undo the write: a Release that failed, or a head
 	// that could not be set.
@@ -126,6 +126,23 @@ type SessionReport struct {
 	Err error
 
 	accept map[FindingKind]bool
+}
+
+// Public is a copy of r for anywhere it leaves the holder of the
+// originals: every session named by its redaction alone, Original
+// emptied and WaitingOn the redaction of the session waited on. A
+// report written to a published place is this, never r.
+func (r *StoreReport) Public(key Key) *StoreReport {
+	out := *r
+	out.Sessions = make([]SessionReport, len(r.Sessions))
+	for i, s := range r.Sessions {
+		s.Original = ""
+		if s.WaitingOn != "" {
+			s.WaitingOn = RedactedID(key, s.WaitingOn, r.Profile)
+		}
+		out.Sessions[i] = s
+	}
+	return &out
 }
 
 // Publishable reports whether the redaction is written and up to date
@@ -182,14 +199,18 @@ func (r SessionReport) Publishable() bool {
 //
 // For each original, RedactStore reads its redaction, when st holds
 // one, as a snapshot, and runs Redact on the two. It writes what Redact
-// made: the blobs first, through st's [BlobWriter], and then a new
+// made: the blobs first, each with its media type, through st's
+// [agentsession.TypedBlobWriter], and then a new
 // redaction whole, through st's [agentsession.Importer], with asRecord
 // set, as the store is its record; or the entries Redact appended to an
 // existing one ([Result.Entries]), each with [agentsession.Store.Append]
-// in order, their IDs set, which the store checks. A redaction that
-// made blobs in a store that takes none is not written
-// ([ErrNoBlobWriter]), nor one that grew a root ([ErrRootAppend]), a
-// known limit until agentsession appends one. After appends, where st
+// in order, their IDs set, which the store checks; an entry whose
+// ancestors were all left out is appended at the universal root, as an
+// entry with its ID set and no parent is. A redaction that made blobs
+// in a store that takes no typed blobs is not written
+// ([ErrNoBlobWriter]). Where st holds media types per session
+// ([agentsession.SessionBlobTyper]), the redaction is given the type of
+// each blob it names. After appends, where st
 // has SetHead, as the cas store does, the head is moved to where an
 // import of the same file would put it, so a grown redaction and a fresh
 // one have the same head. Once it has started writing a session it lets
@@ -214,8 +235,15 @@ func (r SessionReport) Publishable() bool {
 // snapshot and its redaction; and for each session a parents element of
 // a session still to be redacted names, its redaction's counterparts,
 // an entry ID to an entry ID. Planning holds one session at a time.
-func RedactStore(ctx context.Context, st agentsession.Store, p Profile, opts StoreOptions) (*StoreReport, error) {
+//
+// Every session is named under key ([Key]), which RedactStore refuses
+// when it holds none: use one key for every run over st, or every
+// redaction is written again as a new session beside the old.
+func RedactStore(ctx context.Context, st agentsession.Store, p Profile, key Key, opts StoreOptions) (*StoreReport, error) {
 	if err := p.Validate(); err != nil {
+		return nil, err
+	}
+	if err := key.valid(); err != nil {
 		return nil, err
 	}
 	if st == nil {
@@ -224,6 +252,7 @@ func RedactStore(ctx context.Context, st agentsession.Store, p Profile, opts Sto
 	ps := &pass{
 		st:      st,
 		p:       p,
+		key:     key,
 		report:  &StoreReport{Profile: p.Name},
 		accept:  map[FindingKind]bool{},
 		heads:   map[string]agentsession.Header{},
@@ -252,7 +281,7 @@ func RedactStore(ctx context.Context, st agentsession.Store, p Profile, opts Sto
 			return ps.report, errors.Join(append(ps.errs(), err)...)
 		}
 		rp := ps.one(ctx, id)
-		rp.Err = scrubErr(rp.Err, nil)
+		rp.Err = scrubErr(rp.Err, nil, ps.native())
 		ps.report.Sessions = append(ps.report.Sessions, rp)
 		switch {
 		case rp.Err != nil:
@@ -267,10 +296,13 @@ func RedactStore(ctx context.Context, st agentsession.Store, p Profile, opts Sto
 
 // pass is one run of [RedactStore].
 type pass struct {
-	st     agentsession.Store
-	p      Profile
-	report *StoreReport
-	accept map[FindingKind]bool
+	// nativeIDs maps each original's ID to its redaction's, for errors.
+	nativeIDs map[string]string
+	st        agentsession.Store
+	p         Profile
+	key       Key
+	report    *StoreReport
+	accept    map[FindingKind]bool
 	// heads are the originals the store holds, by ID.
 	heads map[string]agentsession.Header
 	// deps are what each session depends on, as the plan read it.
@@ -310,7 +342,7 @@ func (ps *pass) errs() []error {
 	var errs []error
 	for _, rp := range ps.report.Sessions {
 		if rp.Err != nil {
-			errs = append(errs, fmt.Errorf("agentredact: session %s: %w", rp.Original, rp.Err))
+			errs = append(errs, fmt.Errorf("agentredact: redaction %s: %w", rp.Redaction, rp.Err))
 		}
 	}
 	return errs
@@ -324,7 +356,7 @@ func (ps *pass) list(ctx context.Context) error {
 			return fmt.Errorf("agentredact: listing the store: %w", err)
 		}
 		h := sum.Header
-		if h.Redacted {
+		if h.Redacted || isVerdict(h) {
 			ps.report.Skipped++
 			continue
 		}
@@ -419,10 +451,35 @@ func (ps *pass) plan(ctx context.Context, sel func(agentsession.Header) bool) ([
 // fail reports the original id as not redacted, for err.
 func (ps *pass) fail(id string, err error) {
 	ps.failed[id] = true
-	ps.report.Sessions = append(ps.report.Sessions, SessionReport{Original: id, Redaction: ps.redID(id), Err: scrubErr(err, nil), accept: ps.accept})
+	ps.report.Sessions = append(ps.report.Sessions, SessionReport{Original: id, Redaction: ps.redID(id), Err: scrubErr(err, nil, ps.native()), accept: ps.accept})
 }
 
-func (ps *pass) redID(id string) string { return agentsession.RedactedSessionID(id, ps.p.Name) }
+func (ps *pass) redID(id string) string { return RedactedID(ps.key, id, ps.p.Name) }
+
+// native maps every original the store lists to its redaction's ID, for
+// errors to name sessions by.
+func (ps *pass) native() map[string]string {
+	if ps.nativeIDs == nil {
+		ps.nativeIDs = map[string]string{}
+		for id := range ps.heads {
+			ps.nativeIDs[id] = ps.redID(id)
+		}
+	}
+	return ps.nativeIDs
+}
+
+// resolve reads a session a redaction names, for
+// [agentsession.RedactionNames] to verify whether it is a redaction
+// already: nil and no error for one the store does not hold.
+func (ps *pass) resolve(ctx context.Context) func(id string) (*agentsession.Session, error) {
+	return func(id string) (*agentsession.Session, error) {
+		s, err := ps.read(ctx, id)
+		if errors.Is(err, agentsession.ErrNoSession) {
+			return nil, nil
+		}
+		return s, err
+	}
+}
 
 // dependencies are the originals the store holds that s's entries hash
 // over: its origin, when it is a fork, and every session a parents
@@ -540,14 +597,14 @@ func (ps *pass) one(ctx context.Context, id string) SessionReport {
 			}
 		}
 	}
-	opts := []Option{WithAlongside(ps.along)}
+	opts := []Option{WithAlongside(ps.along), WithResolve(ps.resolve(ctx)), WithMediaTypes(ps.mediaTypes(ctx, id))}
 	if origin != nil {
 		opts = append(opts, WithOrigin(origin))
 	}
-	res, err := Redact(ps.p, orig, existing, opts...)
+	res, err := Redact(ps.p, ps.key, orig, existing, opts...)
 	if err != nil && existing == nil && origin != nil && errors.Is(err, ErrBaseLeftOut) {
 		origin = nil
-		res, err = Redact(ps.p, orig, nil, WithAlongside(ps.along))
+		res, err = Redact(ps.p, ps.key, orig, nil, opts[:3]...)
 	}
 	if err != nil {
 		rp.Err = err
@@ -556,16 +613,18 @@ func (ps *pass) one(ctx context.Context, id string) SessionReport {
 	red := res.Session
 	rp.Fork = red.Header().Base != ""
 	rp.Findings = res.Findings
+	rp.Counts = res.Counts
 	for _, e := range red.Entries() {
 		if _, marked := agentsession.RedactedOf(e); !marked && !red.Prefix(e.Base().ID) {
 			rp.Native++
 		}
 	}
-	if err := ps.write(ctx, &rp, existing == nil, res); err != nil {
+	if err := ps.write(ctx, &rp, existing == nil, res, orig.ID()); err != nil {
 		rp.Err = err
 		return rp
 	}
 	rp.UpToDate = !rp.Created && rp.Written == 0 && rp.Blobs == 0
+	rp.State = StateOf(red)
 	if ps.users[id] > 0 {
 		ps.along.Entries[id] = res.Counterparts
 	}
@@ -573,6 +632,33 @@ func (ps *pass) one(ctx context.Context, id string) SessionReport {
 		ps.snaps[id], ps.reds[id], ps.chains[id] = orig, red, origin
 	}
 	return rp
+}
+
+// mediaTypes gives the media type the store holds for a sidecar blob
+// of the original id: the session's own type where the store keeps
+// types per session, and otherwise the blob's, "" when it holds none.
+func (ps *pass) mediaTypes(ctx context.Context, id string) func(hash string) string {
+	var (
+		session map[string]string
+		read    bool
+	)
+	return func(hash string) string {
+		if typer, ok := ps.st.(agentsession.SessionBlobTyper); ok {
+			if !read {
+				session, _ = typer.SessionBlobTypes(ctx, id)
+				read = true
+			}
+			if t := session[hash]; t != "" {
+				return t
+			}
+		}
+		if tr, ok := ps.st.(agentsession.TypedBlobReader); ok {
+			if _, t, err := tr.TypedBlob(ctx, hash); err == nil {
+				return t
+			}
+		}
+		return ""
+	}
 }
 
 // origin is the origin a fork is redacted as a fork of: its origin's
@@ -592,14 +678,7 @@ func (ps *pass) origin(h agentsession.Header) *Origin {
 // write stores what Redact made of one original: its blobs, then the
 // redaction whole when it is new, or the entries appended to it. What
 // it refuses, it refuses before writing anything.
-func (ps *pass) write(ctx context.Context, rp *SessionReport, created bool, res *Result) error {
-	if !created {
-		for _, e := range res.Entries {
-			if e.Base().Parent == "" {
-				return ErrRootAppend
-			}
-		}
-	}
+func (ps *pass) write(ctx context.Context, rp *SessionReport, created bool, res *Result, original string) error {
 	var im agentsession.Importer
 	if created {
 		var ok bool
@@ -607,10 +686,10 @@ func (ps *pass) write(ctx context.Context, rp *SessionReport, created bool, res 
 			return ErrNoImporter
 		}
 	}
-	var bw BlobWriter
+	var bw agentsession.TypedBlobWriter
 	if len(res.Blobs) > 0 {
 		var ok bool
-		if bw, ok = ps.st.(BlobWriter); !ok {
+		if bw, ok = ps.st.(agentsession.TypedBlobWriter); !ok {
 			return fmt.Errorf("%w: %d blobs", ErrNoBlobWriter, len(res.Blobs))
 		}
 	}
@@ -626,7 +705,8 @@ func (ps *pass) write(ctx context.Context, rp *SessionReport, created bool, res 
 	}
 	sort.Strings(hashes)
 	for _, want := range hashes {
-		got, err := bw.PutBlob(ctx, res.Blobs[want])
+		b := res.Blobs[want]
+		got, err := bw.PutTypedBlob(ctx, b.Data, b.MediaType)
 		if err != nil {
 			return fmt.Errorf("agentredact: writing a blob: %w", err)
 		}
@@ -644,6 +724,7 @@ func (ps *pass) write(ctx context.Context, rp *SessionReport, created bool, res 
 			return fmt.Errorf("agentredact: importing the redaction %s: %w", rp.Redaction, err)
 		}
 		rp.Created, rp.Written = true, len(res.Entries)
+		ps.blobTypes(ctx, rp, res, original)
 		return nil
 	}
 	for _, e := range res.Entries {
@@ -661,7 +742,49 @@ func (ps *pass) write(ctx context.Context, rp *SessionReport, created bool, res 
 		rp.Written++
 	}
 	ps.setHead(ctx, rp, res.Session)
+	ps.blobTypes(ctx, rp, res, original)
 	return nil
+}
+
+// blobTypes gives the redaction, where the store holds media types per
+// session ([agentsession.SessionBlobTyper]), as RFC 0002 has a store do,
+// the type of each blob it names: a blob it made the type it was made
+// with, and a blob it keeps the type the original holds it with. A
+// failure is a warning, since what was written stays written, and a
+// store of this library reads a blob's own type where a session holds
+// none.
+func (ps *pass) blobTypes(ctx context.Context, rp *SessionReport, res *Result, original string) {
+	typer, ok := ps.st.(agentsession.SessionBlobTyper)
+	if !ok {
+		return
+	}
+	named, err := agentsession.SessionBlobs(res.Session)
+	if err != nil || len(named) == 0 {
+		return
+	}
+	types := map[string]string{}
+	var orig map[string]string
+	for _, h := range named {
+		if b, made := res.Blobs[h]; made {
+			types[h] = b.MediaType
+			continue
+		}
+		if orig == nil {
+			if orig, err = typer.SessionBlobTypes(ctx, original); err != nil {
+				rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: reading the original's media types: %w", err), nil, ps.native()).Error())
+				return
+			}
+		}
+		if t := orig[h]; t != "" {
+			types[h] = t
+		}
+	}
+	if len(types) == 0 {
+		return
+	}
+	if err := typer.SetSessionBlobTypes(ctx, rp.Redaction, types); err != nil {
+		rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: setting the redaction's media types: %w", err), nil, ps.native()).Error())
+	}
 }
 
 // headSetter is a store that moves a session's head, given the head it
@@ -683,17 +806,17 @@ func (ps *pass) setHead(ctx context.Context, rp *SessionReport, red *agentsessio
 	}
 	var buf bytes.Buffer
 	if err := agentsession.Write(&buf, red); err != nil {
-		rp.Warnings = append(rp.Warnings, scrubErr(err, nil).Error())
+		rp.Warnings = append(rp.Warnings, scrubErr(err, nil, ps.native()).Error())
 		return
 	}
 	file, err := agentsession.Read(&buf)
 	if err != nil {
-		rp.Warnings = append(rp.Warnings, scrubErr(err, nil).Error())
+		rp.Warnings = append(rp.Warnings, scrubErr(err, nil, ps.native()).Error())
 		return
 	}
 	held, err := ps.read(ctx, rp.Redaction)
 	if err != nil {
-		rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: reading the head: %w", err), nil).Error())
+		rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: reading the head: %w", err), nil, ps.native()).Error())
 		return
 	}
 	want, got := file.Leaf(), held.Leaf()
@@ -701,7 +824,7 @@ func (ps *pass) setHead(ctx context.Context, rp *SessionReport, red *agentsessio
 		return
 	}
 	if err := hs.SetHead(ctx, rp.Redaction, got, want); err != nil {
-		rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: setting the head: %w", err), nil).Error())
+		rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: setting the head: %w", err), nil, ps.native()).Error())
 	}
 }
 
@@ -715,7 +838,7 @@ type releaser interface {
 func (ps *pass) release(rp *SessionReport) {
 	if rl, ok := ps.st.(releaser); ok {
 		if err := rl.Release(rp.Redaction); err != nil {
-			rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: releasing the redaction: %w", err), nil).Error())
+			rp.Warnings = append(rp.Warnings, scrubErr(fmt.Errorf("agentredact: releasing the redaction: %w", err), nil, ps.native()).Error())
 		}
 	}
 }

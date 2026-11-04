@@ -48,17 +48,17 @@ func TestSecrets(t *testing.T) {
 		{"fake-token and fake", "[REDACTED] and [REDACTED]"},
 		{"fakefake", "[REDACTED][REDACTED]"},
 	} {
-		if got := r(tt.in); got != tt.want {
+		if got := r(tt.in, nil); got != tt.want {
 			t.Errorf("Secrets(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 	// The order the values are listed in does not change the output.
-	a := Secrets("ab", "bc")("xabcx")
-	b := Secrets("bc", "ab")("xabcx")
+	a := Secrets("ab", "bc")("xabcx", nil)
+	b := Secrets("bc", "ab")("xabcx", nil)
 	if a != b {
 		t.Errorf("order dependent: %q vs %q", a, b)
 	}
-	if got := Secrets()("unchanged"); got != "unchanged" {
+	if got := Secrets()("unchanged", nil); got != "unchanged" {
 		t.Errorf("no values changed %q", got)
 	}
 }
@@ -82,7 +82,7 @@ func TestHomePaths(t *testing.T) {
 		{`C:\Users\example`, `"C:\\Users\\example\\src"`, `"~\\src"`},
 		{"/home/example", `"\/home\/example\/src"`, `"~\/src"`},
 		{"/home/example", `/home\example/x`, `~/x`},
-		{`C:\Users\example`, `C:\users\example`, `C:\users\example`},
+		{`C:\Users\example`, `C:\users\example`, `~`}, // any Windows profile is a home (round 4)
 		{"/home/example", "/mnt/backup/home/example/x", "/mnt/backup/home/example/x"},
 		{"/home/example", "x/home/example", "x/home/example"},
 		{"/home/example", "path:/home/example", "path:~"},
@@ -91,8 +91,28 @@ func TestHomePaths(t *testing.T) {
 		{"", "/home/example", "/home/example"},
 		{"/", "/etc", "/etc"},
 		{".", "./x", "./x"},
+		// After an escaped newline or tab, as a string holding JSON or
+		// shell source writes one (#12).
+		{"/home/example", `"x\n/home/example/p"`, `"x\n~/p"`},
+		{"/home/example", `a\t/home/example`, `a\t~`},
+		{"/home/example", `a\r\n/home/example/q`, `a\r\n~/q`},
+		// The dash-encoded directory a harness names a project by (#12).
+		{"/home/example", "-home-example-proj/", "-~-proj/"},
+		{"/home/example", "/tmp/claude-1000/-home-example-coding/x", "/tmp/claude-1000/-~-coding/x"},
+		{"/home/example", "projects/-home-example", "projects/-~"},
+		{"/home/example", `"-home-example"`, `"-~"`},
+		{"/home/example", "store/home-example-coding-x/", "store/~-coding-x/"},
+		{"/home/example", `x\n-home-example-p`, `x\n-~-p`},
+		{`C:\Users\example`, `C--Users-example-src`, `~-src`},
+		{"/home/ex.ample", "-home-ex-ample-proj", "-~-proj"},
+		{"/home/example", "-home-examplex-", "-home-examplex-"},
+		{"/home/example", "-home-example_old", "-home-example_old"},
+		{"/home/example", "-srv-home-example-x", "-srv-home-example-x"},
+		{"/home/example", "/srv/home/example", "/srv/home/example"},
+		{"/home/example", "xhome-example-y", "xhome-example-y"},
+		{"/home/example", "-home-example-and-home-example", "-~-and-home-example"},
 	} {
-		if got := HomePaths(tt.home)(tt.in); got != tt.want {
+		if got := HomePaths(tt.home)(tt.in, nil); got != tt.want {
 			t.Errorf("HomePaths(%q)(%q) = %q, want %q", tt.home, tt.in, got, tt.want)
 		}
 	}
@@ -104,7 +124,7 @@ func TestPatterns(t *testing.T) {
 	r := DefaultPatterns()
 	in := "key " + key + " and " + aws + " end"
 	want := "key [REDACTED openai_key] and [REDACTED aws_access_key] end"
-	if got := r(in); got != want {
+	if got := r(in, nil); got != want {
 		t.Errorf("DefaultPatterns = %q, want %q", got, want)
 	}
 	// Each pattern runs on what the earlier ones left, and a match is
@@ -113,10 +133,10 @@ func TestPatterns(t *testing.T) {
 		guard.Pattern{Name: "num$1", Regexp: regexp.MustCompile(`[0-9]+`)},
 		guard.Pattern{Name: "word", Regexp: regexp.MustCompile(`num`)},
 	)
-	if got, want := custom("a 42 b"), "a [REDACTED [REDACTED word]$1] b"; got != want {
+	if got, want := custom("a 42 b", nil), "a [REDACTED [REDACTED word]$1] b"; got != want {
 		t.Errorf("Patterns = %q, want %q", got, want)
 	}
-	if got := Patterns()("sk-test-0000000000000000000000000000"); got != "sk-test-0000000000000000000000000000" {
+	if got := Patterns()("sk-test-0000000000000000000000000000", nil); got != "sk-test-0000000000000000000000000000" {
 		t.Errorf("no patterns changed %q", got)
 	}
 	defer func() {
@@ -127,9 +147,32 @@ func TestPatterns(t *testing.T) {
 	Patterns(guard.Pattern{Name: "broken"})
 }
 
+// TestPlaceholdersNumbered: in a redaction, Secrets and Patterns number
+// the distinct values they replace, per kind, in the order met, so one
+// value is one placeholder and two are two (#20).
+func TestPlaceholdersNumbered(t *testing.T) {
+	ph := NewPlaceholders()
+	secrets := Secrets("fake-one", "fake-two")
+	keys := DefaultPatterns()
+	for _, tt := range []struct {
+		r        StringRedactor
+		in, want string
+	}{
+		// Values of one length are replaced in byte order, so numbered so.
+		{secrets, "fake-two then fake-one", "[REDACTED#2] then [REDACTED#1]"},
+		{secrets, "fake-two again", "[REDACTED#2] again"},
+		{keys, "sk-test-1111111111111111111111111111 and sk-test-2222222222222222222222222222", "[REDACTED openai_key#1] and [REDACTED openai_key#2]"},
+		{keys, "AKIAFAKE0000EXAMPLE0 sk-test-2222222222222222222222222222", "[REDACTED aws_access_key#1] [REDACTED openai_key#2]"},
+	} {
+		if got := tt.r(tt.in, ph); got != tt.want {
+			t.Errorf("%q = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestChain(t *testing.T) {
 	r := Chain(Secrets("/home/example"), HomePaths("/home/example"))
-	if got := r("/home/example/x"); got != "[REDACTED]/x" {
+	if got := r("/home/example/x", nil); got != "[REDACTED]/x" {
 		t.Errorf("Chain = %q", got)
 	}
 }
@@ -152,5 +195,165 @@ func TestDefaultSecretPatternsPinned(t *testing.T) {
 	ours[0].Name = "changed"
 	if DefaultSecretPatterns()[0].Name == "changed" {
 		t.Error("DefaultSecretPatterns shares its list")
+	}
+}
+
+// TestPII: email, public IPv4 and IPv6, and separated phone numbers are
+// replaced; loopback, private and documentation addresses, versions and
+// times are kept (#18).
+func TestPII(t *testing.T) {
+	r := PII()
+	for _, tt := range []struct{ in, want string }{
+		{"mail fake.person@example.test now", "mail [REDACTED email] now"},
+		{"host 100.200.30.40 up", "host [REDACTED ipv4] up"},
+		{"loopback 127.0.0.1, private 10.1.2.3 and 192.168.0.9, doc 192.0.2.7", "loopback 127.0.0.1, private 10.1.2.3 and 192.168.0.9, doc 192.0.2.7"},
+		{"v6 2a01:db9::1 and ::1 and fe80::1 and 2001:db8::5", "v6 [REDACTED ipv6] and ::1 and fe80::1 and 2001:db8::5"},
+		{"version 1.2.3.4.5 at 12:30:45", "version 1.2.3.4.5 at 12:30:45"},
+		{"call +44 20 7946 0958 or (555) 555-0100 or 555-555-0100", "call [REDACTED phone] or [REDACTED phone] or [REDACTED phone]"},
+		{"std::vector and a::b", "std::vector and a::b"},
+	} {
+		if got := r(tt.in, nil); got != tt.want {
+			t.Errorf("PII(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestDefaultProfileLeaks: what the review found the default profile
+// kept (review finding 5): the home as WSL and Windows spell it from the
+// other side, secrets the patterns missed, a truncated key block, and a
+// secret in its JSON spelling.
+func TestDefaultProfileLeaks(t *testing.T) {
+	home := HomePaths("/home/example")
+	pats := DefaultPatterns()
+	sec := Secrets(`fake"pass\word`)
+	for _, tt := range []struct {
+		name     string
+		r        StringRedactor
+		in, want string
+	}{
+		{"wsl", home, `open \\wsl.localhost\Ubuntu\home\example\p`, `open ~\p`},
+		{"wsl json", home, `"\\\\wsl.localhost\\Ubuntu\\home\\example\\p"`, `"~\\p"`},
+		{"wsl$", home, `\\wsl$\Debian\home\example`, `~`},
+		{"mnt", home, "cd /mnt/c/Users/example/proj", "cd ~/proj"},
+		{"windows", home, `C:\Users\example\proj`, `~\proj`},
+		{"other user", home, "/mnt/c/Users/other/proj", "~/proj"}, // any WSL user's Windows profile is a home (N2)
+		{"bearer", pats, "Authorization: Bearer fakeTOKENfakeTOKEN0000", "Authorization: Bearer [REDACTED bearer_token]"},
+		{"hf", pats, "hf_FAKEfakeFAKEfakeFAKEfakeFAKEfake00", "[REDACTED huggingface_token]"},
+		{"stripe", pats, "sk_live_FAKEfakeFAKEfake0000 rk_live_FAKEfakeFAKEfake0000", "[REDACTED stripe_key] [REDACTED stripe_key]"},
+		{"aws secret", pats, `aws_secret_access_key = FAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfake`, `aws_secret_access_key = [REDACTED aws_secret_key]`},
+		{"gitlab", pats, "glpat-" + "FAKEfakeFAKEfake0000", "[REDACTED gitlab_token]"},
+		{"slack webhook", pats, "https://hooks.slack.com/services/TFAKE0000/BFAKE0000/FAKEfakeFAKEfake", "[REDACTED slack_webhook]"},
+		{"url password", pats, "postgres://fakeuser:fakepass@db.example.invalid/x", "postgres://fakeuser:[REDACTED url_password]@db.example.invalid/x"},
+		{"pgp", pats, "-----BEGIN PGP PRIVATE KEY BLOCK-----\nFAKE\n-----END PGP PRIVATE KEY BLOCK-----", "[REDACTED private_key]"},
+		{"truncated", pats, "key: -----BEGIN RSA PRIVATE KEY-----\nFAKEFAKE\nFAKE", "key: [REDACTED private_key]"},
+		{"json spelling", sec, `{"arguments":"{\"pw\":\"fake\\\"pass\\\\word\"}"}`, `{"arguments":"{\"pw\":\"[REDACTED]\"}"}`},
+		{"json spelling once", sec, `"pw":"fake\"pass\\word"`, `"pw":"[REDACTED]"`},
+	} {
+		if got := tt.r(tt.in, nil); got != tt.want {
+			t.Errorf("%s: %q = %q, want %q", tt.name, tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestRecheckLeaks: what the round-two re-check found the default
+// profile kept (N2).
+func TestRecheckLeaks(t *testing.T) {
+	home := HomePaths("/home/example")
+	pats := DefaultPatterns()
+	for _, tt := range []struct {
+		name     string
+		r        StringRedactor
+		in, want string
+	}{
+		{"mnt other name", home, "cd /mnt/c/Users/Fake.Person/proj", "cd ~/proj"},
+		{"mnt case", home, "/mnt/d/users/EXAMPLE/x", "~/x"},
+		{"mnt public kept", home, "/mnt/c/Users/Public/x", "/mnt/c/Users/Public/x"},
+		{"redis", pats, "redis://:fakepass0000@cache.example.invalid:6379", "redis://:[REDACTED url_password]@cache.example.invalid:6379"},
+		{"keyword", pats, "Server=db;User Id=sa;Password=FakePass0000;", "Server=db;User Id=sa;Password=[REDACTED password];"},
+		{"keyword lower", pats, "host=db password=fakepass0000 dbname=x", "host=db password=[REDACTED password] dbname=x"},
+		{"curl -u", pats, "curl -u fakeuser:fakepass0000 https://x.invalid", "curl -u fakeuser:[REDACTED basic_auth] https://x.invalid"},
+		{"basic", pats, "Authorization: Basic ZmFrZXVzZXI6ZmFrZXBhc3M=", "Authorization: Basic [REDACTED basic_auth]"},
+		{"k8s env", pats, `{"name":"AWS_SECRET_ACCESS_KEY","value":"FAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfake"}`, `{"name":"AWS_SECRET_ACCESS_KEY","value":"[REDACTED aws_secret_key]"}`},
+		{"ecs env escaped", pats, `{\"Name\": \"AWS_SECRET_ACCESS_KEY\", \"Value\": \"FAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfake\"}`, `{\"Name\": \"AWS_SECRET_ACCESS_KEY\", \"Value\": \"[REDACTED aws_secret_key]\"}`},
+		{"sts", pats, `"SessionToken": "FAKEsessionTOKENfake0000FAKE"`, `"SessionToken": "[REDACTED aws_session_token]"`},
+		{"ya29", pats, "ya29.FAKEfakeFAKEfakeFAKEfake00", "[REDACTED google_oauth_token]"},
+		{"gocspx", pats, "GOCSPX-FAKEfakeFAKEfakeFAKE00", "[REDACTED google_client_secret]"},
+		{"pem base64", pats, "key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCkZBS0U=", "key: [REDACTED pem_base64]"},
+		{"slack escaped", pats, `"https:\/\/hooks.slack.com\/services\/TFAKE0000\/BFAKE0000\/FAKEfakeFAKE"`, `"[REDACTED slack_webhook]"`},
+	} {
+		if got := tt.r(tt.in, nil); got != tt.want {
+			t.Errorf("%s: %q = %q, want %q", tt.name, tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestRound4Leaks: the N2 forms round 3 still kept (round 4, 2).
+func TestRound4Leaks(t *testing.T) {
+	home := HomePaths("/home/example")
+	pats := DefaultPatterns()
+	for _, tt := range []struct {
+		name     string
+		r        StringRedactor
+		in, want string
+	}{
+		{"windows other name", home, `C:\Users\Fake.Person\proj`, `~\proj`},
+		{"windows json", home, `"C:\\Users\\Fake.Person\\proj"`, `"~\\proj"`},
+		{"windows public kept", home, `C:\Users\Public\x`, `C:\Users\Public\x`},
+		{"mnt spaced", home, "cd /mnt/c/Users/Fake Person/proj", "cd ~/proj"},
+		{"db password", pats, "DB_PASSWORD=fakepass0000", "DB_PASSWORD=[REDACTED password]"},
+		{"pgpassword", pats, "PGPASSWORD=fakepass0000 psql", "PGPASSWORD=[REDACTED password] psql"},
+		{"mysql pwd", pats, "MYSQL_PWD=fakepass0000", "MYSQL_PWD=[REDACTED password]"},
+		{"json password", pats, `{"password": "fakepass0000"}`, `{"password": "[REDACTED password]"}`},
+		{"json escaped", pats, `{\"db_password\":\"fakepass0000\"}`, `{\"db_password\":\"[REDACTED password]\"}`},
+		{"yaml password", pats, "db:\n  password: fakepass0000\n", "db:\n  password: [REDACTED password]\n"},
+		{"yaml aws", pats, "- name: AWS_SECRET_ACCESS_KEY\n  value: FAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfake", "- name: AWS_SECRET_ACCESS_KEY\n  value: [REDACTED aws_secret_key]"},
+		{"wrapped pem", pats, "LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCkZBS0VGQUtFRkFLRUZBS0VGQUtF\nRkFLRUZBS0VGQUtFRkFLRUZBS0VGQUtF\nLS0tLS1FTkQgUFJJVkFURSBLRVktLS0tLQo=\nnext", "[REDACTED pem_base64]\nnext"},
+	} {
+		if got := tt.r(tt.in, nil); got != tt.want {
+			t.Errorf("%s: %q = %q, want %q", tt.name, tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestNoOverRedaction: prose and code that only look like credentials
+// are kept (round 4, 3).
+func TestNoOverRedaction(t *testing.T) {
+	pats := DefaultPatterns()
+	for _, in := range []string{
+		"a basic implementation of the parser",
+		"Basic authentication is described in RFC 7617",
+		"login(user=user, password=password)",
+		`if password=="" { return }`,
+		"kwargs: pwd=pwd",
+	} {
+		if got := pats(in, nil); got != in {
+			t.Errorf("%q = %q, want it kept", in, got)
+		}
+	}
+	if got := pats("Authorization: Basic ZmFrZXVzZXI6ZmFrZXBhc3M=", nil); got != "Authorization: Basic [REDACTED basic_auth]" {
+		t.Errorf("a Basic authorization: %q", got)
+	}
+}
+
+// TestRound5Lows: a spaced profile name at the end of a string or before
+// a quote, and code passing a password from elsewhere (round 5, 3).
+func TestRound5Lows(t *testing.T) {
+	home := HomePaths("/home/example")
+	pats := DefaultPatterns()
+	for _, tt := range []struct {
+		name     string
+		r        StringRedactor
+		in, want string
+	}{
+		{"spaced at end", home, `cd C:\Users\Fake Person`, `cd ~`},
+		{"spaced before quote", home, `{"dir":"C:\\Users\\Fake Person"}`, `{"dir":"~"}`},
+		{"shell expansion", pats, "pwd=$(pwd)", "pwd=$(pwd)"},
+		{"env lookup", pats, `password=os.environ["DB_PASSWORD"]`, `password=os.environ["DB_PASSWORD"]`},
+		{"env reference", pats, "PGPASSWORD=$PGPASS psql", "PGPASSWORD=$PGPASS psql"},
+		{"still a secret", pats, "password=fakepass0000", "password=[REDACTED password]"},
+	} {
+		if got := tt.r(tt.in, nil); got != tt.want {
+			t.Errorf("%s: %q = %q, want %q", tt.name, tt.in, got, tt.want)
+		}
 	}
 }

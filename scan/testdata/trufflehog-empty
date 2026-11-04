@@ -1,0 +1,4 @@
+#!/bin/sh
+# A stand-in for a trufflehog run that says it finished having read no
+# bytes, as one pointed at the wrong directory does: no pass.
+echo '{"level":"info-0","msg":"finished scanning","chunks":0,"bytes":0}' >&2

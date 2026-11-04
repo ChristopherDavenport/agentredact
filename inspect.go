@@ -3,30 +3,25 @@ package agentredact
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/ChristopherDavenport/agentsession"
 )
 
-// ErrKeyNotRedacted is returned by [Redact] for an entry holding a
-// member name, at any depth, that the profile's string redactors would
-// change: a path keying a map in a custom entry's data, an outcome's
-// details, a member the format does not define or an extension entry's
-// own members. agentsession's Rewriter gives a redactor no member name
-// but an env entry's file paths, so such a name would be written as the
-// original had it; a profile that would leave a matched name in place
-// does not produce a redaction. The error names the entry's position and
-// a pointer to the member built from rewritten names, never the name.
-var ErrKeyNotRedacted = errors.New("agentredact: a member name the string redactors would change is kept as written")
-
 // inspect checks the entry e, as the entry redactors left it, for what
-// the redaction must not write or must report: a member name f would
-// change is ErrKeyNotRedacted; inline media that is not an image, and an
-// image data URL inside a longer string, are kept and reported. pos is
-// its position in the original.
-func inspect(e agentsession.Entry, f StringRedactor, pos int, findings *[]Finding) error {
+// the redaction must report: inline media that is not an image, and an
+// image data URL inside a longer string, are kept and reported; and,
+// when the profile replaces no image (images false), every image kept
+// whole, inline or sidecar. A sidecar is an image when an image_url
+// names it, or when mediaType gives its blob an image/ type. pos is its
+// position in the original.
+//
+// A string or a member name holding a spelling of a value ids holds is
+// reported as an identity value, by its pointer, never the value.
+func inspect(e agentsession.Entry, pos int, findings *[]Finding, images bool, mediaType func(hash string) string, ids *identities) error {
 	data, err := agentsession.MarshalEntry(e)
 	if err != nil {
 		return err
@@ -37,14 +32,19 @@ func inspect(e agentsession.Entry, f StringRedactor, pos int, findings *[]Findin
 	if err := dec.Decode(&tree); err != nil {
 		return err
 	}
-	_, env := e.(*agentsession.EnvEntry)
 	report := func(kind FindingKind, at, message string) {
 		*findings = append(*findings, Finding{Kind: kind, Position: pos, At: at, Redactor: "redact", Message: message})
 	}
-	var walk func(v any, at string) error
-	walk = func(v any, at string) error {
+	var walk func(v any, at, member string) error
+	walk = func(v any, at, member string) error {
 		switch x := v.(type) {
 		case string:
+			if ids.found(x) {
+				report(FindingIdentity, at, "a value an identity member of the original names, in one of its spellings")
+			}
+			if !images && keptImage(x, member, mediaType) {
+				report(FindingImage, at, "an image kept: the profile replaces no image, and no string redactor reads the text in its pixels")
+			}
 			switch {
 			case isBase64DataURL(x) && !isImageDataURL(x):
 				report(FindingInlineMedia, at, "inline media that is not an image kept as it is: no redactor replaces it, and text in it is not found")
@@ -55,26 +55,74 @@ func inspect(e agentsession.Entry, f StringRedactor, pos int, findings *[]Findin
 			}
 		case []any:
 			for i, el := range x {
-				if err := walk(el, fmt.Sprintf("%s/%d", at, i)); err != nil {
+				if err := walk(el, fmt.Sprintf("%s/%d", at, i), ""); err != nil {
 					return err
 				}
 			}
 		case map[string]any:
-			// An env entry's file paths are the one place the Rewriter
-			// renames member names; they are what f made of them.
-			renamed := env && (at == "/files/read" || at == "/files/written")
 			for _, k := range sortedMembers(x) {
-				if !renamed {
-					if now := f(k); now != k {
-						return fmt.Errorf("%w: at %s", ErrKeyNotRedacted, at+"/"+pointerToken(now))
-					}
+				if ids.found(k) {
+					report(FindingIdentity, at, "a member name holding a value an identity member of the original names")
 				}
-				if err := walk(x[k], at+"/"+pointerToken(k)); err != nil {
+				if err := walk(x[k], at+"/"+pointerToken(k), k); err != nil {
 					return err
 				}
 			}
 		}
 		return nil
 	}
-	return walk(tree, "")
+	return walk(tree, "", "")
+}
+
+// keptImage reports whether s, the value of member, is an image held
+// whole: a data URL of an image, or a sidecar reference an image_url
+// holds or whose blob has an image type.
+func keptImage(s, member string, mediaType func(hash string) string) bool {
+	if isImageDataURL(s) {
+		return true
+	}
+	hash, ok := strings.CutPrefix(s, "sidecar:")
+	if !ok || !strings.HasPrefix(hash, "sha256:") {
+		return false
+	}
+	if member == "image_url" {
+		return true
+	}
+	if mediaType == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.ToLower(mediaType(hash)), "image/")
+}
+
+// memberNames reports each name the format keeps as written that f
+// would change: of a member of e the format does not define, and of a
+// member of an item entry's item, whose names the payload profile
+// defines. The Rewriter leaves both, so a matched name would be written
+// as the original had it; the finding names neither the member nor the
+// match.
+func memberNames(e agentsession.Entry, pos int, f func(string) string) []Finding {
+	var out []Finding
+	report := func(at string) {
+		out = append(out, Finding{Kind: FindingMemberName, Position: pos, At: at, Redactor: "redact",
+			Message: "a member's name holds what the string redactors replace, and the format keeps it as written"})
+	}
+	for _, k := range slices.Sorted(maps.Keys(e.Base().Unknown)) {
+		if f(k) != k {
+			report("")
+			break
+		}
+	}
+	if it, ok := e.(*agentsession.ItemEntry); ok && it.Item != nil {
+		data, err := json.Marshal(it.Item)
+		var m map[string]json.RawMessage
+		if err == nil && json.Unmarshal(data, &m) == nil {
+			for _, k := range slices.Sorted(maps.Keys(m)) {
+				if f(k) != k {
+					report("/item")
+					break
+				}
+			}
+		}
+	}
+	return out
 }

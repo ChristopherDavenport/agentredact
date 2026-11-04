@@ -5,16 +5,19 @@ Redaction and publishing for agent sessions, built on
 agentredact writes a redacted copy of each session in a store and
 decides which of those copies may leave it.
 
-A redacted session, in agentsession's format 0.13, is a session of its
+A redacted session, in agentsession's format 0.20, is a session of its
 own made from an original:
 
 - every entry the redaction writes carries `redacted`, the positions
   in the original of the entries it was made from (`[n]`, `[[from, to]]`
   for a block left out, `[]` for an added entry);
 - its header carries `redacted: true` and
-  `redacted_from: {session, profile}`, and its ID is derived from the
-  original and the profile, so one original under one profile has one
-  redacted session;
+  `redacted_from: {session, profile}`, where `session` is the
+  original's pseudonym under a key only the holder of the originals
+  has, and its ID is derived from that and the profile, so one original
+  under one profile and key has one redacted session, and nobody holding
+  the original's native ID can tell which published session came from
+  it;
 - its hashes, request hashes included, are its own, so it verifies,
   grows as the original grows, and can be resumed like any session;
 - it is published by pushing it to a store set to hold only redacted
@@ -31,7 +34,7 @@ URL encoding or image bytes are not found by the redactors.
 
 ```go
 p := agentredact.Profile{
-	Name: "default@1",
+	Name: "default@2",
 	Strings: []agentredact.StringRedactor{
 		agentredact.Secrets(apiKey),
 		agentredact.HomePaths(home),
@@ -41,16 +44,121 @@ p := agentredact.Profile{
 		agentredact.Environment(),
 		agentredact.Images(agentredact.DefaultImagePlaceholder),
 	},
+	Identity: agentredact.ClaudeCodeIdentity(), // the user's values a Claude Code import names
 }
-res, err := agentredact.Redact(p, original, nil) // or the earlier redaction, to grow it
+key, err := agentredact.ReadKeyFile("/path/beside/the/store/redaction.key")
+res, err := agentredact.Redact(p, key, original, nil) // or the earlier redaction, to grow it
 ```
 
 `Result.Blobs` holds the blobs the redacted session needs beyond the
 original's, such as the placeholder that replaced a sidecar image,
-keyed by hash; store them beside it.
+keyed by hash, each with its media type; store them beside it with
+that type (`PutTypedBlob`).
+
+### The key
+
+Since format 0.19 a redaction names sessions under a key (RFC 0001,
+The redacted session): `redacted_from.session` is the original's
+pseudonym, an HMAC of its ID under the key, and the redacted session's
+ID and every reference to another session derive from pseudonyms. A
+native session ID, which the harness's own logs and its vendor hold,
+then leads to no published redaction.
+
+- **One key per store of originals**, at least 32 random bytes.
+  `GenerateKey` makes one and `WriteKeyFile` writes it to a new file,
+  mode 0600, refusing a path that exists; `ReadKeyFile` reads it back
+  and refuses a file its group or others may read. Keep the file beside
+  the store of originals, out of any repository, dataset or log, and
+  back it up with the originals.
+- **No default.** `Redact` and `RedactStore` refuse the zero `Key`
+  (`agentsession.ErrRedactionKey`). A `Key` never prints or marshals its
+  bytes, so it does not reach a log by accident; it is in no profile,
+  report or redacted session.
+- **Losing the key loses the redactions' continuity.** A redaction is
+  found again, and resumed, only by deriving its ID under the same key:
+  under another key every original gets a new redacted session, written
+  beside the old ones, which can no longer grow. `OriginalOf` finds the
+  original a redacted session was made from, for the holder of the key.
 
 A profile names one set of rules; change the rules and bump the
 version, or two redactions end up mixed in one session.
+
+### Home directories, session IDs and identity values
+
+- `HomePaths(home)` shortens a path under home to `~`, home bounded on
+  both sides (a separator or the end after it, a character that is no
+  part of a path segment before it, an escaped `\n`, `\t`, `\r`, `\b`
+  or `\f` included), and finds home in its dash-encoded form too, the
+  directory name Claude Code gives a project (`-home-example-proj`,
+  inside `/tmp/claude-<uid>/` scratchpads as well) and an agentsession
+  jsonl store's key (`home-example-proj` after a separator):
+  `-home-example-proj` becomes `-~-proj`. A harness's encoding writes no
+  `~`, so `-~` is never a real directory's name.
+- Every redaction rewrites, as text, each session ID the original
+  names a session by (its own `id`, `parent_session`, a `parents`
+  element's, a link's, a copied item's) to the ID of that session's
+  redaction, before the profile's own rules, as RFC 0001 0.19 requires:
+  a scratchpad path or a tool output quoting the session ID then names
+  its redaction. The IDs come from the original alone. Other spellings
+  of a session ID than the ID as written are not looked for.
+- `Profile.Identity` lists the members of the originals that name the
+  user (an email, an organization's ID, a login name, a home
+  directory), by entry type, namespace and JSON Pointer;
+  `ClaudeCodeIdentity` is agentimport v0.0.1's Claude Code list. The
+  values are read from each original, never written into the profile,
+  and every spelling of each is replaced with `[REDACTED identity#<n>]`
+  after the profile's string redactors: as written in any ASCII case, a
+  path's dash-encoded directory name, the Go module cache's escaping
+  (`!example!login` for `ExampleLogin`) and its URL encodings. A value
+  is replaced from the entry that names it on, since what a redaction
+  writes at a position rests on the entries up to it; the redaction is
+  then searched for every value the whole original names, and each
+  spelling still held, in a string or a member name, is an
+  `identity-value` finding with no value, which blocks `Publishable`.
+  Values shorter than three bytes are not harvested, nor are generic
+  names: roles and other words of the format, system and service
+  accounts and common host names (`root`, `admin`, `dev`, `runner`,
+  `test`, `app`, `developer`, `server`, `build` and the like), forges
+  and their bots (`GitHub`), and no-reply addresses, since harvested
+  they would be replaced across the session, corrupting roles and URLs.
+  A login or host that really is one of them goes unreplaced and
+  unreported, though `/home/<login>` paths are still found: put such a
+  login in `Secrets(...)`.
+
+### Third parties' addresses, and what was replaced
+
+`DefaultPatterns` is secret shapes alone. `PII()` is an opt-in set for
+the personal data of others that sessions carry: email addresses, IPv4
+and IPv6 addresses outside the loopback, private, link-local,
+multicast and documentation ranges, and phone numbers written with
+separators, each written `[REDACTED email#1]` and so on. Adding it
+changes what a profile writes, so it takes a new version.
+
+`Result.Counts` and `SessionReport.Counts` say how many replacements
+each kind of string redactor made in the whole redaction, recounted on
+every run: `secret`, each pattern's name, `email`, `ipv4`, `ipv6`,
+`phone`, `identity`, `home`, `rules`. A count, never a value: what a
+dataset card needs to say how the data was cleaned. A redactor of your
+own counts through `Placeholders.For` or `Placeholders.Count`.
+
+### Placeholders
+
+In a redaction, `Secrets` and `Patterns` number what they replace:
+`[REDACTED#<n>]` for a secret value and `[REDACTED <name>#<n>]` for a
+pattern match, n counting from 1 the distinct values of that kind in
+the redacted session (`Placeholders`). One value is one placeholder
+throughout a session and two values are two, so a reader can tell that
+two redacted values were equal, and two instruction layer ids holding
+different secrets stay distinct, as RFC 0001 0.18 requires
+(`agentsession.ErrLayersMerged`). The numbers follow the order the
+values are met, header first and then the original's entries in file
+order, so a resumed redaction numbers as a fresh one does, and a fork
+redacted as a fork of its origin's redaction continues its origin's
+numbering at the base. Outside a redaction (a nil `*Placeholders`)
+they write `[REDACTED]` and `[REDACTED <name>]`. A `StringRedactor` is
+`func(s string, ph *Placeholders) string`; `Plain` adapts a function
+that ignores `ph`. A rules file's replacements are written as given and
+not numbered.
 `ParseRules` reads a rules file in git-filter-repo's `--replace-text`
 form (`literal==>replacement`, `regex:pattern==>replacement`,
 `glob:pattern==>replacement`, a bare line for `***REMOVED***`).
@@ -139,7 +247,7 @@ that differs: a profile name reused for changed rules, or
 ## Redacting a store
 
 ```go
-rep, err := agentredact.RedactStore(ctx, store, p, agentredact.StoreOptions{})
+rep, err := agentredact.RedactStore(ctx, store, p, key, agentredact.StoreOptions{})
 ```
 
 `RedactStore` keeps one redaction per original under the profile, in
@@ -169,14 +277,15 @@ originals, and takes their dependencies with them.
   without a base.
 - **Writing.** A new redaction is imported whole (`agentsession.Importer`,
   as the store's record); new entries are appended with `Store.Append`,
-  and where the store has `SetHead` (cas) the head is set to where an
-  import would put it. Blobs a redaction made go first, through the
-  store's `PutBlob` (`BlobWriter`): the cas store has one, the memory
-  and jsonl stores do not, and a redaction naming a blob is then not
-  written (`ErrNoBlobWriter`). A redaction that grew a new root, whose
-  ancestors were all left out, cannot be appended through any store
-  yet (`ErrRootAppend`): agentsession fills an empty parent from the
-  store's leaf. The redaction is let go (`Release`) however a write ends.
+  and where the store has `SetHead` the head is set to where an
+  import would put it. Blobs a redaction made go first, each with its
+  media type (`agentsession.TypedBlobWriter`): every store of
+  agentsession v0.0.36 takes them, a store that does not is given no
+  redaction naming one (`ErrNoBlobWriter`), and the redaction is given
+  the types of the blobs it names where the store holds types per
+  session. An
+  entry whose ancestors were all left out is appended at the universal
+  root. The redaction is let go (`Release`) however a write ends.
 - **The report** gives, per original, the entries and blobs written,
   whether it was up to date or waits, the findings of the whole
   redaction on every run, each with a stable `Kind`, and how many native
@@ -210,18 +319,14 @@ merely starts `data:`, is redacted like any other string.
 
 ### Member names
 
-agentsession's Rewriter gives a redactor no member name but an env
-entry's file paths, and a harness often keys a map by a file path. So
-`Redact` renames, through the string redactors, every member name in
-the header's members the format does not define, at any depth, and
-refuses with `ErrKeyNotRedacted` an entry holding a member name the
-redactors would change, in a custom entry's data, an outcome's details,
-a member the format does not define or an extension entry: a profile
-that would leave a matched name in place does not produce a redaction.
-The check cannot tell a name the format defines from one a writer chose,
-so a rule matching one, such as a literal rule for `content`, refuses
-every entry holding it. When agentsession renames such names itself,
-renaming replaces the refusal.
+A member name that is data, such as a file path keying a map in a
+custom entry's data, an outcome's details or a member the format does
+not define, reaches the string redactors through agentsession's
+Rewriter and is renamed (RFC 0001 0.14). Two names a redaction makes
+one are refused (`agentsession.ErrKeyCollision`), with a message naming
+neither. The names of the header's own members are the format's and
+are kept as written, their values rewritten; one the string redactors
+would change is reported (`FindingHeaderName`).
 
 ### Kept as written
 
@@ -233,17 +338,24 @@ profile's redactors never see them:
 - `call_id`s, a run's pending call IDs and the header's `spawned_by`,
   which pair calls with their outputs and derive subsession IDs;
 - the header's `created_at`, `payload`, `records` and `media`;
-- the entry a `parents` element names in another session, when that
-  session's counterparts are not given to `Redact`; each is reported
-  (`FindingForeignReference`). The store pass waits for such a session
-  instead;
+- nothing of the entry a `parents` element or a copied item names in
+  another session whose counterparts are not given to `Redact`: the
+  reference to the entry is removed, as RFC 0001 0.19 has it, and
+  reported (`FindingForeignReference`). The store pass waits for such a
+  session instead;
 - an env entry's file hashes, when the profile has no `Environment`;
-- a sidecar reference, when the profile has no `Images`; with it, a
-  sidecar image is replaced, and other sidecar media, such as a file,
-  is kept and reported;
-- an instruction part named by the hash of a text no earlier entry
-  holds keeps the original's hash, which can confirm a guessed text;
-  each is reported, by its id;
+- every image, when the profile has no `Images`: each one kept whole,
+  inline, sidecar under an `image_url`, or a sidecar blob the store
+  types `image/*` under any item (`WithMediaTypes`, which the store
+  pass sets), is reported as an `image` finding, since nothing reads
+  the text in a screenshot; a publisher that accepts screenshots
+  accepts the kind. With `Images` a sidecar image is replaced, and
+  other sidecar media, such as a file, is kept and reported;
+- an instruction part named by the hash of a text no entry the
+  redaction wrote before it holds is written as `UnmetPartText` under
+  its id, never under the original's hash, which can confirm a guessed
+  text; a part keeping parts the redaction does not hold is refused
+  (`ErrUnmetKeep`);
 - inline media that is not an image, such as an input_file's PDF, and
   an image data URL inside a longer string, such as tool output or
   markdown: `Images` replaces whole-string images only; each is
@@ -254,21 +366,92 @@ original and hold no value and no original hash, and they are never
 published with the redacted session. The scan and the review are the
 backstop for what the redactors miss, not a guarantee.
 
+## Verdicts
+
+A scan's or a review's judgement of a redacted session is written, as
+RFC 0001 0.19 has a judge write one, as an `outcome` in a fork of the
+redacted session at the last entry judged (`WriteVerdict`, at
+`JudgedEntry`): the fork's header carries no `redacted`, names the
+harness `agentredact` and the member `agentredact:verdict`, and its
+`parent_session` is the redacted session; the outcome's `pass` is the
+verdict, its `details` the findings by kind and count and the redacted
+entries they were found in, never a value. Store it in the private
+store beside the session: a store holding only redacted entries refuses
+it, so a verdict cannot leave with what it judged, and the store pass
+skips it. `Verdicts` lists a redaction's verdicts and `Cleared` says
+whether every judge named passed it at its current judged entry: a
+session that grew after it was judged waits for a new verdict, since a
+verdict covers no entry after its target.
+
+## Scan
+
+`scan.Scanner.Scan` runs the `trufflehog` binary (`os/exec`, never
+linked) over what a redacted session would publish: its file, the blobs
+it names (from a store's `BlobReader`) and, with `ATIF` set, its ATIF
+documents exported with `NoPassthrough`, staged in a private temporary
+directory and scanned with `filesystem --json --no-verification
+--no-update`, so the scan makes no network call. A finding is kept as
+its detector, the artifact and the redacted entry it was found in, with
+a count; the value TruffleHog reports is never kept, and its log is not
+read. `Result.Verdict` is the verdict to record with `WriteVerdict`:
+any finding fails it.
+
+## Review
+
+`review.Reviewer{Model, ModelName, MaxTokens, Context}.Review` has a
+model of your choosing (any openresponses adapter; there is no default
+model) read a redacted session for what the rules missed, within a
+token cap you must set, and returns flags by entry and kind, never
+text; `Result.Verdict` is recorded with `WriteVerdict` like the scan's,
+and `publish.Options{Judges: []string{"scan", "review"}}` requires
+both. What the model reads may leave the machine: give it the
+redaction's own context (`review.AgentsMD`), not the original's. A
+model error, an unreadable answer or the cap fails the review. The
+review is advisory: text in the session, a web page or a tool's output,
+can steer the model, so the scan stays the gate; the cap counts every
+byte as a token so no request passes it.
+
+## Publish
+
+`publish.Publish(ctx, private, target, publish.Options{Profile, Report,
+Judges})` copies to `target` the redacted sessions of `private` under
+the profile that the store pass's `Report` holds publishable and every
+judge in `Judges` (the scan when none are named; `Unjudged` opts out
+by name) cleared in its current state, blobs first with
+their types, importing a session the target lacks and appending to one
+it holds what it lacks; every other session is held, with its reason.
+Open the target set to hold only redacted entries (`WithRedactedOnly`,
+`MemoryRedactedOnly`): an original, or a verdict, sent there by mistake
+is refused. `Result.Published` names each session as a manifest does,
+by its own ID and head hash, never by its original.
+
+`NewManifest` lists what a publish published, each session by its
+redacted ID and head hash, with the profile, the judges and the
+replacement counts (`agentredact/manifest@1`, kept minimal until
+agentsession#70 defines the shared manifest object); `Check` holds it
+to the published store. `ExportDataset` writes the sessions a manifest
+lists, read from the private store and each held to what `Publish`
+holds it to, with the profile's string rules run over every document
+once more, to a local directory a dataset host renders: per session its ATIF
+document and a Session Trace Simple Format-shaped `trace.jsonl`, the
+manifest and a card. Uploading the directory is your step.
+
 ## Status
 
 Profiles, the string redactors (`Secrets`, `HomePaths`, `Patterns`,
-`ParseRules`), the entry redactors `Environment` and `Images`, the
-structural redactors `LeaveOut` and `BlockOut`, the session redactors
-`KeepLeafPath` and `DropBranches`, `Redact`, which applies a profile
-to one session, and `RedactStore`, which keeps a store's redactions
-current, are here. The design is [docs/plans/agentredact.md](docs/plans/agentredact.md);
+`PII`, `ParseRules`), identity members, the entry redactors
+`Environment` and `Images`, the structural redactors `LeaveOut` and
+`BlockOut`, the session redactors `KeepLeafPath` and `DropBranches`,
+`Redact`, which applies a profile to one session, `RedactStore`, which
+keeps a store's redactions current, verdicts, the `scan` package and
+the `scan`, `review` and `publish` packages (manifest and dataset
+export included) and the `agentredact` command are here. The design is [docs/plans/agentredact.md](docs/plans/agentredact.md);
 the work is tracked in issues
 [#2](https://github.com/ChristopherDavenport/agentredact/issues/2) (redactors),
 [#3](https://github.com/ChristopherDavenport/agentredact/issues/3) (the store pass),
 [#4](https://github.com/ChristopherDavenport/agentredact/issues/4) (scan),
 [#5](https://github.com/ChristopherDavenport/agentredact/issues/5) (review) and
 [#6](https://github.com/ChristopherDavenport/agentredact/issues/6) (manifest and publish).
-There is no command yet.
 
 `agentredact/secrets` is a module of its own, standard library only:
 the streaming secret redactor, every JSON spelling of each value

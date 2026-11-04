@@ -5,6 +5,307 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- **Breaking: agentsession v0.0.37, format 0.20** (#19), with
+  agentpolicy v0.0.19, openresponses v0.0.18, agentturn v0.0.35 and
+  agenttool v0.0.29, in the root and in `cmd/agentredact`. Every
+  redaction this version writes is a session of format 0.20 and has a
+  new ID (below), so a store pass writes each
+  redaction afresh beside the ones v0.0.1 wrote, which it skips and
+  never resumes. Profiles should take a new version with this release,
+  since what they write changes throughout (below and the entries
+  after this one).
+- **Breaking: sessions are named under a key (RFC 0001 0.19, The
+  redacted session).** `Redact(p, key, original, existing, ...)` and
+  `RedactStore(ctx, st, p, key, opts)` take a `Key`, at least 32 random
+  bytes held by whoever holds the originals, one per store of them, and
+  refuse the zero one with `agentsession.ErrRedactionKey`: there is no
+  default. `redacted_from.session` is the original's keyed pseudonym,
+  and the redacted session's ID and every reference into another
+  session derive from pseudonyms (`RedactedID`), so a native session ID
+  no longer leads to its published redaction. Added: `Key`, `NewKey`,
+  `GenerateKey`, `WriteKeyFile` (a new file, mode 0600, never
+  overwriting one), `ReadKeyFile` (refusing a file its group or others
+  may read, `ErrKeyFile`), `RedactedID`, `OriginalOf` and the option
+  `WithResolve`, through which a reference to a session that verifies as
+  a redaction keeps its ID; the store pass gives it the store. A `Key`
+  never prints or marshals its bytes. Losing the key means the
+  redactions made under it cannot be resumed: under a new key every
+  original gets a new redacted session.
+- **Breaking: replacement blobs are stored with their media type (RFC
+  0001 0.16, RFC 0002 Media).** `Result.Blobs` maps a hash to a `Blob`
+  (`Data`, `MediaType`), `EntryContext.AddBlob` takes the media type,
+  and `Images` gives its placeholder's. `RedactStore` writes them with
+  `PutTypedBlob` (`agentsession.TypedBlobWriter`, which every store of
+  agentsession v0.0.36 implements) and refuses, with `ErrNoBlobWriter`,
+  a store that takes no typed blobs; where the store holds types per
+  session it gives the redaction the types of the blobs it names.
+  Removed: `BlobWriter`.
+- **Breaking: an unmet instruction part is written as text (RFC 0001
+  0.14, Every redacted entry).** A part named by the hash of a text the
+  redaction cannot resolve on its path, which `Rewriter.Unmet` reports,
+  is written as `UnmetPartText` under its id rather than under the
+  original's hash, and a keep over parts the redaction does not hold is
+  refused (`ErrUnmetKeep`); entries left out are told to the Rewriter
+  (`LeftOut`). Removed: `FindingOriginalHash`, which reported the hash
+  kept.
+- **Breaking: member names reach the redactors (RFC 0001 0.14).** A
+  member name that is data is renamed through agentsession's Rewriter
+  and `RewriteHeaderStrings`, so an entry holding one is redacted rather
+  than refused. Removed: `ErrKeyNotRedacted`. A header member's own name
+  is the format's and is kept, reported as `FindingHeaderName`
+  (`header-member-name`, at position 0) when the string redactors would
+  change it. A collision's error no longer quotes the two names.
+- **Breaking: an entry of a session not redacted alongside is left out
+  (RFC 0001 0.19, Every redacted entry).** A parents element or a
+  copied item naming an entry of another session whose counterparts
+  `Redact` was not given loses the reference, which agentsession now
+  refuses to keep (`ErrUnmappedCopy`); `FindingForeignReference`
+  reports the removal.
+- **Breaking: a new root is appended.** agentsession v0.0.31 appends an
+  entry whose ID is set and whose parent is empty at the universal root,
+  so the store pass appends a redaction that grew one. Removed:
+  `ErrRootAppend`.
+- **Fixed: a fork redacted without a base no longer carries its
+  promise of records.** Its prefix became entries of its own, which the
+  original's promise never covered, so an answer to a prefix call the
+  origin never dispatched failed with `ErrAnswerNotDispatched` mid-build.
+  A fork redacted as a fork of its origin's redaction keeps the base and
+  the promise.
+- **Breaking: numbered placeholders (#20).** In a redaction `Secrets`
+  writes `[REDACTED#<n>]` and `Patterns` `[REDACTED <name>#<n>]`, n
+  numbering the distinct values of that kind in the redacted session in
+  the order met (`Placeholders`, `NewPlaceholders`), so two instruction
+  layer ids holding different values of one kind stay distinct and
+  agentsession's `ErrLayersMerged` does not fire, and a reader can tell
+  equal values apart from different ones. A resume numbers as a fresh
+  redaction does, and a fork of an origin's redaction continues its
+  origin's numbering at the base. `StringRedactor` is now `func(s
+  string, ph *Placeholders) string`; `Plain` adapts a `func(string)
+  string`. Outside a redaction (nil `ph`) the placeholders are
+  unnumbered, as before. This changes what every profile using
+  `Secrets` or `Patterns` writes.
+- Added: `FindingImage` (`image`, #17). A profile with no `Images`
+  keeps every image, and each is now reported, once per image, with no
+  value: an inline image data URL, a sidecar under an `image_url`, and
+  a sidecar blob whose stored type is `image/*` under any item, which
+  `Redact` learns through the new `WithMediaTypes` and `RedactStore`
+  from the store. `Publishable` is false for such a session unless the
+  publisher accepts `image`. It adds a finding and changes no output.
+- **Breaking (output): `HomePaths` finds the home in more spellings
+  (#12).** After a backslash and an escape letter (`\n`, `\t`, `\r`,
+  `\b`, `\f`), as a string holding JSON or shell source writes a newline
+  before a path; and in its dash-encoded form, every character but a
+  letter or a digit written `-`, as Claude Code names a project
+  directory (`-home-example-proj` becomes `-~-proj`) and an agentsession
+  jsonl store keys a session (`home-example-proj` after a separator
+  becomes `~-proj`), bounded so that `-srv-home-example` and
+  `-home-example2` are left alone. agentsession's `export.HomePaths`
+  does not do either; this is the one to use.
+- **Breaking (output): session IDs in text name their redactions (RFC
+  0001 0.19, #11).** Every redaction rewrites, as text, the original's
+  own ID and each session ID it references, before the profile's own
+  string redactors, to the ID the key and profile derive for that
+  session (`agentsession.RedactionNames.ReplaceIDs` over
+  `SessionIDsNamed`), so a scratchpad path or a tool output quoting one
+  names the redaction. The IDs come from the original alone.
+- **Added: identity values (#13).** `Profile.Identity` lists the members
+  that name the user (`IdentityMember`: header or entry type,
+  namespace, JSON Pointer with `*`, an optional `Extract` pattern,
+  `Home` for a path's home directory), and `ClaudeCodeIdentity` is the
+  list agentimport v0.0.1's Claude Code converter documents. The values
+  are read from each original as the redaction reaches them and every
+  spelling of each (any ASCII case, a path's dash encoding, the Go module
+  cache's `!` escaping, URL encodings) is replaced with `[REDACTED
+  identity#<n>]` after the profile's string redactors; the redacted
+  session is then searched for every value the whole original names,
+  and what it still holds is reported as `FindingIdentity`
+  (`identity-value`), by pointer, with no value.
+- **Added: `PII` and replacement counts (#18).** `PII()` is an opt-in
+  string redactor for third parties' email addresses, public IPv4 and
+  IPv6 addresses (loopback, private, link-local, multicast and
+  documentation ranges kept) and separated phone numbers, each written
+  `[REDACTED <name>#<n>]`. `Result.Counts` and `SessionReport.Counts`
+  count, by kind and with no value, the replacements the string
+  redactors made in the whole redaction, recounted on every run
+  (`Placeholders.Count` for a redactor writing fixed text, as
+  `HomePaths` and a rules file do).
+- **Added: verdicts (RFC 0001 0.19).** `Verdict`, `WriteVerdict`,
+  `JudgedEntry`, `VerdictID`, `Verdicts`, `RecordedVerdict` and
+  `Cleared`: a scan's or a review's judgement is an `outcome` in a fork
+  of the redacted session at the last entry judged, with no `redacted`,
+  which a redacted-only store refuses; its details count findings by
+  kind and name redacted entries, never values. A session that grew
+  after it was judged is not cleared until judged again. `RedactStore`
+  skips verdict sessions (`StoreReport.Skipped`).
+- **Added: the `scan` package (#4).** `Scanner.Scan` runs the
+  `trufflehog` binary over a redacted session's file, the blobs it names
+  and, optionally, its ATIF documents (`NoPassthrough`), with
+  verification and updates off, and keeps each finding as a detector,
+  an artifact, the redacted entry and a count, never the value;
+  `Result.Verdict` is the scan's verdict (kind `test`), failing on any
+  finding. Tests run a stub binary; the real one is used when installed.
+- **Added: the `publish` package (#6, the publish part).** `Publish`
+  copies a profile's redacted sessions that the store pass holds
+  publishable and the required judges cleared to a store holding only
+  redacted entries, blobs first with their types, importing or growing
+  each, and holds the rest with their reasons; `Published` names each
+  by its own ID and head hash, never its original.
+- **A verdict clears only the state it judged.** `State`/`StateOf`: the
+  head and a digest over every entry on every branch, leaf labels
+  aside. `WriteVerdict` records it (`agentredact:covered`) and `Cleared`
+  requires it to equal the session's current state, so an entry
+  appended on a branch after a scan, which leaves the head in place, is
+  not published on the old verdict.
+- **A report is tied to the state it read.** `SessionReport.State` is
+  the redaction's state when the run left it, and `publish.Publish`
+  holds a session whose state is not the report's.
+- **Publishing requires a scan by default.** With no `Judges` named,
+  `Publish` requires the scan's verdict (`DefaultJudges`); publishing
+  with no verdict at all takes `Options.Unjudged`, set by name.
+- **The scan fails closed.** A run whose log has no "finished scanning"
+  line, a line of output that is not a finding, and a session naming
+  blobs scanned without a blob reader are `ErrScan`, never a pass.
+- **More found under the default profile.** `HomePaths` finds the home
+  through a WSL share (`\\wsl.localhost\<distro>`, `\\wsl$`) and the same
+  user's Windows profile (`C:\Users\<name>`, `/mnt/<drive>/Users/<name>`).
+  `DefaultPatterns` adds `ExtraSecretPatterns`, applied first: private
+  key blocks, PEM or PGP, whole or cut off (to the end of the string),
+  Bearer tokens, Hugging Face, Stripe live, GitLab and Slack webhook
+  tokens, AWS secret keys named as such and URL passwords; a pattern's
+  group named `secret` is replaced alone. `Secrets` finds a value in
+  its JSON spellings, once and twice escaped. `TextIdentity`, part of
+  `ClaudeCodeIdentity`, harvests the login and host names of shell
+  prompts, `ls -l` owners and groups and an env workspace's host
+  (system accounts excepted), and `Home` members find a home anywhere
+  in a string. `IdentityMember.Anywhere` reads every string of an
+  entry.
+- A `Key` holds its bytes behind a pointer to a type that formats as
+  "…", so one in a caller's unexported field prints no byte under `%+v`
+  or slog.
+- **Errors name no original.** `Redact` and `RedactStore` write each
+  native session ID an error would name as its redaction's ID.
+  `SessionReport.Original` and `WaitingOn` are private linking data
+  (JSON `private_original`, `private_waiting_on`), and
+  `StoreReport.Public` is the report with them taken out, for anywhere
+  a report is published.
+- Added: `FindingMemberName` (`member-name`): the name of a member the
+  format does not define, or of an item's own member, which the format
+  keeps, reported when the string redactors would change it, as
+  `ErrKeyNotRedacted` once refused it. Such checks run the rules without
+  numbering or counting.
+- An entry the redaction leaves out takes no placeholder number, so the
+  numbers kept do not tell how many distinct values it held.
+- **Added: the manifest and the dataset export (#6).** `Manifest`
+  (`agentredact/manifest@1`, minimal until agentsession#70 defines the
+  shared object) names each published session by its redacted ID and
+  head hash, never an original, with the profile, the judges and the
+  replacement counts; `NewManifest` builds it from a publish and
+  `Check` holds it to the published store. `ExportDataset` writes a
+  local directory: per session its ATIF document (NoPassthrough) and a
+  Session Trace Simple Format-shaped `trace.jsonl` (sub-agents in
+  `subagents/`), an optional backstop through `export.RewriteStrings`,
+  the manifest and a dataset card. Nothing is uploaded.
+- **Added: the `review` package (#5).** `Reviewer.Review` has the
+  caller's model (an openresponses adapter, with the model name the
+  caller gives; no default) read a redacted session in chunks with the
+  project context the caller passes (`AgentsMD` reads a session's
+  AGENTS.md parts), within a token cap the caller must set (no default),
+  and keeps each flag as an entry and a kind, never text.
+  `Result.Verdict` is a verdict of kind `eval`. A model error, an answer
+  it cannot read, a flag naming an entry not shown, and the cap fail
+  the review closed.
+- **Added: the `agentredact` command (#6)**, a nested module
+  (`cmd/agentredact`): `keygen` writes a key file; `redact` runs the
+  store pass under the built-in profile (`-profile`, default
+  `default@2`: home, default patterns, Claude Code identity members,
+  environment and images, plus `-rules`); `scan` runs TruffleHog and
+  records verdicts; `publish` pushes to a redacted-only store and writes
+  the manifest; `export` writes a local dataset. Every command but
+  `export` needs `-key`.
+- **A verdict records the state its judge read.** The scan's and the
+  review's `Result.State` is the session's state as read, their
+  `Verdict` carries it, and `WriteVerdict` requires it and refuses, with
+  `ErrStateChanged`, a session in another state.
+- **The review's cap counts a byte as a token**, or the response's
+  usage where that is more, and caps each request's output to what is
+  left, so no request passes it. The review is documented as advisory:
+  text in a session can steer the model, and the scan stays the gate.
+- **An export is held to what a publish is.** `ExportDataset(ctx,
+  private, manifest, dir, opts, rules)` checks each session against the
+  store pass's report in its current state, its native entries and the
+  judges' verdicts on that exact state (the scan by default), as
+  `Publish` does through the same gate, and runs the profile's string
+  rules over every document once more. `agentredact export` takes
+  `-key` and the profile, and never exports unchecked.
+- **More found under the default profile (re-check).** `HomePaths`
+  takes any `/mnt/<drive>/Users/<name>` as a home, whatever the name or
+  its case (shared profiles aside). `ExtraSecretPatterns` adds
+  `redis://:pw@` URLs, `password=` keywords, `curl -u` and Basic
+  authorization, AWS secret keys in name/value pairs and session tokens,
+  Google `ya29.` tokens and `GOCSPX-` secrets, base64 PEM blocks, and
+  Slack webhooks written with `\/`. `TextIdentity` adds prompts without a
+  colon, `id`'s names, git author and committer names and emails, and
+  what `whoami`, `hostname` and `uname -n` printed, in a transcript or as
+  a call's output paired by `call_id` (`IdentityMember.Commands`).
+- **Two-step release.** `make release` tags the root and the libraries;
+  `make release-command` then releases `cmd/agentredact` with its
+  replaces dropped and tidied against the proxy, and restores them for
+  the tree. The release guard refuses a command tag holding a replace
+  or whose root version the proxy does not serve; the release workflow
+  runs `go install` at a command tag.
+- **Fixed: identity harvesting no longer takes generic names.** Roles
+  and other format vocabulary, system and service accounts, common host
+  names, forges and their bots (`GitHub`, `runner`, …), no-reply and
+  dotless-domain addresses are never harvested (a real login or host of
+  that kind goes unreplaced and unreported, `/home/<login>` paths aside;
+  give it to `Secrets`), and a string that is wholly a role or a type is
+  never replaced, so a session quoting
+  `user@host:~$` keeps its roles and `Committer: GitHub` its github.com
+  URLs. A call's output is harvested only for the identity commands it
+  runs first (`whoami && ls` takes the login, not the files).
+- **Round 4 forms.** `HomePaths` takes any `<drive>:\Users\<name>`
+  (JSON-escaped too) as a home, and a profile name holding spaces up to
+  the separator after it; `Home` identity members find such homes.
+  Prompts `user@host dir %` with no `~` or `/`, `*PASSWORD=`/`*_PWD=`
+  keys, JSON `"password": "x"` and YAML `password: x`, AWS secret keys
+  in YAML `name:`/`value:` pairs, and every line of a wrapped base64
+  PEM block are found.
+- **Less over-redaction.** A Basic credential is found only after
+  `Authorization`, so "a basic implementation" is kept; a password that
+  is the word itself (`password=password`) and a comparison
+  (`password==""`) are kept.
+- `make release-command` refuses before changing anything unless HEAD
+  contains `origin/main`, the command tag is new locally and on origin,
+  and the public proxy serves the root and every library at the version
+  (`GOPROXY` forced, `GOPRIVATE`/`GONOPROXY`/`GONOSUMDB` cleared); a
+  later failure prints how to undo it. `make guard-test` runs its tests.
+- `make release-command` refuses a branch other than `main`, and
+  honours `RELEASE_PROXY` only under `RELEASE_COMMAND_TEST=1` with a
+  `file://` origin, refusing it otherwise; its undo line prints once.
+- A Windows profile name holding spaces is taken up to its separator,
+  the end of the string or line, or a quote, so a surname no longer
+  survives at the end; `bash -lc whoami` (as Codex runs it) is
+  harvested; a password from a shell expansion, a variable or an
+  environment lookup (`pwd=$(pwd)`, `password=os.environ[...]`) is kept
+  as code.
+- **Closed-set members are kept (agentsession v0.0.37, format 0.20).**
+  The Rewriter no longer hands a redactor the members whose value is
+  drawn from a closed set (an item's `role`, `status` and `type`,
+  `omit.reasoning`, `include` elements, …), so a rule matching such a
+  word, `Secrets("assistant")` say, leaves roles as written. The
+  identity redactor's own guard against replacing a role or a type is
+  kept.
+- **Profiles take a new version.** #20, #12, #11 and #13 change what a
+  profile writes (with the keyed names, every redaction is a new session
+  anyway): name the profiles you redact with under a new version, such
+  as `default@2`, so `redacted_from.profile` names the rules that wrote
+  the session.
+- Tests: a custom entry carrying a call's `call_id` leaves with the call
+  (RFC 0001 0.15), and a compaction keeps its `trust` when its entries
+  are left out.
+
 ## v0.0.1 - 2026-10-25
 
 - Added: the repository scaffold. `docs/plans/agentredact.md` is the
