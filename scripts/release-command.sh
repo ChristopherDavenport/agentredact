@@ -9,8 +9,8 @@
 # For each command it drops the replace directives, points every
 # first-party require at VERSION, tidies against the proxy, builds and
 # tests, commits, guards and tags <dir>/VERSION from that commit; then
-# it restores the replaces in a second commit, so the tree builds the
-# command against itself again, and pushes the branch and the tags in
+# it puts back the go.mod and go.sum from before in a second commit, so
+# the tree builds the command against itself again, and pushes the branch and the tags in
 # one atomic push. Nothing is pushed if any step fails: git reset --hard
 # to the commit before, and git tag -d the tags written.
 set -Eeuo pipefail
@@ -23,7 +23,10 @@ die() { echo "release-command: $*" >&2; exit 1; }
 # alone: it is honoured only with RELEASE_COMMAND_TEST=1 and an origin
 # that is a file:// remote, a throwaway repository, and refused
 # otherwise, so one leaking in from the environment cannot have go.sum
-# written from an unverified source.
+# written from an unverified source. GOENV=off as well: the go command
+# reads an empty GOPRIVATE, GONOPROXY or GONOSUMDB as unset and takes
+# the value from the user's go env file instead, which may name this
+# repository.
 if [ -n "${RELEASE_PROXY:-}" ]; then
   [ "${RELEASE_COMMAND_TEST:-}" = 1 ] || die "RELEASE_PROXY is set outside a test (RELEASE_COMMAND_TEST=1); unset it"
   case "$(git remote get-url origin 2>/dev/null)" in
@@ -31,7 +34,7 @@ if [ -n "${RELEASE_PROXY:-}" ]; then
     *) die "RELEASE_PROXY is honoured only for a file:// origin, a test's" ;;
   esac
 fi
-export GOPROXY="${RELEASE_PROXY:-https://proxy.golang.org}" GOPRIVATE= GONOPROXY= GOFLAGS="${GOFLAGS:+$GOFLAGS }"
+export GOENV=off GOPROXY="${RELEASE_PROXY:-https://proxy.golang.org}" GOPRIVATE= GONOPROXY= GOFLAGS="${GOFLAGS:+$GOFLAGS }"
 [ -n "${RELEASE_PROXY:-}" ] || export GONOSUMDB= GOSUMDB=sum.golang.org
 GOFLAGS="$(printf '%s' "$GOFLAGS" | sed -E 's/-mod=[a-z]+//g')"
 export GOFLAGS
@@ -39,6 +42,9 @@ export GOFLAGS
 VERSION="${1:-}"; shift || true
 [ -n "$VERSION" ] && [ $# -gt 0 ] || die "usage: $0 <version> <command-dir>..."
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Scratch space for the proxy questions and the build, gone on any exit.
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
 [ -z "$(git status --porcelain)" ] || die "working tree is not clean"
 
 # Everything below is checked before anything is changed.
@@ -58,7 +64,7 @@ done
 # tidy below fails half way.
 on_proxy() {
   local err
-  err="$(cd "$(mktemp -d)" && GOWORK=off go list -m -e -f '{{with .Error}}{{.Err}}{{end}}' "$1@$VERSION" 2>&1)"
+  err="$(cd "$TMP" && GOWORK=off go list -m -e -f '{{with .Error}}{{.Err}}{{end}}' "$1@$VERSION" 2>&1)"
   [ -z "$err" ] || die "$1@$VERSION is not on the proxy yet: $err"
 }
 on_proxy "$(sed -n 's/^module[[:space:]]*//p' go.mod | head -1)"
@@ -75,10 +81,9 @@ written=""
 # that failed inside it.
 trap '[ "$BASH_SUBSHELL" = 0 ] && echo "release-command: failed; undo with: git reset --hard $START${written:+; git tag -d$written}" >&2' ERR
 
-# Each dropped replace, as dir|old=new, to restore after the tag; a list
-# rather than an associative array, which the bash macOS ships lacks.
-restore=""
 for c in "$@"; do
+  # The module path of each replace, old=new, from the JSON go mod edit
+  # writes.
   pairs="$(cd "$c" && GOWORK=off go mod edit -json | awk '
     /"Replace"/ { in_r = 1 }
     in_r && /"Old"/ { want = "old" }
@@ -86,14 +91,36 @@ for c in "$@"; do
     in_r && /"Path"/ && want != "" {
       gsub(/[",]/, "", $2); if (want == "old") o = $2; else { print o "=" $2 }; want = ""
     }')"
-  for p in $pairs; do restore="$restore $c|$p"; done
   for p in $pairs; do
     (cd "$c" && GOWORK=off go mod edit -dropreplace="${p%%=*}")
   done
   "$HERE/versions.sh" set "$VERSION" "$c"
-  (cd "$c" && GOWORK=off GOFLAGS=-mod=mod go mod tidy && GOWORK=off GOFLAGS=-mod=readonly go build ./... && GOWORK=off GOFLAGS=-mod=readonly go test ./...)
+  # The build writes into a directory of its own: go build of a single
+  # main package writes its binary into the working directory, which the
+  # release commit must not take in.
+  bin="$TMP/bin"
+  (cd "$c" && GOWORK=off GOFLAGS=-mod=mod go mod tidy && GOWORK=off GOFLAGS=-mod=readonly go build -o "$bin/" ./... && GOWORK=off GOFLAGS=-mod=readonly go test ./...)
+  rm -rf "$bin"
 done
-git add -A
+# Only the commands' go.mod and go.sum change in a release commit. Any
+# other change, untracked files included, such as one a test wrote, is
+# refused by name rather than committed; git reset --hard does not
+# remove an untracked file, so the refusal says to.
+add_mods() {
+  local c stray mods=()
+  for c in "$@"; do
+    git add -- "$c/go.mod"; mods+=(":(exclude)$c/go.mod")
+    if [ -f "$c/go.sum" ]; then git add -- "$c/go.sum"; mods+=(":(exclude)$c/go.sum"); fi
+  done
+  stray="$(git status --porcelain --untracked-files=all -- . "${mods[@]}")"
+  if [ -n "$stray" ]; then
+    echo "release-command: the tree holds changes beyond the commands' go.mod and go.sum:" >&2
+    echo "$stray" >&2
+    echo "release-command: remove the files listed (git reset --hard leaves an untracked one behind), then run it again" >&2
+    return 1
+  fi
+}
+add_mods "$@"
 git commit -q -m "Release $* $VERSION"
 
 tags=""
@@ -105,13 +132,20 @@ for c in "$@"; do
   written="$tags"
 done
 
-for r in $restore; do
-  (cd "${r%%|*}" && GOWORK=off go mod edit -replace="${r#*|}")
-done
+# The go.mod and go.sum from before the release commit: make release
+# pointed the command's first-party requires at VERSION there already,
+# with the replaces and the comment that says why they are there, which
+# go mod edit -replace would rewrite as single lines without it. The
+# tidy is there in case the proxy's tidy above settled a third-party
+# requirement differently; with the replaces back it answers from the
+# tree, which is what was just tagged.
 for c in "$@"; do
+  git checkout -q "$START" -- "$c/go.mod"
+  if git cat-file -e "$START:$c/go.sum" 2>/dev/null; then git checkout -q "$START" -- "$c/go.sum"; fi
+  "$HERE/versions.sh" set "$VERSION" "$c"
   (cd "$c" && GOWORK=off GOFLAGS=-mod=mod go mod tidy)
 done
-git add -A
+add_mods "$@"
 git commit -q -m "Point $* at the tree again after $VERSION"
 
 # shellcheck disable=SC2086

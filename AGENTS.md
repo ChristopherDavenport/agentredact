@@ -133,13 +133,18 @@ file proxy, is honoured only with `RELEASE_COMMAND_TEST=1` and a
 the `git reset --hard` and `git tag -d` that undo it. It then drops
 each command's replace directives,
 points its first-party requires at the version, tidies it against the
-proxy, builds and tests it, commits, guards and tags
-`cmd/agentredact/vX.Y.Z` from that commit; then it restores the
-replaces in a second commit, so the tree builds the command against
-itself again, and pushes the branch and the tags atomically. The guard
-refuses a command tag whose go.mod holds any replace, one whose root
-version is not tagged before it or not on the proxy, and one not
-requiring the root at its version. On the tag, the release workflow
+proxy, builds (to a temporary directory, so no binary lands in the
+tree) and tests it, commits its go.mod and go.sum alone (any other change, an
+untracked file a test wrote included, is refused by name before the
+commit; remove it, since `git reset --hard` leaves an untracked file
+behind), guards and tags
+`cmd/agentredact/vX.Y.Z` from that commit; then it puts back the
+go.mod and go.sum from before in a second commit, so the tree builds
+the command against itself again, and pushes the branch and the tags
+atomically. The guard refuses a command tag whose go.mod holds any replace, one whose root
+version is not tagged before it, one not requiring the root at its
+version, and one requiring a first-party module (the root, `secrets`)
+the proxy does not serve at it. On the tag, the release workflow
 runs `go install github.com/ChristopherDavenport/agentredact/cmd/agentredact@vX.Y.Z`.
 `make release` itself tags the root and the libraries alone.
 `make extracted`, in CI, builds each module against the versions it

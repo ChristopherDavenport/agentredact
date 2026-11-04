@@ -16,8 +16,8 @@ import (
 
 // Every value here is synthetic.
 
-// TestCommand runs keygen, redact, scan (with the scan package's stub
-// trufflehog), publish and export over a synthetic jsonl store.
+// TestCommand runs keygen, redact, scan (with a stub trufflehog in
+// testdata), publish and export over a synthetic jsonl store.
 func TestCommand(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -55,7 +55,9 @@ func TestCommand(t *testing.T) {
 	if err := do("redact", "-store", store, "-key", key, "-home", "/home/example"); err != nil || !strings.Contains(out.String(), "publishable=true") || strings.Contains(out.String(), "orig-command") {
 		t.Errorf("redact: %v\n%s", err, out.String())
 	}
-	stub, _ := filepath.Abs(filepath.Join("..", "..", "scan", "testdata", "trufflehog"))
+	// The command's own stub: the scan package's testdata is outside
+	// this module, and absent when it is built from the proxy.
+	stub, _ := filepath.Abs(filepath.Join("testdata", "trufflehog"))
 	if err := do("scan", "-store", store, "-key", key, "-home", "/home/example", "-trufflehog", stub); err != nil || !strings.Contains(out.String(), "pass=true") {
 		t.Errorf("scan: %v\n%s", err, out.String())
 	}
