@@ -257,8 +257,10 @@ versions may break the API.
 - **Fixed: identity harvesting no longer takes generic names.** Roles
   and other format vocabulary, system and service accounts, common host
   names, forges and their bots (`GitHub`, `runner`, …), no-reply and
-  dotless-domain addresses are never harvested, and a string that is
-  wholly a role or a type is never replaced, so a session quoting
+  dotless-domain addresses are never harvested (a real login or host of
+  that kind goes unreplaced and unreported, `/home/<login>` paths aside;
+  give it to `Secrets`), and a string that is wholly a role or a type is
+  never replaced, so a session quoting
   `user@host:~$` keeps its roles and `Committer: GitHub` its github.com
   URLs. A call's output is harvested only for the identity commands it
   runs first (`whoami && ls` takes the login, not the files).

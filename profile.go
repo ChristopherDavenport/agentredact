@@ -60,6 +60,14 @@ type Profile struct {
 	// spelling of any value the whole original names that the redacted
 	// session still holds as a [FindingIdentity]. The profile names the
 	// members, never the values.
+	//
+	// Generic names are never harvested: roles and other words of the
+	// format, system and service accounts and common host names (root,
+	// admin, dev, runner, test, app, developer, server, build and the
+	// like), forges and their bots, no-reply addresses. A login or host
+	// that really is one of them is therefore neither replaced nor
+	// reported, though a home path naming it, /home/<login>, still is:
+	// give such a login to [Secrets] in the profile's Strings.
 	Identity []IdentityMember
 }
 

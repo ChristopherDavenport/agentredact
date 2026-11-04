@@ -115,7 +115,15 @@ version, or two redactions end up mixed in one session.
   then searched for every value the whole original names, and each
   spelling still held, in a string or a member name, is an
   `identity-value` finding with no value, which blocks `Publishable`.
-  Values shorter than three bytes are not harvested.
+  Values shorter than three bytes are not harvested, nor are generic
+  names: roles and other words of the format, system and service
+  accounts and common host names (`root`, `admin`, `dev`, `runner`,
+  `test`, `app`, `developer`, `server`, `build` and the like), forges
+  and their bots (`GitHub`), and no-reply addresses, since harvested
+  they would be replaced across the session, corrupting roles and URLs.
+  A login or host that really is one of them goes unreplaced and
+  unreported, though `/home/<login>` paths are still found: put such a
+  login in `Secrets(...)`.
 
 ### Third parties' addresses, and what was replaced
 
