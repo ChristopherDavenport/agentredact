@@ -6,6 +6,9 @@
 #
 #   scripts/release-command-test.sh
 set -u
+# release-command.sh commits and tags itself, and a CI runner has no git
+# identity of its own.
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 HERE="$(cd "$(dirname "$0")" && pwd)"
 M=example.com/m
 fails=0
