@@ -232,6 +232,7 @@ command refuse cmd/x/v0.0.2 v0.0.2 no none v0.0.1
 command refuse cmd/x/v0.0.2 v0.0.2 no root v0.0.1
 command refuse cmd/x/v0.0.2 v0.0.1 no all v0.0.1
 command refuse cmd/x/v0.0.2 v0.0.2 no all v0.0.1 cmd/x/v0.0.2
+private=1 command accept cmd/x/v0.0.2 v0.0.2 no all v0.0.1
 
 [ "$fails" = 0 ] && echo "release-guard tests passed"
 exit "$fails"

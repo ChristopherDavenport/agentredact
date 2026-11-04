@@ -173,7 +173,8 @@ case "$TAG" in
     # command answers for the main module from the tree, not the proxy.
     # The proxy alone, as go install asks it: GOENV=off keeps a
     # GOPRIVATE in the user's go env file from sending the question to
-    # origin, and GOPROXY names no direct fallback. A GOPROXY set by the
+    # origin, GOPRIVATE and GONOPROXY are cleared for one exported by the
+    # caller's shell, and GOPROXY names no direct fallback. A GOPROXY set by the
     # caller, such as release-command's tests' file proxy, is kept.
     MODULE="$(sed -n 's/^module[[:space:]]*//p' go.mod | head -1)"
     q="$(mktemp -d)"
@@ -184,7 +185,7 @@ case "$TAG" in
         blk && ($1 == p || index($1, p "/") == 1) { print $1; next }
         /^require[[:space:]]/ && ($2 == p || index($2, p "/") == 1) { print $2 }
       ' "$DIR/go.mod" | sort -u); do
-      err="$(cd "$q" && GOENV=off GOPROXY="${GOPROXY:-https://proxy.golang.org}" GOWORK=off GOFLAGS= go list -m -e -f '{{with .Error}}{{.Err}}{{end}}' "$p@$VERSION" 2>&1)"
+      err="$(cd "$q" && GOENV=off GOPRIVATE= GONOPROXY= GOPROXY="${GOPROXY:-https://proxy.golang.org}" GOWORK=off GOFLAGS= go list -m -e -f '{{with .Error}}{{.Err}}{{end}}' "$p@$VERSION" 2>&1)"
       [ -z "$err" ] || die "$p@$VERSION is not on the proxy yet: $err
             Release the command once the root and its libraries are served."
       ok "$p@$VERSION is on the proxy"
