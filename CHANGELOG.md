@@ -19,25 +19,39 @@ versions may break the API.
   `file_data`, a tool output that is just the URL) left as written, and
   a profile without `Images` kept non-image media with no finding.
   Now:
-  - the redaction decides every blob the session references by a
-    string that is wholly a sidecar URL (`SidecarRefs`): a text blob
-    (a text, JSON, XML or YAML type, or none and UTF-8 bytes) is read
-    (`WithBlobs`, which the store pass gives), given whole to the
-    profile's string redactors and written as a replacement blob of the
-    original's type; an image follows the image rule; other media is
-    kept and reported as `sidecar-media`, under every profile; a blob
-    that may be text and cannot be read is kept and reported as the new
-    `FindingUnredactedBlob` (`unredacted-blob`);
-  - a hash written inside text is replaced with `[REDACTED blob#<n>]`,
-    numbered by hash and counted under `blob`, and is never followed;
+  - the redaction reads every blob the session references by a string
+    that is wholly a sidecar URL (`SidecarRefs`), through `WithBlobs`,
+    which the store pass gives, once per blob, and decides it by its
+    bytes, not its declared type or member: UTF-8 with no NUL is text,
+    given whole to the profile's string redactors and written as a
+    replacement blob; a known image signature is an image (`image`),
+    other known media (PDF, archives, audio, video) is media
+    (`sidecar-media`), both kept whole; anything else, a blob over the
+    profile's new `BlobLimits` (8 MiB of text, 32 MiB of media by
+    default; `FindingBlobTooLarge`), or any blob with no reader given
+    is kept and reported as the new `FindingUnredactedBlob`;
+  - a blob the reader cannot read, one not held yet included, stops the
+    redaction with the new `ErrBlobUnread`, writing nothing, so the next
+    pass decides it afresh;
+  - a hash written inside text, in any case, or a sidecar URL in the
+    header, is replaced with `[REDACTED blob#<n>]`, numbered by hash and
+    counted under `blob`, and is never followed;
   - `Result.Sidecar` and `SessionReport.Sidecar` give each reference's
-    fate (`BlobFate`: made, redacted, kept, unredacted), a fork's prefix
-    included; `SessionReport.CarriesBlob` says which may leave, and
-    `StoreReport.Public` leaves the fates out;
+    fate (`BlobFate`: made, redacted, kept-image, kept-media,
+    unredacted), a fork's prefix included;
+    `SessionReport.CarriesBlob` says which may leave, a kept blob only
+    where its own kind is accepted, so a fork does not carry a blob its
+    prefix kept under a finding no one accepted; `StoreReport.Public`
+    leaves the fates out;
+  - inspect no longer reports sidecar images by member or type, and,
+    under `Images`, an image no `image_url` names is reported as
+    `image`, not `sidecar-media`;
   - `Publish` carries only the blobs the session references and the
     report lets it carry, and holds a session referencing any other,
-    naming the blob in the reason; an `unredacted-blob` never leaves,
-    even when the kind is accepted. `ExportDataset` holds a session to
+    naming the blob in the reason (the original's hash, for whoever
+    holds the private store: do not publish held reasons); an
+    `unredacted-blob` or `blob-too-large` blob never leaves, even when
+    the kind is accepted. `ExportDataset` holds a session to
     the same rule, and the scan stages the blobs a publish carries.
   The review still reads entries alone: a text blob went through the
   same string redactors, and the scan reads it.

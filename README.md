@@ -60,26 +60,41 @@ store them beside it with that type (`PutTypedBlob`).
 A blob is referenced by a string that is wholly a sidecar URL,
 `sidecar:sha256:<hex>` (`SidecarRefs`), wherever an entry holds it: an
 `image_url`, an input_file's `file_data`, a tool output that is just
-the URL. `Redact` decides each one, and `Result.Sidecar` says how, by
-hash:
+the URL. `Redact` reads each one through `WithBlobs`, once, and decides
+it by its bytes, never by its declared type or the member naming it.
+`Result.Sidecar` says how, by hash:
 
 - `made`: an entry redactor made it, such as `Images`' placeholder;
-- `redacted`: a text blob (a `text/*`, JSON, XML, YAML type, or no
-  type and bytes that are UTF-8 with no NUL), read through `WithBlobs`,
+- `redacted`: bytes that are UTF-8 with no NUL, whatever the type says
+  (an SVG, a script under a vendor type, text an `image_url` names),
   given whole to the profile's string redactors and written as a
-  replacement blob of the original's type;
-- `kept`: an image the profile does not replace (an `image` finding),
-  or media that is not text (`sidecar-media`), kept as the original's;
-  it leaves only when the publisher accepts the finding's kind;
-- `unredacted`: a blob that may hold text the redaction could not read
-  (no `WithBlobs`, not held, or a text type that is not UTF-8), kept
-  and reported as `unredacted-blob`; it never leaves, whatever is
-  accepted.
+  replacement blob of the declared type, or `text/plain` where that
+  type names an image, audio, video or binary document;
+- `kept-image`: bytes that start as an image format it knows (PNG,
+  JPEG, GIF, WebP, TIFF, ICO, AVIF, HEIC) the profile does not replace,
+  kept whole and reported as `image`;
+- `kept-media`: bytes that start as other media it knows (PDF, an
+  archive, audio, video), kept whole and reported as `sidecar-media`;
+  a kept blob leaves only where its own kind is accepted, a fork's
+  prefix blob included;
+- `unredacted`: any other bytes (UTF-16 among them), a blob read with
+  no `WithBlobs` given, or one over the profile's cap
+  (`Profile.BlobLimits`: 8 MiB of text, 32 MiB of media by default;
+  `blob-too-large`), kept and reported as `unredacted-blob`; it never
+  leaves, whatever is accepted.
 
-A hash written inside text, such as a tool's note naming where its
-whole output was kept, is not a reference: the redaction writes
-`[REDACTED blob#<n>]` in its place, numbered by hash, reads nothing for
-it, and no publisher follows it. The store pass gives `Redact` the
+A blob the reader cannot read, one the store does not hold yet
+included, stops the redaction with `ErrBlobUnread`: nothing is written,
+and the next pass tries again, so what is written never depends on a
+read that failed. agentsession serves a blob whole, so the cap bounds
+what the redaction holds, not the store's read.
+
+A hash written inside text, in any case, such as a tool's note naming
+where its whole output was kept, is not a reference: the redaction
+writes `[REDACTED blob#<n>]` in its place, numbered by hash, reads
+nothing for it, and no publisher follows it. So is a sidecar URL in the
+header. A member name holding one is kept, as the format keeps names,
+and reported (`member-name`, `header-member-name`). The store pass gives `Redact` the
 store's blobs, and reports the fates per session, a fork's prefix
 included (`SessionReport.Sidecar`, `CarriesBlob`); the public report
 leaves them out.

@@ -205,7 +205,9 @@ func (g *gate) check(ctx context.Context, from agentsession.Store, id string) (*
 }
 
 // unredacted is the reason a session referencing the blob hash, which
-// the redaction did not redact, is held.
+// the redaction did not redact, is held. The hash may be an original
+// blob's: a held reason is for whoever holds the private store, and is
+// not to be published.
 func unredacted(hash string) string {
 	return "it references blob " + hash + ", which the redaction did not redact: it may not leave"
 }
