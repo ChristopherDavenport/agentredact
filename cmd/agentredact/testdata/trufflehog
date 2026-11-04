@@ -1,0 +1,15 @@
+#!/bin/sh
+# A stand-in for trufflehog, for the command's test: a copy of the scan
+# package's, which this module, built from the proxy, cannot reach. It
+# finds the fake AWS access key shape in the files under the directory
+# it is given, as "trufflehog filesystem <dir> --json ..." is called,
+# and writes one finding per line as trufflehog's --json does, the
+# matched value in Raw, which the scan must not keep. Its log goes to stderr, as
+# trufflehog's does, ending with the line saying it finished.
+[ "$1" = filesystem ] || { echo "usage: trufflehog filesystem <dir> ..." >&2; exit 2; }
+echo '{"level":"info-0","msg":"running source"}' >&2
+grep -rnoE 'AKIA[0-9A-Z]{16}' "$2" | while IFS=: read -r file line raw; do
+	printf '{"SourceMetadata":{"Data":{"Filesystem":{"file":"%s","line":%s}}},"DetectorName":"AWS","Raw":"%s","Redacted":"%s"}\n' "$file" "$line" "$raw" "$raw"
+done
+bytes=$(cat $(find "$2" -type f) | wc -c)
+printf '{"level":"info-0","msg":"finished scanning","chunks":1,"bytes":%s}\n' "$bytes" >&2
