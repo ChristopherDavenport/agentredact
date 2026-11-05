@@ -8,8 +8,8 @@ go 1.25.0
 // extracted skips this module, the tree having moved on from the version
 // required; make check builds it against the tree.
 require (
-	github.com/ChristopherDavenport/agentredact v0.0.3
-	github.com/ChristopherDavenport/agentredact/secrets v0.0.3 // indirect
+	github.com/ChristopherDavenport/agentredact v0.0.4
+	github.com/ChristopherDavenport/agentredact/secrets v0.0.4 // indirect
 	github.com/ChristopherDavenport/agentsession v0.0.37
 )
 

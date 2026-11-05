@@ -11,7 +11,7 @@ go 1.25.0
 // meant for go install lives in a module of its own (AGENTS.md).
 require (
 	github.com/ChristopherDavenport/agentpolicy v0.0.19
-	github.com/ChristopherDavenport/agentredact/secrets v0.0.3
+	github.com/ChristopherDavenport/agentredact/secrets v0.0.4
 	github.com/ChristopherDavenport/agentsession v0.0.37
 	github.com/ChristopherDavenport/openresponses v0.0.18
 )
