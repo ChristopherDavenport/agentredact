@@ -18,11 +18,11 @@
 // state) and runs the profile's rules over the documents once more,
 // then writes a local dataset directory; nothing is uploaded.
 //
-// The profile is the built-in one, named by -profile (default@2): the
+// The profile is the built-in one, named by -profile (default@3): the
 // home directory, the default secret patterns and the Claude Code
-// identity members, the environment blanked and images replaced, with a
-// rules file's rules added by -rules. A changed rule set takes a new
-// profile version. Secrets in base64, URL encoding or images are not
+// identity members, the environment blanked, images replaced and text
+// blobs redacted, with a rules file's rules added by -rules. A changed
+// rule set takes a new profile version. Secrets in base64, URL encoding or images are not
 // found by the rules; the scan and the review are backstops, not
 // guarantees.
 package main
@@ -64,7 +64,7 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		storeDir  = fs.String("store", "", "the store of originals: a jsonl store directory")
 		casStore  = fs.Bool("cas", false, "the stores are cas stores")
 		keyFile   = fs.String("key", "", "the redaction key file of the store of originals")
-		profile   = fs.String("profile", "default@2", "the profile's name and version")
+		profile   = fs.String("profile", "default@3", "the profile's name and version")
 		home      = fs.String("home", "", "the home directory to shorten to ~ (default: $HOME)")
 		rules     = fs.String("rules", "", "a rules file in git-filter-repo's --replace-text form")
 		accept    = fs.String("accept", "", "finding kinds a publishable redaction may hold, comma-separated")

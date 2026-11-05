@@ -72,6 +72,10 @@ type redaction struct {
 	// gives a sidecar blob's media type, when the caller can.
 	images    bool
 	mediaType func(hash string) string
+	// readBlob reads one of the original's blobs ([WithBlobs]).
+	readBlob func(hash string) ([]byte, string, error)
+	// decided are the blobs the blob step decided, by original hash.
+	decided map[string]blobDecision
 	// idents are the identity values the original has named up to the
 	// entry being redacted, which the string redactors replace, and
 	// allIdents those the whole original names, which the redaction is
@@ -209,14 +213,25 @@ func (r *redaction) entry(pos int, e, body agentsession.Entry) error {
 		// is dropped with it: a finding names an entry written, and a
 		// blob is one a written entry names.
 		found, blobs := len(r.res.Findings), map[string]Blob{}
-		if made, block, err = r.chain(pos, body, replay, blobs); err != nil {
+		if made, block, err = r.chain(pos, body, blobs); err != nil {
 			return err
 		}
 		if len(made) == 0 {
 			r.res.Findings = r.res.Findings[:found]
 		} else {
-			for h, b := range blobs {
-				r.res.Blobs[h] = b
+			// Every sidecar reference the entries hold is decided, a
+			// replayed entry's too, so the fates cover the whole
+			// redaction and a replay builds the same bytes; a blob is
+			// returned only with the entry that writes it.
+			for i := range made {
+				if made[i].Entry, err = r.sidecars(pos, made[i].Entry, blobs); err != nil {
+					return err
+				}
+			}
+			if !replay {
+				for h, b := range blobs {
+					r.res.Blobs[h] = b
+				}
 			}
 		}
 		if len(made) == 0 {
@@ -548,15 +563,11 @@ func (r *redaction) runStart(e agentsession.Entry) string {
 // rewritten entry at pos, and returns the entries to write in its
 // place: none when a structural redactor left it out, and block set
 // when one folded it into a block placeholder. The blobs the redactors
-// add go in kept. What they find is reported, replaying too, so every
-// call reports the whole redaction; replaying, no blob is kept, since
-// it was written with the entry.
-func (r *redaction) chain(pos int, body agentsession.Entry, replay bool, kept map[string]Blob) ([]Made, bool, error) {
+// add go in blobs. What they find is reported, replaying too, so every
+// call reports the whole redaction.
+func (r *redaction) chain(pos int, body agentsession.Entry, blobs map[string]Blob) ([]Made, bool, error) {
 	cur := []Made{{Entry: body}}
-	findings, blobs := &r.res.Findings, kept
-	if replay {
-		blobs = nil
-	}
+	findings := &r.res.Findings
 	for _, red := range r.p.Entries {
 		c := &EntryContext{Original: r.original, Order: r.order, Position: pos, redactor: redactorName(red), findings: findings, blobs: blobs}
 		if sr, ok := red.(StructureRedactor); ok {
@@ -762,7 +773,7 @@ func (r *redaction) build(pos int, e agentsession.Entry, m Made, parent string) 
 		n.Base().Timestamp = r.stamp(e.Base().Timestamp) // never a clock
 	}
 	findings := &r.res.Findings
-	if err := inspect(n, pos, findings, r.images, r.mediaType, r.allIdents); err != nil {
+	if err := inspect(n, pos, findings, r.images, r.allIdents); err != nil {
 		return nil, err
 	}
 	*findings = append(*findings, memberNames(n, pos, r.probe)...)

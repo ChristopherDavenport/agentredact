@@ -5,7 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/ChristopherDavenport/agentsession"
 )
@@ -110,6 +113,13 @@ type SessionReport struct {
 	// state when it publishes, so a report from before the session
 	// changed decides nothing.
 	State State
+	// Sidecar says what the redaction did with each blob it references,
+	// by hash ([Result.Sidecar]), a fork's prefix included, recounted on
+	// every run: what a publisher carries with it
+	// ([SessionReport.CarriesBlob]). It names the original's blobs the
+	// redaction kept, so [StoreReport.Public] leaves
+	// it out.
+	Sidecar map[string]BlobFate
 	// Counts are the replacements the string redactors made in the whole
 	// redaction, by kind ([Result.Counts]), recounted on every run: a
 	// count, never a value. A manifest or a dataset card says from them
@@ -130,13 +140,19 @@ type SessionReport struct {
 
 // Public is a copy of r for anywhere it leaves the holder of the
 // originals: every session named by its redaction alone, Original
-// emptied and WaitingOn the redaction of the session waited on. A
-// report written to a published place is this, never r.
+// emptied, Sidecar left out, WaitingOn the redaction of the session
+// waited on, and Err its message with every hash elided, errors.Is
+// finding what it found and errors.As nothing below it. A report written
+// to a published place is this, never r.
 func (r *StoreReport) Public(key Key) *StoreReport {
 	out := *r
 	out.Sessions = make([]SessionReport, len(r.Sessions))
 	for i, s := range r.Sessions {
 		s.Original = ""
+		s.Sidecar = nil
+		if s.Err != nil {
+			s.Err = publicError{msg: publicMessage(s.Redaction, s.Err), err: s.Err}
+		}
 		if s.WaitingOn != "" {
 			s.WaitingOn = RedactedID(key, s.WaitingOn, r.Profile)
 		}
@@ -144,6 +160,40 @@ func (r *StoreReport) Public(key Key) *StoreReport {
 	}
 	return &out
 }
+
+// publicMessage is err's message as a public report gives it. A blob
+// that could not be read is named by its entry and pointer alone, since
+// a file store's error names the blob's digest and its path, which can
+// name the user. Any other message has every hash and bare digest
+// elided, and the home directory written ~.
+func publicMessage(redaction string, err error) string {
+	var bre *blobReadError
+	if errors.As(err, &bre) {
+		return "agentredact: redacting " + redaction + ", " + bre.public()
+	}
+	msg := bareDigest.ReplaceAllString(hashRef.ReplaceAllString(err.Error(), "sha256:…"), "…")
+	if home, herr := os.UserHomeDir(); herr == nil && len(home) > 1 {
+		msg = strings.ReplaceAll(msg, home, "~")
+	}
+	return msg
+}
+
+// bareDigest matches a SHA-256 digest written without its prefix.
+var bareDigest = regexp.MustCompile(`\b[0-9a-f]{64}\b`)
+
+// publicError is a session's error as a public report holds it: its
+// message with every hash elided, and errors.Is finding the sentinels
+// below it, but no way down to the errors it wraps, whose fields or
+// messages may name an original's hashes.
+type publicError struct {
+	msg string
+	err error
+}
+
+func (e publicError) Error() string { return e.msg }
+
+// Is reports whether target is in the chain of the error it stands for.
+func (e publicError) Is(target error) bool { return errors.Is(e.err, target) }
 
 // Publishable reports whether the redaction is written and up to date
 // with the original as this run read it, holds no native entries, and
@@ -161,6 +211,28 @@ func (r SessionReport) Publishable() bool {
 		}
 	}
 	return true
+}
+
+// CarriesBlob reports whether a publisher may carry the blob hash, one
+// the redaction references, with it (agentredact#23): one the redaction
+// made or redacted ([BlobMade], [BlobRedacted]), or one it kept by rule
+// while the redaction is publishable and the rule's finding kind is
+// accepted: [FindingImage] for [BlobKeptImage], [FindingSidecarMedia]
+// for [BlobKeptMedia]. The kind is checked here, not only through the
+// report's own findings, since a fork's prefix is redacted in its
+// origin's redaction, whose findings the fork's report does not hold.
+// A blob it could not redact ([BlobUnredacted]) and one the report does
+// not name never leave.
+func (r SessionReport) CarriesBlob(hash string) bool {
+	switch r.Sidecar[hash] {
+	case BlobMade, BlobRedacted:
+		return true
+	case BlobKeptImage:
+		return r.Publishable() && r.accept[FindingImage]
+	case BlobKeptMedia:
+		return r.Publishable() && r.accept[FindingSidecarMedia]
+	}
+	return false
 }
 
 // RedactStore keeps a redaction under the profile p of each original
@@ -262,6 +334,7 @@ func RedactStore(ctx context.Context, st agentsession.Store, p Profile, key Key,
 		snaps:   map[string]*agentsession.Session{},
 		reds:    map[string]*agentsession.Session{},
 		chains:  map[string]*Origin{},
+		fates:   map[string]map[string]BlobFate{},
 		forks:   map[string]int{},
 		users:   map[string]int{},
 		along:   Alongside{Entries: map[string]map[string]string{}},
@@ -314,7 +387,10 @@ type pass struct {
 	// redacted as a fork of; forks counts those forks.
 	snaps, reds map[string]*agentsession.Session
 	chains      map[string]*Origin
-	forks       map[string]int
+	// fates are the blob fates of those redactions, a fork's prefix
+	// included ([SessionReport.Sidecar]).
+	fates map[string]map[string]BlobFate
+	forks map[string]int
 	// users counts, for each session, the sessions still to be redacted
 	// whose parents elements name it, while along holds its
 	// counterparts.
@@ -534,6 +610,7 @@ func (ps *pass) dropOrigin(id string) {
 	delete(ps.snaps, id)
 	delete(ps.reds, id)
 	delete(ps.chains, id)
+	delete(ps.fates, id)
 }
 
 // one redacts the original id and writes the result.
@@ -597,14 +674,14 @@ func (ps *pass) one(ctx context.Context, id string) SessionReport {
 			}
 		}
 	}
-	opts := []Option{WithAlongside(ps.along), WithResolve(ps.resolve(ctx)), WithMediaTypes(ps.mediaTypes(ctx, id))}
+	opts := []Option{WithAlongside(ps.along), WithResolve(ps.resolve(ctx)), WithMediaTypes(ps.mediaTypes(ctx, id)), WithBlobs(ps.blobs(ctx, id))}
 	if origin != nil {
 		opts = append(opts, WithOrigin(origin))
 	}
 	res, err := Redact(ps.p, ps.key, orig, existing, opts...)
 	if err != nil && existing == nil && origin != nil && errors.Is(err, ErrBaseLeftOut) {
 		origin = nil
-		res, err = Redact(ps.p, ps.key, orig, nil, opts[:3]...)
+		res, err = Redact(ps.p, ps.key, orig, nil, opts[:4]...)
 	}
 	if err != nil {
 		rp.Err = err
@@ -614,6 +691,24 @@ func (ps *pass) one(ctx context.Context, id string) SessionReport {
 	rp.Fork = red.Header().Base != ""
 	rp.Findings = res.Findings
 	rp.Counts = res.Counts
+	rp.Sidecar = res.Sidecar
+	if origin != nil {
+		// The prefix is the origin's redaction's, decided there: the
+		// fates of the blobs the fork references come from it.
+		refs, err := SidecarRefs(red)
+		if err != nil {
+			rp.Err = err
+			return rp
+		}
+		for _, hash := range refs {
+			if f, ok := ps.fates[h.ParentSession][hash]; ok {
+				if rp.Sidecar == nil {
+					rp.Sidecar = map[string]BlobFate{}
+				}
+				mergeFate(rp.Sidecar, hash, f)
+			}
+		}
+	}
 	for _, e := range red.Entries() {
 		if _, marked := agentsession.RedactedOf(e); !marked && !red.Prefix(e.Base().ID) {
 			rp.Native++
@@ -630,6 +725,7 @@ func (ps *pass) one(ctx context.Context, id string) SessionReport {
 	}
 	if ps.forks[id] > 0 {
 		ps.snaps[id], ps.reds[id], ps.chains[id] = orig, red, origin
+		ps.fates[id] = rp.Sidecar
 	}
 	return rp
 }
@@ -658,6 +754,19 @@ func (ps *pass) mediaTypes(ctx context.Context, id string) func(hash string) str
 			}
 		}
 		return ""
+	}
+}
+
+// blobs reads a blob of the original id as the store holds it for id,
+// for the redaction's blob step ([WithBlobs]); nil when the store
+// serves no blobs.
+func (ps *pass) blobs(ctx context.Context, id string) func(hash string) ([]byte, string, error) {
+	br, ok := ps.st.(agentsession.BlobReader)
+	if !ok {
+		return nil
+	}
+	return func(hash string) ([]byte, string, error) {
+		return agentsession.ReadSessionBlob(ctx, br, id, hash)
 	}
 }
 
@@ -758,7 +867,7 @@ func (ps *pass) blobTypes(ctx context.Context, rp *SessionReport, res *Result, o
 	if !ok {
 		return
 	}
-	named, err := agentsession.SessionBlobs(res.Session)
+	named, err := SidecarRefs(res.Session)
 	if err != nil || len(named) == 0 {
 		return
 	}

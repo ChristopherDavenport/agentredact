@@ -694,12 +694,16 @@ func TestRedactStoreBaseLeftOut(t *testing.T) {
 func TestRedactStoreFindingsEveryRun(t *testing.T) {
 	c := &clock{}
 	p := storeProfile()
+	st := agentsession.NewMemoryStore()
+	pdf, err := st.PutTypedBlob(context.Background(), []byte("%PDF-1.7\n%\xe2\xe3\xcf\xd3 FAKE-BLOB-0004"), "application/pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := agentsession.New(agentsession.Header{ID: "orig-pdf", CreatedAt: t0, Media: agentsession.MediaSidecar})
 	appendAt(t, s, c, agentsession.NewItemEntry(openresponses.UserMessage(
 		&openresponses.InputText{Text: "read this"},
-		&openresponses.InputFile{Filename: "fake.pdf", FileData: "sidecar:" + agentsession.HashText("FAKE-PDF-BLOB-0004")})))
+		&openresponses.InputFile{Filename: "fake.pdf", FileData: "sidecar:" + pdf})))
 	turn(t, s, c, "resp-1", "read")
-	st := agentsession.NewMemoryStore()
 	load(t, st, s)
 	for run := range 2 {
 		r := bySession(redactStore(t, st, p, StoreOptions{}))[s.ID()]

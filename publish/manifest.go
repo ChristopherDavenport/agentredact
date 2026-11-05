@@ -105,8 +105,11 @@ func (m Manifest) Check(ctx context.Context, st agentsession.Store) error {
 // host such as Hugging Face renders, read from the private store from
 // after each passes what [Publish] holds it to under opts: the report
 // holding it publishable in the state it is in now, which must be the
-// head m lists, no native entry, and a verdict of every judge covering
-// that exact state (the scan by default). A session that fails any is
+// head m lists, no native entry, no blob it references that the report
+// does not let it carry ([agentredact.SessionReport.CarriesBlob]), and
+// a verdict of every judge covering that exact state (the scan by
+// default). No blob is exported; a hash the session's text held was
+// replaced by the redaction and is never followed. A session that fails any is
 // an error, and nothing is exported for it:
 // for each session <id>/atif.json, its main trajectory's ATIF document
 // with no passthrough (export.NoPassthrough), and <id>/trace.jsonl, the
@@ -136,7 +139,7 @@ func ExportDataset(ctx context.Context, from agentsession.Store, m Manifest, dir
 	}
 	sessions := map[string]*agentsession.Session{}
 	for _, e := range m.Entries {
-		red, reason, err := g.check(ctx, from, e.Session)
+		red, _, reason, err := g.check(ctx, from, e.Session)
 		if err != nil {
 			return err
 		}

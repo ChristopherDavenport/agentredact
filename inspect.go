@@ -14,14 +14,14 @@ import (
 // inspect checks the entry e, as the entry redactors left it, for what
 // the redaction must report: inline media that is not an image, and an
 // image data URL inside a longer string, are kept and reported; and,
-// when the profile replaces no image (images false), every image kept
-// whole, inline or sidecar. A sidecar is an image when an image_url
-// names it, or when mediaType gives its blob an image/ type. pos is its
-// position in the original.
+// when the profile replaces no image (images false), every inline image
+// kept whole. A sidecar reference is the blob step's to report, by the
+// blob's bytes ([redaction.sidecars]). pos is its position in the
+// original.
 //
 // A string or a member name holding a spelling of a value ids holds is
 // reported as an identity value, by its pointer, never the value.
-func inspect(e agentsession.Entry, pos int, findings *[]Finding, images bool, mediaType func(hash string) string, ids *identities) error {
+func inspect(e agentsession.Entry, pos int, findings *[]Finding, images bool, ids *identities) error {
 	data, err := agentsession.MarshalEntry(e)
 	if err != nil {
 		return err
@@ -42,7 +42,7 @@ func inspect(e agentsession.Entry, pos int, findings *[]Finding, images bool, me
 			if ids.found(x) {
 				report(FindingIdentity, at, "a value an identity member of the original names, in one of its spellings")
 			}
-			if !images && keptImage(x, member, mediaType) {
+			if !images && isImageDataURL(x) {
 				report(FindingImage, at, "an image kept: the profile replaces no image, and no string redactor reads the text in its pixels")
 			}
 			switch {
@@ -72,26 +72,6 @@ func inspect(e agentsession.Entry, pos int, findings *[]Finding, images bool, me
 		return nil
 	}
 	return walk(tree, "", "")
-}
-
-// keptImage reports whether s, the value of member, is an image held
-// whole: a data URL of an image, or a sidecar reference an image_url
-// holds or whose blob has an image type.
-func keptImage(s, member string, mediaType func(hash string) string) bool {
-	if isImageDataURL(s) {
-		return true
-	}
-	hash, ok := strings.CutPrefix(s, "sidecar:")
-	if !ok || !strings.HasPrefix(hash, "sha256:") {
-		return false
-	}
-	if member == "image_url" {
-		return true
-	}
-	if mediaType == nil {
-		return false
-	}
-	return strings.HasPrefix(strings.ToLower(mediaType(hash)), "image/")
 }
 
 // memberNames reports each name the format keeps as written that f

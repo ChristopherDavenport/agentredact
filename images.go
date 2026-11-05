@@ -36,9 +36,8 @@ const DefaultImagePlaceholder = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAA
 // replacement as the format has a replaced blob named. The caller
 // stores the blob beside the redacted session; the original's blob is
 // not carried. A sidecar URL anywhere else, such as an input_file's
-// file_data or file_url, is media that is not an image: it is kept as
-// it is and reported as a [Finding], so the session is not mistaken for
-// one with its media redacted.
+// file_data or file_url, Images leaves to [Redact]'s blob step, which
+// redacts a text blob and keeps and reports any other ([Result.Sidecar]).
 //
 // The item around an image is kept as it was, detail and file_id
 // included, so it stays valid. The placeholder is the same for every
@@ -108,8 +107,6 @@ func (r images) RedactEntry(c *EntryContext, e agentsession.Entry) (agentsession
 					changed = true
 				}
 				return url
-			case strings.HasPrefix(x, "sidecar:"):
-				c.report(FindingSidecarMedia, at, "sidecar media that is not an image left as it is: no redactor replaces it, and text in it is not found")
 			}
 			return x
 		case []any:

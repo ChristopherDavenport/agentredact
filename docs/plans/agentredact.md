@@ -275,6 +275,16 @@ the same store, and append to it as its original grows.
   agentsession v0.0.36 takes typed blobs; a store that does not is
   given no redaction that made blobs. Where a store holds types per
   session, the redaction is given the types of the blobs it names.
+  The pass covers every blob the session references by a sidecar URL
+  (#23), decided by its bytes: text is redacted by the profile's
+  string redactors and written as a typed replacement; a PNG, JPEG or
+  GIF follows the image rule, re-encoded from its pixels; a PDF, audio
+  or video is kept and reported; an archive, any other bytes, or a blob
+  over the profile's cap is kept, reported and never published; a blob
+  that cannot be read stops the redaction. Each
+  reference's fate is in the report, and a publisher carries only what
+  it allows. A hash written in text is not a reference: it is replaced
+  by a placeholder and never followed.
 - **Failures.** A session that fails is reported, and the sessions that
   depend on it, through any chain, are not redacted; every other
   session is. An append that fails part way leaves a redaction that the
