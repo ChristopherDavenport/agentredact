@@ -20,3 +20,7 @@ require (
 	github.com/ChristopherDavenport/agenttool v0.0.29 // indirect
 	github.com/ChristopherDavenport/agentturn v0.0.35 // indirect
 )
+
+replace github.com/ChristopherDavenport/agentredact => ../..
+
+replace github.com/ChristopherDavenport/agentredact/secrets => ../../secrets
