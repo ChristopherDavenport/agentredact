@@ -118,23 +118,11 @@ func WithBlobs(read func(hash string) ([]byte, string, error)) Option {
 // reference. A hash written inside a longer string, such as a tool's
 // note naming where its whole output was kept, is text, not a
 // reference: SidecarRefs does not return it, and a publisher never
-// follows it. ([agentsession.SessionBlobs] returns both.)
+// follows it. It is [agentsession.SessionBlobs], which reads a
+// reference by that rule since agentsession v0.0.40; the order within
+// an entry is the entry's encoding's, which no caller depends on.
 func SidecarRefs(s *agentsession.Session) ([]string, error) {
-	var out []string
-	seen := map[string]bool{}
-	for _, e := range s.Entries() {
-		_, err := walkSidecars(e, func(x string, _, _ string) (string, error) {
-			if h := strings.TrimPrefix(x, "sidecar:"); !seen[h] {
-				seen[h] = true
-				out = append(out, h)
-			}
-			return x, nil
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
+	return agentsession.SessionBlobs(s)
 }
 
 // isSidecarURL reports whether s is wholly a sidecar reference.

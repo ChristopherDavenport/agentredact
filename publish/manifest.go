@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -108,21 +109,37 @@ func (m Manifest) Check(ctx context.Context, st agentsession.Store) error {
 // head m lists, no native entry, no blob it references that the report
 // does not let it carry ([agentredact.SessionReport.CarriesBlob]), and
 // a verdict of every judge covering that exact state (the scan by
-// default). No blob is exported; a hash the session's text held was
-// replaced by the redaction and is never followed. A session that fails any is
-// an error, and nothing is exported for it:
-// for each session <id>/atif.json, its main trajectory's ATIF document
-// with no passthrough (export.NoPassthrough), and <id>/trace.jsonl, the
-// same path in the shape of Hugging Face's Session Trace Simple Format
-// (a "session" line naming the harness and the ID, then a "message"
-// line per step and per tool result: role, content, reasoningContent,
-// toolCalls, toolCallId, model, timestamp), each sub-agent's in
-// <id>/subagents/<n>.jsonl; then manifest.json and a README.md card
-// saying what the data is and how it was cleaned. rules, the profile's
-// string redactors ([agentredact.Profile.StringFunc]), are applied to
-// every string of each document again (export.RewriteStrings), as a
-// last pass. dir must not exist. Nothing is uploaded: that is the
-// user's step.
+// default). A hash the session's text held was replaced by the
+// redaction and is never followed. A session that fails any is an
+// error, and nothing is exported.
+//
+// For each session it writes <id>/atif.json, its main trajectory's ATIF
+// document with no passthrough (export.NoPassthrough), written by
+// export.WriteDocument, and the media its parts show as files beside it,
+// never as base64 in it, at <id>/images/<sha256>.<ext> (<id>/audio/ for
+// audio), the path the part names: a sidecar session's blobs the review
+// let through (made or redacted blobs, and an original only where its
+// finding was accepted), read from from, and an inline session's base64
+// data URLs. With no passthrough the document holds no raw items, so no
+// sidecar reference and no sidecar/ directory. Then <id>/trace.jsonl,
+// the same path in the shape of Hugging Face's Session Trace Simple
+// Format (a "session" line naming the harness and the ID, then a
+// "message" line per step and per tool result: role, content,
+// reasoningContent, toolCalls, toolCallId, model, timestamp), each
+// sub-agent's in <id>/subagents/<n>.jsonl; then manifest.json and a
+// README.md card saying what the data is and how it was cleaned. rules,
+// the profile's string redactors ([agentredact.Profile.StringFunc]),
+// are applied to every string of each document again
+// (export.RewriteStrings), as a last pass, joined by [agentredact.Chain]
+// whatever rules is, so a base64 data URL's payload is kept as it is and
+// its media type and parameters, and a data URL that is not base64, are
+// redacted like any other text.
+//
+// dir must not exist. The dataset is written to a directory beside it
+// and renamed to dir once whole, so an export that fails part way, such
+// as one from a store that is no [agentsession.BlobReader] of a session
+// with media, or one whose blob cannot be read, leaves nothing. Nothing
+// is uploaded: that is the user's step.
 func ExportDataset(ctx context.Context, from agentsession.Store, m Manifest, dir string, opts Options, rules agentredact.StringRedactor) error {
 	if rules == nil {
 		return errors.New("publish: the profile's string rules are needed as the export's last pass")
@@ -148,10 +165,42 @@ func ExportDataset(ctx context.Context, from agentsession.Store, m Manifest, dir
 		}
 		sessions[e.Session] = red
 	}
-	backstop := func(s string) string { return rules(s, nil) }
-	if err := os.Mkdir(dir, 0o755); err != nil {
+	var blobs export.Blobs
+	if br, ok := from.(agentsession.BlobReader); ok {
+		blobs = export.StoreBlobs(ctx, br)
+	}
+	// The dataset is written to a directory beside dir and renamed to it
+	// once whole, so a session that fails part way (a blob the store
+	// cannot read, a document that does not validate) leaves nothing.
+	if _, err := os.Lstat(dir); err == nil {
+		return fmt.Errorf("publish: the dataset directory: %s: %w", dir, fs.ErrExist)
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("publish: the dataset directory: %w", err)
 	}
+	tmp, err := os.MkdirTemp(filepath.Dir(dir), "."+filepath.Base(dir)+".partial-")
+	if err != nil {
+		return fmt.Errorf("publish: the dataset directory: %w", err)
+	}
+	err = writeDataset(tmp, m, sessions, blobs, rules)
+	if err == nil {
+		err = os.Chmod(tmp, 0o755)
+	}
+	if err == nil {
+		err = os.Rename(tmp, dir)
+	}
+	if err != nil {
+		return errors.Join(err, os.RemoveAll(tmp))
+	}
+	return nil
+}
+
+// writeDataset writes the dataset of [ExportDataset] into dir, which
+// exists and is empty.
+func writeDataset(dir string, m Manifest, sessions map[string]*agentsession.Session, blobs export.Blobs, rules agentredact.StringRedactor) error {
+	// The last pass is a Chain, whatever rules is, so a base64 data
+	// URL's payload never goes through it: its media type and
+	// parameters do, and so does a data URL that is not base64.
+	backstop := func(s string) string { return agentredact.Chain(rules)(s, nil) }
 	for _, e := range m.Entries {
 		s := sessions[e.Session]
 		var doc *atif.Trajectory
@@ -162,7 +211,7 @@ func ExportDataset(ctx context.Context, from agentsession.Store, m Manifest, dir
 			if !tr.Main {
 				continue
 			}
-			if doc, err = export.ToATIF(tr, export.Options{Redactors: []export.Redactor{export.NoPassthrough()}}); err != nil {
+			if doc, err = export.ToATIF(tr, export.Options{Redactors: []export.Redactor{export.NoPassthrough()}, Blobs: blobs}); err != nil {
 				return fmt.Errorf("publish: %s: %w", e.Session, err)
 			}
 		}
@@ -176,8 +225,8 @@ func ExportDataset(ctx context.Context, from agentsession.Store, m Manifest, dir
 		if err := os.Mkdir(sdir, 0o755); err != nil {
 			return err
 		}
-		if err := writeJSON(filepath.Join(sdir, "atif.json"), doc); err != nil {
-			return err
+		if err := export.WriteDocument(filepath.Join(sdir, "atif.json"), doc, export.WithBlobs(blobs)); err != nil {
+			return fmt.Errorf("publish: %s: %w", e.Session, err)
 		}
 		if err := writeTrace(filepath.Join(sdir, "trace.jsonl"), doc); err != nil {
 			return err
@@ -277,7 +326,7 @@ func card(m Manifest) string {
 	if len(m.Judges) > 0 {
 		fmt.Fprintf(&b, " and cleared by: %s", strings.Join(m.Judges, ", "))
 	}
-	b.WriteString(".\n\nEach session's directory holds its ATIF document (`atif.json`) and the same path in the Session Trace Simple Format (`trace.jsonl`). `manifest.json` names each session by its redacted ID and head hash.\n\n")
+	b.WriteString(".\n\nEach session's directory holds its ATIF document (`atif.json`), the images and audio its parts show as files beside it (`images/`, `audio/`), and the same path in the Session Trace Simple Format (`trace.jsonl`). `manifest.json` names each session by its redacted ID and head hash.\n\n")
 	if len(totals) > 0 {
 		b.WriteString("Replacements made, by kind:\n\n")
 		for _, k := range slices.Sorted(func(yield func(string) bool) {

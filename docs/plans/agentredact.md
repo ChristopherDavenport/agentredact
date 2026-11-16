@@ -328,7 +328,14 @@ bytes; every redacted session verifies, its request hashes included.
    a store set to hold only redacted entries, so an original sent by
    mistake is refused (a redacted-only remote refuses a push before any
    upload, agentsession#244), or export them, with their blobs and
-   ATIF, into a dataset repository, as pi-share-hf does.
+   ATIF, into a dataset repository, as pi-share-hf does: each blob a
+   part references that the review let through (made or redacted, or
+   an original whose finding was accepted) is a file beside the
+   session's ATIF document (`<id>/images/<sha256>.<ext>`,
+   `<id>/audio/`), as agentsession's `export.WriteDocument` lays media
+   out, and never base64 in it. The export's last string pass is a
+   `Chain`, so no base64 payload goes through it, while a data URL's
+   media type and parameters, and a data URL that is not base64, do.
 
 Scan and review verdicts go in a separate session, a fork of the one
 it judges at the entry it judged up to, with the verdict an `outcome`

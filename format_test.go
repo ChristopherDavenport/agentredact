@@ -755,7 +755,7 @@ func TestCodexWhoami(t *testing.T) {
 }
 
 // TestClosedSetMembersKept: a rule matching a role's value leaves every
-// role as written, as agentsession v0.0.37 (format 0.20) keeps closed-
+// role as written, as agentsession v0.0.40 (format 0.21) keeps closed-
 // set members out of a rewrite; the text holding the word is still
 // rewritten.
 func TestClosedSetMembersKept(t *testing.T) {

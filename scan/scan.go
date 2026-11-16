@@ -105,7 +105,8 @@ var ErrScan = errors.New("scan: trufflehog")
 // blobs it references ([agentredact.SidecarRefs]), which are the blobs
 // a publish carries with it, read through blobs (a store's
 // [agentsession.BlobReader], which may be nil only for a session naming
-// none), and, with ATIF set, its ATIF documents. It fails closed: a
+// none), and, with ATIF set, its ATIF documents, which carry a sidecar
+// session's part media as data URLs read through blobs. It fails closed: a
 // run that does not say it finished scanning having read some bytes, a
 // line of output that is
 // not a finding, and a session whose blobs cannot be read are errors,
@@ -278,6 +279,12 @@ func (s Scanner) stage(ctx context.Context, dir string, red *agentsession.Sessio
 		}
 	}
 	if s.ATIF {
+		// A sidecar session's parts are exported with their blobs as
+		// data URLs, read through the same reader as the blobs above.
+		var atifBlobs export.Blobs
+		if blobs != nil {
+			atifBlobs = export.StoreBlobs(ctx, blobs)
+		}
 		adir := filepath.Join(dir, "atif")
 		if err := os.Mkdir(adir, 0o700); err != nil {
 			return nil, err
@@ -287,7 +294,7 @@ func (s Scanner) stage(ctx context.Context, dir string, red *agentsession.Sessio
 			if err != nil {
 				return nil, fmt.Errorf("scan: exporting ATIF: %w", err)
 			}
-			doc, err := export.ToATIF(tr, export.Options{Redactors: []export.Redactor{export.NoPassthrough()}})
+			doc, err := export.ToATIF(tr, export.Options{Redactors: []export.Redactor{export.NoPassthrough()}, Blobs: atifBlobs})
 			if err != nil {
 				return nil, fmt.Errorf("scan: exporting ATIF: %w", err)
 			}
