@@ -17,6 +17,10 @@ versions may break the API.
   rewrites as the RFC asks. agentsession's `SidecarBlobs` and
   `SessionBlobs` now read a sidecar reference as a whole string only
   (v0.0.40, #300), the rule `SidecarRefs` already kept.
+- `SidecarRefs` is now agentsession's `SessionBlobs`, which reads a
+  reference by the same rule since v0.0.40; within an entry the hashes
+  come in the entry's encoding's order rather than sorted member
+  order, which no caller depends on.
 
 ### Fixed
 
