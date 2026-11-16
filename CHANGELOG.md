@@ -5,6 +5,19 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+### Changed
+
+- Dependencies: agentsession v0.0.37 to v0.0.40 and openresponses
+  v0.0.18 to v0.0.20, in the root and `cmd/agentredact`. A redacted
+  session is now written in format 0.21 (agentsession v0.0.38), whose
+  new members (a queued input's trust and layers, a requested fold's
+  instructions, the `human` trigger kind) the Rewriter carries or
+  rewrites as the RFC asks. agentsession's `SidecarBlobs` and
+  `SessionBlobs` now read a sidecar reference as a whole string only
+  (v0.0.40, #300), the rule `SidecarRefs` already kept.
+
 ## v0.0.4 - 2026-11-04
 
 ### Fixed
