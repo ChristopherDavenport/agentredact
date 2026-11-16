@@ -498,12 +498,15 @@ agentsession#70 defines the shared manifest object); `Check` holds it
 to the published store. `ExportDataset` writes the sessions a manifest
 lists, read from the private store and each held to what `Publish`
 holds it to, with the profile's string rules run over every document
-once more, to a local directory a dataset host renders: per session its ATIF
-document (`<id>/atif.json`), each redacted blob its parts reference as
-a file beside it (`<id>/images/<sha256>.<ext>`, `<id>/audio/` for
-audio), which the document names by path and never holds as base64, and
-a Session Trace Simple Format-shaped `<id>/trace.jsonl`; then the
-manifest and a card. Uploading the directory is your step.
+once more (base64 payloads aside), to a local directory a dataset host
+renders: per session its ATIF document (`<id>/atif.json`), the media
+its parts show as files beside it (`<id>/images/<sha256>.<ext>`,
+`<id>/audio/` for audio), which the document names by path and never
+holds as base64 (a sidecar session's blobs the review let through: made
+or redacted, or an original whose finding was accepted), and a Session
+Trace Simple Format-shaped `<id>/trace.jsonl`; then the manifest and a
+card. An export that fails part way writes nothing. Uploading the
+directory is your step.
 
 ## Status
 

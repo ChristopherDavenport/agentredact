@@ -21,6 +21,15 @@ versions may break the API.
   reference by the same rule since v0.0.40; within an entry the hashes
   come in the entry's encoding's order rather than sorted member
   order, which no caller depends on.
+- **A dataset export writes media an inline session holds as a
+  part's base64 data URL as a file beside the document**
+  (`<id>/images/<sha256>.<ext>`), which the part names by path, as it
+  does a sidecar session's blobs; `atif.json` no longer holds it.
+- **A dataset export that fails part way writes nothing.** It is
+  written to a directory beside `dir` and renamed to it once whole, so
+  a session failing after earlier ones were written (a blob that
+  cannot be read, a store that reads no blobs) leaves no partial
+  dataset.
 
 ### Fixed
 
@@ -28,14 +37,16 @@ versions may break the API.
   image by a `sidecar:` URL nothing in the dataset resolves**, and
   with agentsession v0.0.38's ATIF export, which resolves part media
   through a blob reader, it was refused (`export.ErrBlobUnread`). The
-  export now reads the redacted blobs the report lets the session
-  carry from the store and writes each as a file beside the document,
+  export now reads from the store the blobs the review let the session
+  carry (made or redacted blobs, and an original only where its
+  finding was accepted) and writes each as a file beside the document,
   `<id>/images/<sha256>.<ext>` (`<id>/audio/` for audio), which the
-  part names by path; the document holds no base64, and the last
-  string pass skips a part's data URL, so no blob goes through it. A
-  store that is no `BlobReader` exports no such session. Media an
-  inline session holds as a part's data URL is written out the same
-  way. A session with no media exports as before.
+  part names by path; the document holds no base64. The last string
+  pass is joined by `Chain` whatever rules it is given, so a base64
+  payload never goes through it, while a data URL's media type and
+  parameters, and a data URL that is not base64, still do. A store
+  that is no `BlobReader` cannot export such a session, and the whole
+  export fails. A session with no media exports as before.
 - **The scan's ATIF documents of a sidecar session named its media
   by `sidecar:` URL**, and with agentsession v0.0.38 were refused.
   `Scanner.Scan` with `ATIF` set now gives the export the blob reader

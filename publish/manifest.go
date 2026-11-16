@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -109,28 +110,36 @@ func (m Manifest) Check(ctx context.Context, st agentsession.Store) error {
 // does not let it carry ([agentredact.SessionReport.CarriesBlob]), and
 // a verdict of every judge covering that exact state (the scan by
 // default). A hash the session's text held was replaced by the
-// redaction and is never followed. A session that fails any is
-// an error, and nothing is exported for it:
-// for each session <id>/atif.json, its main trajectory's ATIF document
-// with no passthrough (export.NoPassthrough), written by
-// export.WriteDocument, and each blob a sidecar session's parts
-// reference as a file beside it, never as base64 in it: the redacted
-// blob the report lets the session carry, read from from (a store that
-// is no [agentsession.BlobReader] exports no such session), at
-// <id>/images/<sha256>.<ext> (<id>/audio/ for audio), the path the part
-// names. With no passthrough the document holds no raw items, so no
-// sidecar reference and no sidecar/ directory. Then <id>/trace.jsonl, the
-// same path in the shape of Hugging Face's Session Trace Simple Format
-// (a "session" line naming the harness and the ID, then a "message"
-// line per step and per tool result: role, content, reasoningContent,
-// toolCalls, toolCallId, model, timestamp), each sub-agent's in
-// <id>/subagents/<n>.jsonl; then manifest.json and a README.md card
-// saying what the data is and how it was cleaned. rules, the profile's
-// string redactors ([agentredact.Profile.StringFunc]), are applied to
-// every string of each document again (export.RewriteStrings), as a
-// last pass, but for a part's data URL, which holds a blob the
-// redaction already decided and is moved to its file. dir must not exist. Nothing is uploaded: that is the
-// user's step.
+// redaction and is never followed. A session that fails any is an
+// error, and nothing is exported.
+//
+// For each session it writes <id>/atif.json, its main trajectory's ATIF
+// document with no passthrough (export.NoPassthrough), written by
+// export.WriteDocument, and the media its parts show as files beside it,
+// never as base64 in it, at <id>/images/<sha256>.<ext> (<id>/audio/ for
+// audio), the path the part names: a sidecar session's blobs the review
+// let through (made or redacted blobs, and an original only where its
+// finding was accepted), read from from, and an inline session's base64
+// data URLs. With no passthrough the document holds no raw items, so no
+// sidecar reference and no sidecar/ directory. Then <id>/trace.jsonl,
+// the same path in the shape of Hugging Face's Session Trace Simple
+// Format (a "session" line naming the harness and the ID, then a
+// "message" line per step and per tool result: role, content,
+// reasoningContent, toolCalls, toolCallId, model, timestamp), each
+// sub-agent's in <id>/subagents/<n>.jsonl; then manifest.json and a
+// README.md card saying what the data is and how it was cleaned. rules,
+// the profile's string redactors ([agentredact.Profile.StringFunc]),
+// are applied to every string of each document again
+// (export.RewriteStrings), as a last pass, joined by [agentredact.Chain]
+// whatever rules is, so a base64 data URL's payload is kept as it is and
+// its media type and parameters, and a data URL that is not base64, are
+// redacted like any other text.
+//
+// dir must not exist. The dataset is written to a directory beside it
+// and renamed to dir once whole, so an export that fails part way, such
+// as one from a store that is no [agentsession.BlobReader] of a session
+// with media, or one whose blob cannot be read, leaves nothing. Nothing
+// is uploaded: that is the user's step.
 func ExportDataset(ctx context.Context, from agentsession.Store, m Manifest, dir string, opts Options, rules agentredact.StringRedactor) error {
 	if rules == nil {
 		return errors.New("publish: the profile's string rules are needed as the export's last pass")
@@ -160,9 +169,38 @@ func ExportDataset(ctx context.Context, from agentsession.Store, m Manifest, dir
 	if br, ok := from.(agentsession.BlobReader); ok {
 		blobs = export.StoreBlobs(ctx, br)
 	}
-	if err := os.Mkdir(dir, 0o755); err != nil {
+	// The dataset is written to a directory beside dir and renamed to it
+	// once whole, so a session that fails part way (a blob the store
+	// cannot read, a document that does not validate) leaves nothing.
+	if _, err := os.Lstat(dir); err == nil {
+		return fmt.Errorf("publish: the dataset directory: %s: %w", dir, fs.ErrExist)
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("publish: the dataset directory: %w", err)
 	}
+	tmp, err := os.MkdirTemp(filepath.Dir(dir), "."+filepath.Base(dir)+".partial-")
+	if err != nil {
+		return fmt.Errorf("publish: the dataset directory: %w", err)
+	}
+	err = writeDataset(tmp, m, sessions, blobs, rules)
+	if err == nil {
+		err = os.Chmod(tmp, 0o755)
+	}
+	if err == nil {
+		err = os.Rename(tmp, dir)
+	}
+	if err != nil {
+		return errors.Join(err, os.RemoveAll(tmp))
+	}
+	return nil
+}
+
+// writeDataset writes the dataset of [ExportDataset] into dir, which
+// exists and is empty.
+func writeDataset(dir string, m Manifest, sessions map[string]*agentsession.Session, blobs export.Blobs, rules agentredact.StringRedactor) error {
+	// The last pass is a Chain, whatever rules is, so a base64 data
+	// URL's payload never goes through it: its media type and
+	// parameters do, and so does a data URL that is not base64.
+	backstop := func(s string) string { return agentredact.Chain(rules)(s, nil) }
 	for _, e := range m.Entries {
 		s := sessions[e.Session]
 		var doc *atif.Trajectory
@@ -179,16 +217,6 @@ func ExportDataset(ctx context.Context, from agentsession.Store, m Manifest, dir
 		}
 		if doc == nil {
 			continue
-		}
-		// A part's data URL is a blob's bytes, which the redaction
-		// decided as a blob and WriteDocument moves to a file: base64
-		// never goes through the string rules.
-		media := partDataURLs(doc, map[string]bool{})
-		backstop := func(s string) string {
-			if media[s] {
-				return s
-			}
-			return rules(s, nil)
 		}
 		if err := export.RewriteStrings(doc, backstop); err != nil {
 			return fmt.Errorf("publish: %s: %w", e.Session, err)
@@ -218,32 +246,6 @@ func ExportDataset(ctx context.Context, from agentsession.Store, m Manifest, dir
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "README.md"), []byte(card(m)), 0o644)
-}
-
-// partDataURLs adds to seen each data URL a part of doc, or of a
-// trajectory it embeds, holds as its source, and returns seen.
-func partDataURLs(doc *atif.Trajectory, seen map[string]bool) map[string]bool {
-	add := func(parts []atif.ContentPart) {
-		for _, p := range parts {
-			if p.Source != nil && strings.HasPrefix(p.Source.Path, "data:") {
-				seen[p.Source.Path] = true
-			}
-		}
-	}
-	for _, st := range doc.Steps {
-		add(st.Message.Parts)
-		if st.Observation != nil {
-			for _, r := range st.Observation.Results {
-				add(r.Content.Parts)
-			}
-		}
-	}
-	for _, sub := range doc.SubagentTrajectories {
-		if sub != nil {
-			partDataURLs(sub, seen)
-		}
-	}
-	return seen
 }
 
 func writeJSON(path string, v any) error {
