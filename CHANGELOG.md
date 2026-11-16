@@ -32,6 +32,11 @@ versions may break the API.
   store that is no `BlobReader` exports no such session. Media an
   inline session holds as a part's data URL is written out the same
   way. A session with no media exports as before.
+- **The scan's ATIF documents of a sidecar session named its media
+  by `sidecar:` URL**, and with agentsession v0.0.38 were refused.
+  `Scanner.Scan` with `ATIF` set now gives the export the blob reader
+  it reads the session's blobs through, so the documents carry the
+  media as data URLs.
 
 ## v0.0.4 - 2026-11-04
 
