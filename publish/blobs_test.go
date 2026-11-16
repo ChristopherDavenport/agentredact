@@ -3,6 +3,7 @@ package publish
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/ChristopherDavenport/agentredact"
 	"github.com/ChristopherDavenport/agentsession"
+	"github.com/ChristopherDavenport/agentsession/atif"
+	"github.com/ChristopherDavenport/agentsession/export"
 	"github.com/ChristopherDavenport/openresponses"
 )
 
@@ -197,5 +200,138 @@ func TestExportBlobs(t *testing.T) {
 	err = ExportDataset(ctx, private, manifest(file.ID()), filepath.Join(t.TempDir(), "bad"), opts, profile.StringFunc())
 	if err == nil || !strings.Contains(err.Error(), bad) {
 		t.Errorf("the session naming an unredactable blob: %v, want it refused, naming the blob", err)
+	}
+}
+
+// TestExportImageBlobAsFile: a session holding an image exports with
+// the image as a file of its own beside the ATIF document, as the
+// redaction re-encoded it: the document points at it, no base64 and no
+// sidecar reference is left in the document, and nothing of the
+// original blob is written.
+func TestExportImageBlobAsFile(t *testing.T) {
+	ctx := context.Background()
+	private := agentsession.NewMemoryStore()
+	orig := putBlob(t, private, pngWithText(t), "image/png")
+	s := blobSession(t, "orig-export-image", "ok", &openresponses.InputImage{ImageURL: "sidecar:" + orig})
+	load(t, private, s)
+	rep, err := agentredact.RedactStore(ctx, private, profile, key(t), agentredact.StoreOptions{AcceptFindings: everyKind})
+	if err != nil {
+		t.Fatal(err)
+	}
+	red, err := private.Read(ctx, agentredact.RedactedID(key(t), s.ID(), profile.Name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs, err := agentredact.SidecarRefs(red)
+	if err != nil || len(refs) != 1 || refs[0] == orig {
+		t.Fatalf("the redacted session names %v (%v), want one replacement blob", refs, err)
+	}
+	redacted, err := private.Blob(ctx, refs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := private.Blob(ctx, orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Manifest{Format: ManifestFormat, Profile: profile.Name, Entries: []ManifestEntry{{Session: red.ID(), Head: red.Leaf()}}}
+	dir := filepath.Join(t.TempDir(), "dataset")
+	if err := ExportDataset(ctx, private, m, dir, Options{Profile: profile.Name, Report: rep, Unjudged: true}, profile.StringFunc()); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	sdir := filepath.Join(dir, red.ID())
+	doc, err := os.ReadFile(filepath.Join(sdir, "atif.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(doc, []byte(";base64,")) {
+		t.Error("the ATIF document holds base64")
+	}
+	hex := strings.TrimPrefix(refs[0], "sha256:")
+	if bytes.Contains(doc, []byte("sidecar:")) {
+		t.Error("the ATIF document names a sidecar reference, which nothing in the dataset resolves")
+	}
+	images, err := filepath.Glob(filepath.Join(sdir, "images", hex+".*"))
+	if err != nil || len(images) != 1 {
+		t.Fatalf("the image files: %v, %v; want the redacted image", images, err)
+	}
+	if b, err := os.ReadFile(images[0]); err != nil || !bytes.Equal(b, redacted) {
+		t.Errorf("the image file %s: %v; want the redacted bytes", images[0], err)
+	}
+	if !bytes.Contains(doc, []byte("images/"+filepath.Base(images[0]))) {
+		t.Errorf("the document does not point at %s", filepath.Base(images[0]))
+	}
+	origHex := strings.TrimPrefix(orig, "sha256:")
+	if err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(path, origHex) || bytes.Equal(data, original) || bytes.Contains(data, []byte(fakeToken)) {
+			t.Errorf("%s holds the original blob or its token", path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestExportWithoutBlobsUnchanged: a session naming no blob exports as
+// before: atif.json, its main trajectory's document with no passthrough
+// and the profile's rules applied again, and trace.jsonl, nothing else.
+func TestExportWithoutBlobsUnchanged(t *testing.T) {
+	ctx := context.Background()
+	private := agentsession.NewMemoryStore()
+	s := blobSession(t, "orig-export-plain", "token "+fakeToken, nil)
+	load(t, private, s)
+	rep, err := agentredact.RedactStore(ctx, private, profile, key(t), agentredact.StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	red, err := private.Read(ctx, agentredact.RedactedID(key(t), s.ID(), profile.Name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Manifest{Format: ManifestFormat, Profile: profile.Name, Entries: []ManifestEntry{{Session: red.ID(), Head: red.Leaf()}}}
+	dir := filepath.Join(t.TempDir(), "dataset")
+	if err := ExportDataset(ctx, private, m, dir, Options{Profile: profile.Name, Report: rep, Unjudged: true}, profile.StringFunc()); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	sdir := filepath.Join(dir, red.ID())
+	names, err := os.ReadDir(sdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, n := range names {
+		got = append(got, n.Name())
+	}
+	if strings.Join(got, " ") != "atif.json trace.jsonl" {
+		t.Errorf("the session's directory holds %v, want atif.json and trace.jsonl", got)
+	}
+	var want *atif.Trajectory
+	for tr, err := range export.Trajectories(red) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tr.Main {
+			if want, err = export.ToATIF(tr, export.Options{Redactors: []export.Redactor{export.NoPassthrough()}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	rules := profile.StringFunc()
+	if err := export.RewriteStrings(want, func(s string) string { return rules(s, nil) }); err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, err := json.MarshalIndent(want, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc, err := os.ReadFile(filepath.Join(sdir, "atif.json")); err != nil || !bytes.Equal(doc, append(wantJSON, '\n')) {
+		t.Errorf("atif.json is not the document as exported before (%v):\n%s", err, doc)
 	}
 }

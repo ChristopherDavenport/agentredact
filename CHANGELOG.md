@@ -18,6 +18,21 @@ versions may break the API.
   `SessionBlobs` now read a sidecar reference as a whole string only
   (v0.0.40, #300), the rule `SidecarRefs` already kept.
 
+### Fixed
+
+- **A dataset export of a sidecar session holding an image named the
+  image by a `sidecar:` URL nothing in the dataset resolves**, and
+  with agentsession v0.0.38's ATIF export, which resolves part media
+  through a blob reader, it was refused (`export.ErrBlobUnread`). The
+  export now reads the redacted blobs the report lets the session
+  carry from the store and writes each as a file beside the document,
+  `<id>/images/<sha256>.<ext>` (`<id>/audio/` for audio), which the
+  part names by path; the document holds no base64, and the last
+  string pass skips a part's data URL, so no blob goes through it. A
+  store that is no `BlobReader` exports no such session. Media an
+  inline session holds as a part's data URL is written out the same
+  way. A session with no media exports as before.
+
 ## v0.0.4 - 2026-11-04
 
 ### Fixed
